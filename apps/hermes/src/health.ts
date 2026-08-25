@@ -36,21 +36,17 @@ function handleRequest(pool: Pool, req: IncomingMessage, res: ServerResponse): v
 
 export interface HealthServerCallbacks {
   onListening?: () => void;
-  onError?: (error: Error) => void;
+  onError: (error: Error) => void;
 }
 
 export function startHealthServer(
   pool: Pool,
   port: number,
-  callbacks: HealthServerCallbacks = {},
+  callbacks: HealthServerCallbacks,
 ): Server {
   const server = createServer((req, res) => handleRequest(pool, req, res));
   server.on("error", (error) => {
-    if (callbacks.onError) {
-      callbacks.onError(error);
-      return;
-    }
-    throw error;
+    callbacks.onError(error);
   });
   server.listen(port, () => {
     callbacks.onListening?.();
