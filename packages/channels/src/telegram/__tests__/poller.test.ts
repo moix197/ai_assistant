@@ -35,7 +35,10 @@ afterEach(() => {
 });
 
 describe("createTelegramPoller — offset ordering", () => {
-  it("advances the offset only after the handler resolves (happy path)", async () => {
+  // In-memory only: proves sequential backpressure (handler awaited before the next
+  // getUpdates call). The crash-before-persist offset guarantee is owned by Phase 3's
+  // poller-crash-replay.test.ts, once the offset is actually persisted.
+  it("awaits the handler before requesting the next batch (sequential backpressure, happy path)", async () => {
     const update = makeUpdate(10);
     const getUpdates = vi
       .fn()
@@ -57,9 +60,8 @@ describe("createTelegramPoller — offset ordering", () => {
     );
 
     // While the handler is still pending, the poll loop must not have looped
-    // back to request the advanced offset — proves the offset only moves
-    // past update 10 once its handler has resolved (plan dependency note:
-    // "offset persisted after handling, not before").
+    // back to request the next batch — proves the loop awaits each handler
+    // before issuing the next getUpdates call (sequential backpressure).
     expect(getUpdates).toHaveBeenCalledTimes(1);
     expect(getUpdates).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 11 }));
 
