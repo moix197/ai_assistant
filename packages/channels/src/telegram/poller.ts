@@ -115,6 +115,7 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
           updateId: update.update_id,
           error: error instanceof Error ? error.message : String(error),
         });
+        await delay(RETRY_DELAY_MS);
         return;
       }
     }

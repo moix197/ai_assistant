@@ -43,19 +43,29 @@ describe("createTelegramPoller — offset ordering", () => {
       .mockImplementation(() => pendingForever());
     const client: TelegramClient = { getUpdates, sendMessage: vi.fn() };
     const logger = createMockLogger();
-    const handler = vi.fn().mockResolvedValue(undefined);
+    let resolveHandler: () => void = () => {};
+    const handlerPromise = new Promise<void>((resolve) => {
+      resolveHandler = resolve;
+    });
+    const handler = vi.fn().mockReturnValue(handlerPromise);
 
     createTelegramPoller({ client, logger }).subscribe(handler);
 
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
-
-    expect(handler).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ channelUserId: "111", text: "text-10" }),
     );
-    // Second poll requests from the advanced offset — proves the offset only
-    // moves past update 10 once its handler has resolved (plan dependency
-    // note: "offset persisted after handling, not before").
+
+    // While the handler is still pending, the poll loop must not have looped
+    // back to request the advanced offset — proves the offset only moves
+    // past update 10 once its handler has resolved (plan dependency note:
+    // "offset persisted after handling, not before").
+    expect(getUpdates).toHaveBeenCalledTimes(1);
+    expect(getUpdates).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 11 }));
+
+    resolveHandler();
+
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
     expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 11 }));
   });
 });
@@ -73,7 +83,9 @@ describe("createTelegramPoller — handler failure", () => {
 
     createTelegramPoller({ client, logger }).subscribe(handler);
 
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
+    // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
+    // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2), { timeout: 4000 });
 
     expect(handler).toHaveBeenCalledTimes(1);
     // Second poll re-requests from the same (unadvanced) offset — update 20
@@ -99,7 +111,9 @@ describe("createTelegramPoller — handler failure", () => {
 
     createTelegramPoller({ client, logger }).subscribe(handler);
 
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
+    // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
+    // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2), { timeout: 4000 });
 
     // Update 31 was never attempted this batch — advancing past update 30
     // despite its failure would leapfrog the offset and lose it forever.
