@@ -1,6 +1,8 @@
+import { createTelegramClient, createTelegramPoller, parseAllowlist } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { createLogger } from "@hermes/core";
 import { createPool, getDefaultMigrationsDir, runMigrations, waitForDatabase } from "@hermes/store";
+import { createEchoHandler } from "./handlers/echo";
 import { startHealthServer } from "./health";
 
 function loadConfigOrExit(): Env {
@@ -32,4 +34,9 @@ export async function boot(): Promise<void> {
       process.exit(1);
     },
   });
+
+  const telegramClient = createTelegramClient({ token: config.TELEGRAM_BOT_TOKEN });
+  const telegramChannel = createTelegramPoller({ client: telegramClient, logger });
+  const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
+  telegramChannel.subscribe(createEchoHandler(telegramChannel, allowlist, logger));
 }

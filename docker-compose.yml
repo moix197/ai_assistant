@@ -31,6 +31,10 @@ services:
       DATABASE_URL: postgres://hermes:hermes@postgres:5432/hermes
       PORT: "3000"
       LOG_LEVEL: info
+      # Required; not defaulted here — set in a local, gitignored .env (see
+      # plans/00-skeleton.md Prerequisites). TELEGRAM_ALLOWLIST may be empty.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWLIST: ${TELEGRAM_ALLOWLIST:-}
     ports:
       - "3000:3000"
     # Telegram allows exactly one getUpdates consumer per bot token, so this

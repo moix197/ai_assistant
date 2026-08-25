@@ -29,6 +29,9 @@ importers:
 
   apps/hermes:
     dependencies:
+      '@hermes/channels':
+        specifier: workspace:*
+        version: link:../../packages/channels
       '@hermes/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -38,6 +41,12 @@ importers:
       '@hermes/store':
         specifier: workspace:*
         version: link:../../packages/store
+
+  packages/channels:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/config:
     dependencies:

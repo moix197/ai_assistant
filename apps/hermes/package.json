@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@hermes/channels": "workspace:*",
     "@hermes/config": "workspace:*",
     "@hermes/core": "workspace:*",
     "@hermes/store": "workspace:*"
