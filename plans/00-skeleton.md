@@ -225,14 +225,14 @@ numeric id — this doubles as how you discover your own id (see Prerequisites).
 
 **Steps:**
 
-- [ ] `Channel` port in `packages/channels/src/channel.ts`, provider-neutral (`InboundMessage { channelUserId, chatId, text, chatType: "private" | "group" | "other", kind: "message" | "edited_message" }`)
-- [ ] Telegram HTTP client: `getUpdates({ offset, timeout, limit, allowedUpdates })` and `sendMessage({ chatId, text })` over `fetch`; **client-side AbortController timeout = poll `timeout` + 10s** (avoids false aborts / reconnect storms — this is the single most important correctness detail in the client beyond the offset rule). Every log line and thrown error redacts the bot token out of the request URL (`https://api.telegram.org/bot<REDACTED>/<method>`) — Telegram embeds the token in the URL path, not a header, so this doesn't happen automatically like it would with an `Authorization` header
-- [ ] Normalization guard: an update with no `message.from` (channel posts, some anonymous-admin group messages) is logged at debug and dropped before the allowlist check — it has no user id to check against, so silently proceeding would be a fail-open bug. Same for `chat.type !== "private"`: Hermes is a single-user assistant (ROADMAP §1 non-goal: no multi-user), so a group/channel context is deliberately rejected+logged, not handled, even from an allowlisted sender — replying into a group broadcasts to everyone in it
-- [ ] Poller: loop `getUpdates` → for each update in order: normalize (including the guards above) → allowlist check → dispatch to handler → advance in-memory offset. No persistence, no advisory lock, no structured backoff yet (Phase 3/4) — on a transient fetch error, log and retry after a fixed short delay
-- [ ] Allowlist: `parseAllowlist(csv): Set<number>`; `isAllowed(id, set)`; both pure, unit-testable without network
-- [ ] Echo handler: allowed → `send(chatId, text)`; not allowed → `logger.warn("rejected: unknown user", { channelUserId })`; `edited_message` → `logger.info("edited message ignored", { channelUserId })`, no reply
-- [ ] `apps/hermes/src/boot.ts`: wire `TelegramAdapter` + echo handler after the health server is listening
-- [ ] `packages/channels/README.md`: document the `Channel` port contract, the token-redaction rule, the private-chat-only guard, and why chunking/backoff are explicitly not in this phase (see Phase 4)
+- [x] `Channel` port in `packages/channels/src/channel.ts`, provider-neutral (`InboundMessage { channelUserId, chatId, text, chatType: "private" | "group" | "other", kind: "message" | "edited_message" }`)
+- [x] Telegram HTTP client: `getUpdates({ offset, timeout, limit, allowedUpdates })` and `sendMessage({ chatId, text })` over `fetch`; **client-side AbortController timeout = poll `timeout` + 10s** (avoids false aborts / reconnect storms — this is the single most important correctness detail in the client beyond the offset rule). Every log line and thrown error redacts the bot token out of the request URL (`https://api.telegram.org/bot<REDACTED>/<method>`) — Telegram embeds the token in the URL path, not a header, so this doesn't happen automatically like it would with an `Authorization` header
+- [x] Normalization guard: an update with no `message.from` (channel posts, some anonymous-admin group messages) is logged at debug and dropped before the allowlist check — it has no user id to check against, so silently proceeding would be a fail-open bug. Same for `chat.type !== "private"`: Hermes is a single-user assistant (ROADMAP §1 non-goal: no multi-user), so a group/channel context is deliberately rejected+logged, not handled, even from an allowlisted sender — replying into a group broadcasts to everyone in it
+- [x] Poller: loop `getUpdates` → for each update in order: normalize (including the guards above) → allowlist check → dispatch to handler → advance in-memory offset. No persistence, no advisory lock, no structured backoff yet (Phase 3/4) — on a transient fetch error, log and retry after a fixed short delay
+- [x] Allowlist: `parseAllowlist(csv): Set<number>`; `isAllowed(id, set)`; both pure, unit-testable without network
+- [x] Echo handler: allowed → `send(chatId, text)`; not allowed → `logger.warn("rejected: unknown user", { channelUserId })`; `edited_message` → `logger.info("edited message ignored", { channelUserId })`, no reply
+- [x] `apps/hermes/src/boot.ts`: wire `TelegramAdapter` + echo handler after the health server is listening
+- [x] `packages/channels/README.md`: document the `Channel` port contract, the token-redaction rule, the private-chat-only guard, and why chunking/backoff are explicitly not in this phase (see Phase 4)
 
 **Tests:**
 
@@ -245,7 +245,7 @@ numeric id — this doubles as how you discover your own id (see Prerequisites).
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
+- [x] `pnpm -r test` green
 - [ ] With `TELEGRAM_ALLOWLIST` empty: message the bot from your Telegram account → no reply, `docker compose logs hermes` shows `rejected: unknown user` with your numeric id
 - [ ] Set `TELEGRAM_ALLOWLIST=<your id>`, `docker compose restart hermes`, message again → bot echoes the text verbatim
 - [ ] Edit a previously sent message → no new reply appears; log shows `edited message ignored`
@@ -257,13 +257,35 @@ numeric id — this doubles as how you discover your own id (see Prerequisites).
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: telegram channel port and adapter with allowlist echo`
+- [x] Changes committed: `feat: telegram channel port and adapter with allowlist echo`
 - [ ] Phase marked complete
+
+**Phase 2 — implementation notes:**
+
+- Allowlist placement: this phase's Success criteria says rejection happens
+  "before it reaches any handler", but the File-changes table, Steps and Tests
+  all place the check inside `echo.ts`. Implemented per the latter three. Code
+  review adjudicated this as an internally-inconsistent spec rather than a
+  defect: the genuine fail-open case (no `message.from`) *is* guarded in the
+  poller, and no fall-through exists while `echo` is the only handler. The
+  `withAllowlist(handler)` wrapper is required at Phase 4 — see that phase.
+- The offset ordering fix (advance only after the handler resolves) is real but
+  **not provable at this phase** — see the note in Phase 3's Steps.
+- Poller failure path delays `RETRY_DELAY_MS` before returning, so a
+  permanently-failing update (e.g. `sendMessage` 403 "bot was blocked") cannot
+  hot-loop `getUpdates`. A failed handler abandons the rest of the batch; those
+  updates are redelivered, which is why the offset must not advance past them.
+- The real 3s delay pushed two poller tests onto 4000ms `vi.waitFor` timeouts.
+  Accepted here under minimal-change; Phase 4 must inject `retryDelayMs`.
+- Verification steps 2-6 are UNRUN — they need a live bot token (see
+  Prerequisites). Only `pnpm -r test` is ticked.
+- Commits: `38c3d22` (feature), `f420852` (offset ordering + error survival),
+  `0529778` (retry delay + test hardening), `ace7398` (test rename).
 
 ---
 
@@ -290,6 +312,16 @@ mysterious 409.
 | modify | `apps/hermes/src/boot.ts` | boot order: config → logger → pool → migrations → `deleteWebhook()` (unconditional) → `acquireInstanceLock()` (exit(1) with a clear message if held) → start poller |
 
 **Steps:**
+
+- [ ] `poller-crash-replay.test.ts` (Tests table below) is the **sole** guard for
+      the happy-path ack-after-process ordering. Established by mutation testing
+      in the Phase 2 review: with the offset in memory, reordering `offset = …`
+      to before `await handler(…)` is externally unobservable — `offset` is
+      closure-private and only read by the next `getUpdates`, which is sequenced
+      after the await either way. Phase 2's unit tests catch the reorder only on
+      the failure path. Once the offset is persisted here, the gap between
+      "offset written" and "handler completed" becomes a real crash window, and
+      this test is what proves it.
 
 - [ ] Migration `001_telegram_offset.sql`; note in `packages/store/README.md` why this is a singleton row, not a per-chat table (one bot, one poll stream)
 - [ ] `telegram-offset-repo.ts`: two functions, raw `pg` queries against the pool, no ORM
@@ -353,6 +385,24 @@ hard-killed.
 | modify | `apps/hermes/src/boot.ts` | register SIGTERM/SIGINT handler once, in this exact order: stop accepting new poll iterations → wait for in-flight handling (bounded ~8s) → release the advisory-lock connection (Phase 3's `release()`) → `pool.end()` → `process.exit(0)`; hard-exit fallback timer |
 
 **Steps:**
+
+_Carried forward from the Phase 2 code review (both required here, not earlier —
+each needs a second caller to exist before it stops being a speculative
+abstraction):_
+
+- [ ] `withAllowlist(handler)` wrapper composed in `boot.ts`, replacing the
+      per-handler allowlist check currently inlined in `echo.ts`. Phase 2's
+      Success criteria says rejection happens "before it reaches any handler",
+      but its File-changes table, Steps and Tests all place the check inside
+      `echo.ts`; that was accepted as an internally-inconsistent spec with no
+      fall-through, because `echo` was the only handler. `/start` and `/ping`
+      make it three handlers each re-implementing the same check — the
+      duplication CLAUDE.md forbids, and a fail-open risk the moment one of
+      them forgets.
+- [ ] Inject the poller's retry delay (`retryDelayMs`) rather than using the
+      module constant, BEFORE structured backoff lands. Phase 2's real 3s
+      delay already forced two poller tests onto 4000ms `vi.waitFor` timeouts;
+      backoff multiplies that into a slow, flaky suite.
 
 - [ ] `chunk.ts`: pure function `chunkText(text, maxLen = 4096): string[]`; explicitly **not** markdown-entity-aware — justified because nothing in this PRD formats output (echo/`/start`/`/ping` are plain text; no `parse_mode` is used anywhere yet). Entity-safe splitting only matters once Markdown-formatted output exists, which arrives with the agent/LLM layer in Phase 2 — deferring it now avoids building machinery with no caller
 - [ ] `backoff.ts`: `nextDelay(attempt, retryAfterHeader?)`; unit-testable without a clock dependency by injecting attempt count directly
