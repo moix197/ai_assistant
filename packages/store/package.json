@@ -1,0 +1,22 @@
+{
+  "name": "@hermes/store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "hermes-migrate": "./dist/migrate-cli.js"
+  },
+  "files": ["dist", "src/migrations"],
+  "scripts": {
+    "build": "tsup --entry.index=src/index.ts --entry.migrate-cli=bin/migrate.ts --format esm --dts --clean --target node22 --out-dir dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}

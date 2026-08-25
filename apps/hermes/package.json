@@ -1,0 +1,17 @@
+{
+  "name": "hermes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean --target node22 --out-dir dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hermes/config": "workspace:*",
+    "@hermes/core": "workspace:*",
+    "@hermes/store": "workspace:*"
+  }
+}
