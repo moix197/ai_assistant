@@ -127,18 +127,18 @@ phase depends on config/logger/store/migrations existing first.
 
 **Steps:**
 
-- [ ] Root workspace config (`pnpm-workspace.yaml` listing `apps/*`, `packages/*`; strict `tsconfig.base.json`; tsup + vitest + **Biome** devDeps at the root — one dependency covering both lint and format, replacing an eslint+prettier+plugins stack; settled choice, fits "minimize the dependency footprint" better given TS strict already catches most real defects)
-- [ ] `biome.json`: enable the recommended lint rule set + formatter, scoped to `apps/*/src` and `packages/*/src`
-- [ ] `packages/core`: `Result<T, E>` type, `newId()`, `Clock` interface + real impl, JSON-line logger (`{ ts, level, msg, ...fields }`, ~30 lines, no deps), `TelemetryRecorder` port interface with no implementation. This is a deliberate exception to "no speculative abstractions": ROADMAP's boundary rule ("nothing imports `telemetry` directly; packages depend on the recorder *port* in `core`") requires the port to exist before Phase 2 wires an implementation through it, or the port gets retrofitted through half the tree later. Zero runtime footprint — it's a type-only export, nothing calls it yet
-- [ ] `packages/config`: zod schema covering `DATABASE_URL`, `PORT`, `LOG_LEVEL` (Telegram vars added in Phase 2); `loadConfig()` throws a typed error naming the failing key; a `toRedactedLog()` helper masking anything schema-flagged as secret
-- [ ] `packages/store`: `createPool(databaseUrl)`, `runMigrations(pool, migrationsDir)` (ensures tracking table, reads `*.sql` sorted by filename, skips already-applied ids, wraps each in a transaction), `bin/migrate.ts` CLI calling the same function
-- [ ] `apps/hermes/src/boot.ts`: `loadConfig()` → build logger (log the **redacted** config once) → `createPool()` → `runMigrations()` → start health server. Export a `boot()` function; `index.ts` just calls it — keeps the entry point thin per CLAUDE.md
-- [ ] `apps/hermes/src/health.ts`: `node:http` server, `/health` runs `SELECT 1` against the pool, returns `{ status: "ok" | "error", db: "connected" | "disconnected" }`
-- [ ] `Dockerfile`: stage 1 `node:22-alpine` + pnpm, `--frozen-lockfile` install, `pnpm -r build`; stage 2 `pnpm deploy --filter hermes --prod out/`; stage 3 minimal runtime, `COPY --from=deploy out/ .`, `CMD ["node", "dist/index.js"]` (exec form — required for SIGTERM to reach Node, needed by Phase 4)
-- [ ] `docker-compose.yml`: `postgres` (named volume, healthcheck `pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB`, interval 10s/timeout 5s/retries 5/start_period 30s) + `hermes` (`depends_on: postgres: condition: service_healthy`, `replicas: 1`); note in a comment that `depends_on` only gates container *start*, so `createPool`/health still needs its own retry-on-connect
-- [ ] Root `package.json` scripts: `build` (`pnpm -r build`), `test` (`pnpm -r test`), `lint` (`biome check .`), `dev` (`tsx watch apps/hermes/src/index.ts`) — dev loop runs natively against compose-owned Postgres, no bind-mounted source in compose (documented decision: hot-reload via bind mount is slow/flaky on WSL2/Windows)
-- [ ] Root `README.md`: how to run (`docker compose up -d postgres`, `pnpm install`, `pnpm dev`; or full `docker compose up --build`)
-- [ ] Per-package `README.md` stubs (see Documentation table)
+- [x] Root workspace config (`pnpm-workspace.yaml` listing `apps/*`, `packages/*`; strict `tsconfig.base.json`; tsup + vitest + **Biome** devDeps at the root — one dependency covering both lint and format, replacing an eslint+prettier+plugins stack; settled choice, fits "minimize the dependency footprint" better given TS strict already catches most real defects)
+- [x] `biome.json`: enable the recommended lint rule set + formatter, scoped to `apps/*/src` and `packages/*/src`
+- [x] `packages/core`: `Result<T, E>` type, `newId()`, `Clock` interface + real impl, JSON-line logger (`{ ts, level, msg, ...fields }`, ~30 lines, no deps), `TelemetryRecorder` port interface with no implementation. This is a deliberate exception to "no speculative abstractions": ROADMAP's boundary rule ("nothing imports `telemetry` directly; packages depend on the recorder *port* in `core`") requires the port to exist before Phase 2 wires an implementation through it, or the port gets retrofitted through half the tree later. Zero runtime footprint — it's a type-only export, nothing calls it yet
+- [x] `packages/config`: zod schema covering `DATABASE_URL`, `PORT`, `LOG_LEVEL` (Telegram vars added in Phase 2); `loadConfig()` throws a typed error naming the failing key; a `toRedactedLog()` helper masking anything schema-flagged as secret
+- [x] `packages/store`: `createPool(databaseUrl)`, `runMigrations(pool, migrationsDir)` (ensures tracking table, reads `*.sql` sorted by filename, skips already-applied ids, wraps each in a transaction), `bin/migrate.ts` CLI calling the same function
+- [x] `apps/hermes/src/boot.ts`: `loadConfig()` → build logger (log the **redacted** config once) → `createPool()` → `runMigrations()` → start health server. Export a `boot()` function; `index.ts` just calls it — keeps the entry point thin per CLAUDE.md
+- [x] `apps/hermes/src/health.ts`: `node:http` server, `/health` runs `SELECT 1` against the pool, returns `{ status: "ok" | "error", db: "connected" | "disconnected" }`
+- [x] `Dockerfile`: stage 1 `node:22-alpine` + pnpm, `--frozen-lockfile` install, `pnpm -r build`; stage 2 `pnpm deploy --filter hermes --prod out/`; stage 3 minimal runtime, `COPY --from=deploy out/ .`, `CMD ["node", "dist/index.js"]` (exec form — required for SIGTERM to reach Node, needed by Phase 4)
+- [x] `docker-compose.yml`: `postgres` (named volume, healthcheck `pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB`, interval 10s/timeout 5s/retries 5/start_period 30s) + `hermes` (`depends_on: postgres: condition: service_healthy`, `replicas: 1`); note in a comment that `depends_on` only gates container *start*, so `createPool`/health still needs its own retry-on-connect
+- [x] Root `package.json` scripts: `build` (`pnpm -r build`), `test` (`pnpm -r test`), `lint` (`biome check .`), `dev` (`tsx watch apps/hermes/src/index.ts`) — dev loop runs natively against compose-owned Postgres, no bind-mounted source in compose (documented decision: hot-reload via bind mount is slow/flaky on WSL2/Windows)
+- [x] Root `README.md`: how to run (`docker compose up -d postgres`, `pnpm install`, `pnpm dev`; or full `docker compose up --build`)
+- [x] Per-package `README.md` stubs (see Documentation table)
 
 **Tests:**
 
@@ -151,24 +151,52 @@ phase depends on config/logger/store/migrations existing first.
 
 **Verification:**
 
-- [ ] `pnpm install && pnpm -r build && pnpm -r test` — all green
-- [ ] `docker compose up -d` → `docker compose ps` shows `postgres` healthy and `hermes` running (not restarting)
-- [ ] `curl -i localhost:3000/health` → `200` with `{"status":"ok","db":"connected"}`
-- [ ] `docker compose restart hermes` → still healthy (migration runner is idempotent — no error on an empty or already-applied migration set)
-- [ ] `docker compose logs hermes` shows the boot log line with a **redacted** config, never a raw secret
+- [x] `pnpm install && pnpm -r build && pnpm -r test` — all green
+- [x] `docker compose up -d` → `docker compose ps` shows `postgres` healthy and `hermes` running (not restarting)
+- [x] `curl -i localhost:3000/health` → `200` with `{"status":"ok","db":"connected"}`
+- [x] `docker compose restart hermes` → still healthy (migration runner is idempotent — no error on an empty or already-applied migration set)
+- [x] `docker compose logs hermes` shows the boot log line with a **redacted** config, never a raw secret
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: scaffold monorepo, Postgres, migrations, config, health endpoint`
+- [x] Changes committed: `feat: scaffold monorepo, Postgres, migrations, config, health endpoint`
 - [ ] Phase marked complete
+
+**Phase 1 — implementation notes (deviations from the written steps):**
+
+- Base ref was `main`, not `master` (Phase 0's premise was stale — the repo
+  already had commits). Worktree: `../hermes-00-skeleton`.
+- Root package renamed `hermes-monorepo`: the written `pnpm deploy --filter
+  hermes` matched two projects (`ERR_PNPM_CANNOT_DEPLOY_MANY`) because the root
+  was also named `hermes`. Final form: `pnpm deploy --filter ./apps/hermes
+  --prod --legacy /out` (`--legacy` required on pnpm >= 10 for non-injected
+  workspaces).
+- Added a real `typecheck` script per package; root `build` is
+  `pnpm -r typecheck && pnpm -r build`. Without it, `apps/hermes` imported `pg`
+  undeclared and nothing caught it (tsup strips types). `health.ts` now uses a
+  `Pool` type re-exported from `@hermes/store`, keeping `pg` as store's concern.
+- `docker-compose.yml` publishes `5432:5432` — the README's dev loop
+  (`pnpm dev` against compose-owned Postgres) could not connect otherwise.
+- `tsconfig.base.json` keeps `baseUrl`/`paths` (`@hermes/* -> src`). Dropping it
+  would catch a removed workspace dep, but breaks typecheck on a clean clone:
+  with `dist/` absent, `pnpm -r typecheck` fails `TS2307` for all three
+  workspace packages, and typecheck runs before build. Frozen-lockfile install
+  in Docker is the backstop.
+- `IS_SECRET_ENV_KEY: Record<keyof Env, boolean>` in `packages/config` — adding
+  an env var (Phase 2's `TELEGRAM_BOT_TOKEN`) is now a compile error until its
+  secret-ness is declared.
+- `waitForDatabase` retry in `store/src/pool.ts`, closing the `depends_on` gap
+  this phase's own compose comment flags.
+- Dockerfile runtime stage runs as `USER node`, not root.
+- Commits: `3328ef3` (scaffold), `c541110` (review fixes), `d78de4c` (nits).
 
 ---
 
