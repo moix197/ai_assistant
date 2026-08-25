@@ -6,6 +6,12 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",
+    "baseUrl": ".",
+    "paths": {
+      "@hermes/core": ["packages/core/src/index.ts"],
+      "@hermes/config": ["packages/config/src/index.ts"],
+      "@hermes/store": ["packages/store/src/index.ts"]
+    },
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,

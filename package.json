@@ -1,10 +1,11 @@
 {
-  "name": "hermes",
+  "name": "hermes-monorepo",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@11.5.2",
   "scripts": {
-    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r typecheck && pnpm -r build",
     "test": "pnpm -r test",
     "lint": "biome check .",
     "dev": "tsx watch apps/hermes/src/index.ts"

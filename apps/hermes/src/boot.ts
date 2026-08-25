@@ -25,6 +25,11 @@ export async function boot(): Promise<void> {
   await waitForDatabase(pool);
   await runMigrations(pool, getDefaultMigrationsDir());
 
-  startHealthServer(pool, config.PORT);
-  logger.info("health server listening", { port: config.PORT });
+  startHealthServer(pool, config.PORT, {
+    onListening: () => logger.info("health server listening", { port: config.PORT }),
+    onError: (error) => {
+      logger.error("health server error", { error: error.message });
+      process.exit(1);
+    },
+  });
 }

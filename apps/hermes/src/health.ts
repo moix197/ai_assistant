@@ -1,5 +1,5 @@
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import type { Pool } from "pg";
+import type { Pool } from "@hermes/store";
 
 interface HealthStatus {
   status: "ok" | "error";
@@ -34,8 +34,26 @@ function handleRequest(pool: Pool, req: IncomingMessage, res: ServerResponse): v
   res.end(JSON.stringify({ error: "not found" }));
 }
 
-export function startHealthServer(pool: Pool, port: number): Server {
+export interface HealthServerCallbacks {
+  onListening?: () => void;
+  onError?: (error: Error) => void;
+}
+
+export function startHealthServer(
+  pool: Pool,
+  port: number,
+  callbacks: HealthServerCallbacks = {},
+): Server {
   const server = createServer((req, res) => handleRequest(pool, req, res));
-  server.listen(port);
+  server.on("error", (error) => {
+    if (callbacks.onError) {
+      callbacks.onError(error);
+      return;
+    }
+    throw error;
+  });
+  server.listen(port, () => {
+    callbacks.onListening?.();
+  });
   return server;
 }

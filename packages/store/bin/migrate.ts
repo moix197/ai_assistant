@@ -2,14 +2,14 @@
 import { getDefaultMigrationsDir, runMigrations } from "../src/migrate";
 import { createPool } from "../src/pool";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error('Missing required environment variable "DATABASE_URL"');
-  process.exit(1);
-}
-
 async function main(): Promise<void> {
-  const pool = createPool(databaseUrl as string);
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('Missing required environment variable "DATABASE_URL"');
+    process.exit(1);
+  }
+
+  const pool = createPool(databaseUrl);
   try {
     await runMigrations(pool, getDefaultMigrationsDir());
   } finally {

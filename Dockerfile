@@ -16,12 +16,16 @@ COPY . .
 RUN pnpm -r build
 
 # --- deploy: trim to hermes' own production dependency graph only ---
+# Path filter (not --filter hermes) because the root package is also named
+# for the repo; --legacy is required on pnpm >=10 so workspace deps are
+# copied in rather than left as symlinks (ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE).
 FROM build AS deploy
-RUN pnpm deploy --filter hermes --prod /out
+RUN pnpm deploy --filter ./apps/hermes --prod --legacy /out
 
 # --- runtime: minimal image, exec-form CMD so SIGTERM reaches Node ---
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=deploy /out .
+COPY --from=deploy --chown=node:node /out .
+USER node
 CMD ["node", "dist/index.js"]
