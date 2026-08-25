@@ -78,11 +78,11 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
   let offset: number | undefined;
 
   async function handleUpdate(update: TelegramUpdate): Promise<void> {
-    offset = update.update_id + 1;
     const message = normalizeTelegramUpdate(update, logger);
     if (message && handler) {
       await handler(message);
     }
+    offset = update.update_id + 1;
   }
 
   async function pollOnce(): Promise<void> {
@@ -103,7 +103,20 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
     }
 
     for (const update of updates) {
-      await handleUpdate(update);
+      try {
+        await handleUpdate(update);
+      } catch (error) {
+        // Offset was not advanced for this update, so it (and every update
+        // after it in this batch) is re-delivered by the next getUpdates
+        // call rather than silently skipped — stop this batch here instead
+        // of continuing on to updates whose offset advance would leapfrog
+        // the one that just failed.
+        logger.warn("handler failed, will retry this update", {
+          updateId: update.update_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
     }
   }
 

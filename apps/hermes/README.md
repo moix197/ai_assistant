@@ -17,6 +17,11 @@ in the entry point itself.
    `SELECT 1` against the pool and returns
    `{ "status": "ok" | "error", "db": "connected" | "disconnected" }`
    (`200` when connected, `503` otherwise).
+6. Build the Telegram adapter (`createTelegramClient` + `createTelegramPoller`)
+   and subscribe it to the echo handler (`src/handlers/echo.ts`), which
+   allowlist-checks and echoes back private-chat messages. In-memory offset
+   only at this phase — offset persistence, the advisory lock, and
+   `deleteWebhook` are Phase 3.
 
-Telegram channel wiring, graceful shutdown, and `/ping`/`/start` are later
-phases (see `plans/00-skeleton.md`).
+Graceful shutdown and `/ping`/`/start` are later phases (see
+`plans/00-skeleton.md`).

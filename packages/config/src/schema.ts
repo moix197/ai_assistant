@@ -13,12 +13,13 @@ const telegramAllowlistSchema = z
   .superRefine((value, ctx) => {
     const trimmed = value.trim();
     if (trimmed === "") return;
-    for (const rawEntry of trimmed.split(",")) {
+    const rawEntries = trimmed.split(",");
+    for (const [index, rawEntry] of rawEntries.entries()) {
       const entry = rawEntry.trim();
       if (!/^\d+$/.test(entry)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `TELEGRAM_ALLOWLIST entry "${rawEntry}" is not a valid numeric Telegram user id`,
+          message: `TELEGRAM_ALLOWLIST entry ${index + 1} of ${rawEntries.length} ("${rawEntry}") is not a valid numeric Telegram user id`,
         });
       }
     }
