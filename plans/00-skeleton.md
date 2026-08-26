@@ -246,24 +246,24 @@ numeric id — this doubles as how you discover your own id (see Prerequisites).
 **Verification:**
 
 - [x] `pnpm -r test` green
-- [ ] With `TELEGRAM_ALLOWLIST` empty: message the bot from your Telegram account → no reply, `docker compose logs hermes` shows `rejected: unknown user` with your numeric id
-- [ ] Set `TELEGRAM_ALLOWLIST=<your id>`, `docker compose restart hermes`, message again → bot echoes the text verbatim
-- [ ] Edit a previously sent message → no new reply appears; log shows `edited message ignored`
-- [ ] Add the bot to a Telegram group containing your allowlisted account and message it there → no reply; log shows the non-private-chat rejection
-- [ ] `docker compose logs hermes | grep -i <your-token-prefix>` → no match, anywhere, including in a forced network-error scenario
+- [x] With `TELEGRAM_ALLOWLIST` empty: message the bot from your Telegram account → no reply, `docker compose logs hermes` shows `rejected: unknown user` with your numeric id
+- [x] Set `TELEGRAM_ALLOWLIST=<your id>`, `docker compose up -d hermes`, message again → bot echoes the text verbatim (**not** `docker compose restart` — restart does not re-read `.env`, so the new allowlist would never load)
+- [x] Edit a previously sent message → no new reply appears; log shows `edited message ignored`
+- [x] Add the bot to a Telegram group containing your allowlisted account and message it there → no reply; log shows the non-private-chat rejection
+- [x] `docker compose logs hermes | grep -i <your-token-prefix>` → no match, anywhere, including in a forced network-error scenario
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: telegram channel port and adapter with allowlist echo`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 **Phase 2 — implementation notes:**
 
