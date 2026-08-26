@@ -216,23 +216,23 @@ builds on.
 
 **Steps:**
 
-- [ ] Promote `nextDelay` to `@hermes/core` first — both `channels` and the new
+- [x] Promote `nextDelay` to `@hermes/core` first — both `channels` and the new
       `llm` adapter need it, and duplicating the backoff calculation is
       explicitly the wrong move (CLAUDE.md: DRY). Update `channels`'s import
       and move its test file; do not leave a re-export shim, this is a clean
       move
-- [ ] Add `Message` / `ToolCall` / `ToolResult` / `Usage` to `@hermes/core`
+- [x] Add `Message` / `ToolCall` / `ToolResult` / `Usage` to `@hermes/core`
       per the boundary rule that no vendor-shaped type escapes `packages/llm`
       — these are the provider-neutral shapes `store` (Phase 3+) and `agent`
       (2c) will use without ever importing `llm`
-- [ ] Scaffold `packages/llm` per D3's package-creation rule (created here,
+- [x] Scaffold `packages/llm` per D3's package-creation rule (created here,
       never grown inside another package first). Declared dependency:
       `@hermes/core` only. It must **not** depend on `@hermes/config` (config
       shape is boot's concern, mapped in `apps/hermes`) or `@hermes/store`
       (persistence is an injected port, arriving in Phase 3) — this is the
       single most concrete boundary decision in this phase; get it wrong and
       `llm` becomes untestable without a real env/DB
-- [ ] **`ProviderProfile` placement, explicit and non-negotiable:** the type
+- [x] **`ProviderProfile` placement, explicit and non-negotiable:** the type
       lives in `packages/llm/src/port.ts`, exported from `@hermes/llm`. It is
       the port's own input shape (`{ baseUrl, apiKey, model }`), not a
       provider-neutral domain type — so it does **not** belong in
@@ -244,14 +244,22 @@ builds on.
       both `@hermes/config`'s `Env` type and `@hermes/llm`'s `ProviderProfile`
       type. `config` and `llm` remain mutually independent: neither ever
       imports the other
-- [ ] `LlmProvider` port + `CompletionRequest`/`CompletionResult` types exactly
+- [x] `LlmProvider` port + `CompletionRequest`/`CompletionResult` types exactly
       matching ROADMAP §5's prescribed signature: `complete({ model, system,
       messages, tools, maxTokens })` → `{ text, toolCalls, usage,
       finishReason }`
-- [ ] OpenAI-compatible adapter over `fetch`: request body assembles
-      `tools` → `system` → `messages` in that literal key order (invariant
-      #6 — this phase establishes the ordering; Phase 3 is where it gets
-      proven against real cache-hit numbers, not here). Retries mirror
+- [x] OpenAI-compatible adapter over `fetch`: request body assembles
+      `tools` → system message → per-turn `messages` in that stable prefix
+      order (invariant #6 — this phase establishes the ordering; Phase 3 is
+      where it gets proven against real cache-hit numbers, not here).
+      **Corrected during Phase 1 execution:** the system prompt is
+      `messages[0]` with `role: "system"`, **not** a top-level `system` body
+      key. OpenAI-compatible chat-completions APIs (DeepSeek included) have no
+      top-level `system` field and silently ignore unknown top-level keys, so
+      the original wording produced an adapter that sent no system prompt at
+      all. The port's `CompletionRequest` still takes `system` as its own
+      field — the flattening into `messages[0]` happens inside the adapter,
+      where wire format belongs. Retries mirror
       `channels/src/telegram/client.ts`'s `callWithRetry` shape: separate
       bounded attempt counts for 429 vs 5xx/network, `Retry-After` header wins
       when present (via the shared `nextDelay`), request timeout via
@@ -265,7 +273,7 @@ builds on.
       `LlmMalformedResponseError` instead, so a missing usage block fails
       loudly at the adapter boundary rather than corrupting Phase 3's
       accounting or Phase 4's budget math downstream
-- [ ] **Max-tokens-per-turn guard (invariant #9):** the completion handler
+- [x] **Max-tokens-per-turn guard (invariant #9):** the completion handler
       passes `maxTokens: MAX_TOKENS_PER_TURN` (`packages/llm/src/max-tokens.ts`,
       a named constant, not a magic number) on every request; the adapter
       serializes it as the outgoing body's `max_tokens` field. This bounds a
@@ -274,23 +282,23 @@ builds on.
       and a monthly spend ceiling" together, and 2a's single-shot handler has
       no iteration loop to bound (that's 2c), but it still owes the
       max-tokens-per-turn half of the invariant now, not deferred
-- [ ] Provider-profile config: `superRefine` for the fallback all-or-none rule
+- [x] Provider-profile config: `superRefine` for the fallback all-or-none rule
       in `packages/config/src/schema.ts`, following the existing
       `TELEGRAM_ALLOWLIST` custom-refinement precedent exactly. Primary's
       three keys are plain required fields — no refine needed there
-- [ ] `build-provider-profiles.ts`: pure function, unit-testable without
+- [x] `build-provider-profiles.ts`: pure function, unit-testable without
       booting anything real
-- [ ] Completion handler: **no tool loop, no approval gate, no persistence
+- [x] Completion handler: **no tool loop, no approval gate, no persistence
       yet** — literally one `complete()` call per Telegram message. This is
       the explicit line between 2a's proof of life and 2c's bounded agentic
       loop; do not add iteration, retries-with-validation-feedback, or a
       system prompt beyond a fixed placeholder string here
-- [ ] Register the three touchpoints the codebase-surface research flags:
+- [x] Register the three touchpoints the codebase-surface research flags:
       `tsconfig.base.json` paths, `Dockerfile` package-manifest COPY,
       `docker-compose.yml` env passthrough — miss any one and either
       typecheck fails on a clean clone or the container never sees a key it
       needs
-- [ ] `packages/llm/README.md`: document the port contract, the adapter's
+- [x] `packages/llm/README.md`: document the port contract, the adapter's
       retry/timeout behavior, and that `tools` is wire-complete but unused
       until 2c
 
@@ -307,8 +315,8 @@ builds on.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green (catches a missing `tsconfig.base.json` path entry)
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green (catches a missing `tsconfig.base.json` path entry)
 - [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
 - [ ] With `LLM_PRIMARY_*` pointed at Gemini free tier: message the bot →
       reply is a real, non-echoed LLM completion
@@ -328,12 +336,12 @@ builds on.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: llm port, OpenAI-compatible adapter, single-shot completion handler`
+- [x] Changes committed: `feat: llm port, OpenAI-compatible adapter, single-shot completion handler`
 - [ ] Phase marked complete
 
 ---
