@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-26
 **Branch:** `feat/01-llm-port`
-**Status:** not started
+**Status:** Phase 1 complete — Phase 2 next
 
 ## Context
 
@@ -354,22 +354,22 @@ builds on.
       an error path
 - [x] `docker compose logs hermes | grep -i <api-key-prefix>` → no match,
       including in a forced network-error scenario
-- [ ] Send a message from a `channelUserId` **not** on `TELEGRAM_ALLOWLIST` →
+- [x] Send a message from a `channelUserId` **not** on `TELEGRAM_ALLOWLIST` →
       no reply, no provider call, `docker compose logs hermes` shows the
       existing "rejected: unknown user" warn line, not an LLM error path
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: llm port, OpenAI-compatible adapter, single-shot completion handler`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
