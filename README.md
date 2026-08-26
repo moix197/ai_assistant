@@ -11,6 +11,21 @@ and `plans/00-skeleton.md` for the current build plan.
   port).
 - `packages/config` — env schema validation and redaction.
 - `packages/store` — Postgres pool + migration runner.
+- `packages/channels` — chat channel adapters (Telegram, long-polled).
+
+## Setup
+
+1. Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` — get one
+   from [@BotFather](https://t.me/BotFather).
+2. Leave `TELEGRAM_ALLOWLIST` empty on first boot (an empty allowlist rejects
+   everyone, so nothing can act on the bot yet).
+3. Start the full stack: `docker compose up -d`, then message the bot.
+4. It replies with `"rejected: unknown user"` and logs a warn line with your
+   numeric Telegram id in the `channelUserId` field —
+   `docker compose logs hermes` to find it.
+5. Set `TELEGRAM_ALLOWLIST` in `.env` to that id, then run
+   `docker compose up -d hermes` to pick up the change — **not**
+   `docker compose restart`, which does not re-read `.env`.
 
 ## Local development
 

@@ -11,6 +11,7 @@ COPY apps/hermes/package.json apps/hermes/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/config/package.json packages/config/package.json
 COPY packages/store/package.json packages/store/package.json
+COPY packages/channels/package.json packages/channels/package.json
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm -r build

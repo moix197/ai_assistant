@@ -94,10 +94,11 @@ that were never actually stuck, causing reconnect storms.
   `InboundMessage` is ever constructed — logged at debug, since it's
   expected background noise, not actionable.
 - **Non-private chat**: Hermes is a single-user assistant (no multi-user
-  support). `apps/hermes/src/handlers/echo.ts` rejects any message whose
-  `chatType !== "private"`, logged at warn, **even from an allowlisted
-  sender** — replying into a group broadcasts the reply to everyone in it,
-  which is never the intent for a personal assistant bot.
+  support). `withPrivateChat` (`apps/hermes/src/handlers/with-private-chat.ts`),
+  composed once around the command dispatcher in `boot.ts`, rejects any
+  message whose `chatType !== "private"`, logged at warn, **even from an
+  allowlisted sender** — replying into a group broadcasts the reply to
+  everyone in it, which is never the intent for a personal assistant bot.
 - **Unknown sender**: `withAllowlist` (`apps/hermes/src/handlers/with-allowlist.ts`),
   composed once around the command dispatcher in `boot.ts`, rejects any
   sender not in the allowlist before any handler (`echo`, `/ping`, `/start`)

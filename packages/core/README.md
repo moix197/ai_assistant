@@ -13,5 +13,6 @@ Shared types with no dependency on any other Hermes package.
   dropped.
 - `TelemetryRecorder` — a **port only**, no implementation. Nothing in this
   PRD calls it; it exists so packages depend on `core`'s port rather than a
-  concrete telemetry package, per ROADMAP §3. An implementation lands in
-  Phase 2.
+  concrete telemetry package, per ROADMAP §3. An implementation lands later,
+  in a dedicated `packages/telemetry` (see `plans/ROADMAP.md`), once that
+  package is built.

@@ -1,6 +1,6 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerShutdown, shutdown } from "../boot";
+import { exitAfterFatalPollerError, registerShutdown, shutdown } from "../boot";
 
 function createMockLogger(): Logger {
   return {
@@ -66,6 +66,26 @@ describe("shutdown", () => {
     await shutdown({ channel, lock, pool, logger, drainTimeoutMs: 20 });
 
     expect(callOrder).toEqual(["lock.release", "pool.end"]);
+  });
+});
+
+describe("exitAfterFatalPollerError", () => {
+  it("sets exitCode and closes the pool instead of calling process.exit()", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const originalExitCode = process.exitCode;
+    const pool = { end: vi.fn().mockResolvedValue(undefined) };
+    const logger = createMockLogger();
+
+    await exitAfterFatalPollerError(pool, logger, new Error("409 conflict"));
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(pool.end).toHaveBeenCalledOnce();
+    expect(logger.error).toHaveBeenCalledWith("fatal telegram poller error, exiting", {
+      error: "409 conflict",
+    });
+
+    process.exitCode = originalExitCode;
   });
 });
 

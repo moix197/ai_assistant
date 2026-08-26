@@ -52,13 +52,13 @@ poller and exits `1` with a readable message
 the lock is already held, instead of Telegram's ambiguous 409.
 
 `acquireInstanceLock` returns `{ acquired, release }`. `release()` explicitly
-calls `pg_advisory_unlock` then closes the dedicated client; Phase 4 wires it
-into an ordered shutdown sequence. Until then, any process exit still frees
-the lock implicitly — Postgres releases session-level locks when their
-connection closes, crash or not.
+calls `pg_advisory_unlock` then closes the dedicated client; `apps/hermes/src/boot.ts`'s
+ordered shutdown sequence calls it as one step. Any process exit still frees
+the lock implicitly regardless — Postgres releases session-level locks when
+their connection closes, crash or not.
 
-At this phase, `src/migrations/` holds `001_telegram_offset.sql` — the first
-real migration.
+`src/migrations/` holds `001_telegram_offset.sql` — the first real
+migration.
 
 ## Testing
 

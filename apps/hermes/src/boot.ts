@@ -61,6 +61,23 @@ function loadConfigOrExit(): Env {
   }
 }
 
+/**
+ * Same async-stdout-flush hazard as the instance-lock branch in `boot()`:
+ * `process.exit()` can truncate this log line before Docker's piped stdout
+ * finishes writing it. Setting `exitCode` and closing the pool lets the
+ * event loop drain naturally so the process still exits non-zero without
+ * racing the log.
+ */
+export async function exitAfterFatalPollerError(
+  pool: { end(): Promise<void> },
+  logger: Logger,
+  error: Error,
+): Promise<void> {
+  logger.error("fatal telegram poller error, exiting", { error: error.message });
+  process.exitCode = 1;
+  await pool.end();
+}
+
 function withTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
   return Promise.race([promise, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
 }
@@ -183,12 +200,13 @@ export async function boot(): Promise<void> {
       getOffset: () => getOffset(pool),
       setOffset: (updateId: number) => setOffset(pool, updateId),
     },
-    // Same rationale as the health server's onError: a fatal poller error
-    // (e.g. a persistent 409 conflict) must surface loudly and exit
-    // non-zero, not disappear into a silently-looping retry.
+    // A fatal poller error (e.g. a persistent 409 conflict) must surface
+    // loudly and exit non-zero, not disappear into a silently-looping
+    // retry. Fire-and-forget: `onFatalError` is a sync callback, and
+    // `exitAfterFatalPollerError` itself has nothing left for a caller to
+    // await.
     onFatalError: (error) => {
-      logger.error("fatal telegram poller error, exiting", { error: error.message });
-      process.exit(1);
+      void exitAfterFatalPollerError(pool, logger, error);
     },
   });
 
