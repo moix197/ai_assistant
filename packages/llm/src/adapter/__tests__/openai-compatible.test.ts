@@ -85,6 +85,152 @@ describe("createOpenAiCompatibleAdapter — request shape", () => {
   });
 });
 
+/**
+ * The wire format that shipped broken in Phase 1: tool definitions were POSTed
+ * as the port's bare `{name, description, parameters}`, and both live providers
+ * rejected every call with HTTP 400 — DeepSeek "tools[0]: missing field
+ * `type`", Gemini "Unknown name \"name\" at 'tools[0]'". These assertions pin
+ * the envelope literally so it cannot regress unnoticed again.
+ */
+describe("createOpenAiCompatibleAdapter — tool wire format", () => {
+  const TOOLS = [
+    {
+      name: "convert_currency",
+      description: "Convert money between currencies.",
+      parameters: {
+        type: "object",
+        properties: { amount: { type: "number" }, to: { type: "string" } },
+        required: ["amount", "to"],
+      },
+    },
+    {
+      name: "echo",
+      description: "Repeat text back.",
+      parameters: { type: "object", properties: {} },
+    },
+  ];
+
+  async function postedBody(tools: typeof TOOLS | undefined) {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+
+    await adapter.complete({ ...baseRequest(), tools });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(init.body as string);
+  }
+
+  it("wraps every tool in the OpenAI {type:'function', function:{...}} envelope", async () => {
+    const parsed = await postedBody(TOOLS);
+
+    expect(parsed.tools[0]).toEqual({
+      type: "function",
+      function: {
+        name: "convert_currency",
+        description: "Convert money between currencies.",
+        parameters: {
+          type: "object",
+          properties: { amount: { type: "number" }, to: { type: "string" } },
+          required: ["amount", "to"],
+        },
+      },
+    });
+    expect(parsed.tools).toEqual(
+      TOOLS.map((tool) => ({
+        type: "function",
+        function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+      })),
+    );
+  });
+
+  it("nests name/description/parameters under `function`, never at the tool's top level", async () => {
+    const parsed = await postedBody(TOOLS);
+
+    for (const tool of parsed.tools) {
+      expect(Object.keys(tool)).toEqual(["type", "function"]);
+      expect(tool.type).toBe("function");
+      expect(Object.keys(tool.function)).toEqual(["name", "description", "parameters"]);
+    }
+  });
+
+  it("omits `tools` entirely when the request declares none", async () => {
+    const parsed = await postedBody(undefined);
+
+    expect(Object.keys(parsed)).not.toContain("tools");
+  });
+});
+
+/**
+ * The response half of the same never-exercised tool path. An OpenAI-compatible
+ * provider answers a tool call with `content: null` — the tool call *is* the
+ * message — so a strict `typeof content === "string"` check would turn every
+ * successful tool call into an `LlmMalformedResponseError`.
+ */
+describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
+  function toolCallBody(args: string) {
+    return validCompletionBody({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "convert_currency", arguments: args },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    });
+  }
+
+  it("parses tool_calls[].function name and arguments into the port's ToolCall shape", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(toolCallBody('{"amount":250,"from":"USD","to":"JPY"}')));
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+
+    const result = await adapter.complete(baseRequest());
+
+    expect(result.toolCalls).toEqual([
+      {
+        id: "call_1",
+        name: "convert_currency",
+        arguments: { amount: 250, from: "USD", to: "JPY" },
+      },
+    ]);
+    expect(result.finishReason).toBe("tool_calls");
+  });
+
+  it("returns empty text rather than throwing when a tool call comes back with content: null", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(toolCallBody("{}")));
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+
+    const result = await adapter.complete(baseRequest());
+
+    expect(result.text).toBe("");
+    expect(result.toolCalls).toHaveLength(1);
+  });
+
+  it("still throws LlmMalformedResponseError when neither content nor a tool call is present", async () => {
+    // The truncation signal the §8 scoring module relies on: HTTP 200,
+    // `finish_reason: "length"`, nothing usable in the message.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        validCompletionBody({
+          choices: [{ message: { content: null }, finish_reason: "length" }],
+        }),
+      ),
+    );
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+
+    await expect(adapter.complete(baseRequest())).rejects.toBeInstanceOf(LlmMalformedResponseError);
+  });
+});
+
 describe("createOpenAiCompatibleAdapter — success path", () => {
   it("parses text, usage, and finishReason", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));

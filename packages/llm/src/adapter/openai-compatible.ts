@@ -6,6 +6,7 @@ import type {
   FinishReason,
   LlmProvider,
   ProviderProfile,
+  ToolDefinition,
 } from "../port";
 
 const REDACTED_KEY = "<REDACTED>";
@@ -51,6 +52,26 @@ function parseRetryAfterSeconds(headerValue: string | null): number | undefined 
 }
 
 /**
+ * Serializes one port-level `ToolDefinition` into the OpenAI-compatible wire
+ * envelope. The port's shape is deliberately provider-neutral
+ * (`{name, description, parameters}`); wrapping it in
+ * `{type: "function", function: {...}}` is this adapter's job and nobody
+ * else's. Posting the bare shape is rejected outright — DeepSeek answers
+ * HTTP 400 "tools[0]: missing field `type`", Gemini's OpenAI-compatible
+ * endpoint "Unknown name \"name\" at 'tools[0]'".
+ */
+function toWireTool(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  };
+}
+
+/**
  * Assembles the outgoing body with `tools` -> `messages` in that literal key
  * order (invariant #6: stable/shared prefix before variable per-request
  * content, for provider prompt-caching). OpenAI-compatible chat-completions
@@ -63,7 +84,7 @@ function parseRetryAfterSeconds(headerValue: string | null): number | undefined 
 function buildRequestBody(request: CompletionRequest): Record<string, unknown> {
   const body: Record<string, unknown> = { model: request.model };
   if (request.tools !== undefined) {
-    body.tools = request.tools;
+    body.tools = request.tools.map(toWireTool);
   }
   body.messages = [{ role: "system", content: request.system }, ...request.messages];
   body.max_tokens = request.maxTokens;
@@ -93,18 +114,28 @@ function normalizeFinishReason(raw: string | undefined): FinishReason {
 }
 
 /**
- * Parses an HTTP-200 body into a `CompletionResult`. Missing `text` or a
- * missing/partial `usage` block both throw `LlmMalformedResponseError`
- * rather than defaulting — a defaulted zero `usage` would silently record
- * zero cost for a real, billed call.
+ * Parses an HTTP-200 body into a `CompletionResult`. A body carrying neither
+ * text nor a tool call, or a missing/partial `usage` block, throws
+ * `LlmMalformedResponseError` rather than defaulting — a defaulted zero
+ * `usage` would silently record zero cost for a real, billed call.
  */
 function parseCompletionResponse(raw: unknown): CompletionResult {
   const payload = raw as OpenAiChatCompletionResponse;
   const choice = payload.choices?.[0];
-  const text = choice?.message?.content;
-  if (typeof text !== "string") {
+
+  const toolCalls = (choice?.message?.tool_calls ?? []).map((call) => ({
+    id: call.id,
+    name: call.function.name,
+    arguments: parseToolCallArguments(call.function.arguments),
+  }));
+
+  // OpenAI-compatible providers answer a tool call with `content: null` — the
+  // tool call *is* the message. Only a reply carrying neither is malformed.
+  const content = choice?.message?.content;
+  if (typeof content !== "string" && toolCalls.length === 0) {
     throw new LlmMalformedResponseError("LLM response is missing choices[0].message.content");
   }
+  const text = typeof content === "string" ? content : "";
 
   const usage = payload.usage;
   if (
@@ -115,12 +146,6 @@ function parseCompletionResponse(raw: unknown): CompletionResult {
   ) {
     throw new LlmMalformedResponseError("LLM response is missing a well-formed usage block");
   }
-
-  const toolCalls = (choice?.message?.tool_calls ?? []).map((call) => ({
-    id: call.id,
-    name: call.function.name,
-    arguments: parseToolCallArguments(call.function.arguments),
-  }));
 
   return {
     text,
