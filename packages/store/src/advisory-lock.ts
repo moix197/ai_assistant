@@ -33,11 +33,17 @@ export async function acquireInstanceLock(
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
 
-  const result = await client.query<{ locked: boolean }>(
-    "SELECT pg_try_advisory_lock($1) AS locked",
-    [lockKey],
-  );
-  const acquired = result.rows[0]?.locked ?? false;
+  let acquired: boolean;
+  try {
+    const result = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock($1) AS locked",
+      [lockKey],
+    );
+    acquired = result.rows[0]?.locked ?? false;
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
 
   return {
     acquired,

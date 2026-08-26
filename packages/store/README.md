@@ -66,9 +66,13 @@ real migration.
 unit test (always runs). The integration suite in the same file — tracking
 table auto-creation, apply-once, no-op re-run, and abort-without-recording on
 a failing migration — is gated on `TEST_DATABASE_URL` and is **skipped**
-unless that env var is set. To run it locally: point `TEST_DATABASE_URL` at
-the compose Postgres (e.g. `postgres://hermes:hermes@localhost:5432/hermes`)
-and run `pnpm --filter @hermes/store test`.
+unless that env var is set. To run it locally: point `TEST_DATABASE_URL` at a
+dedicated scratch Postgres database — never the app's shared compose DB,
+since these tests seed and mutate real tables (e.g.
+`postgres://hermes:hermes@127.0.0.1:5432/hermes_test`, using `127.0.0.1`
+rather than `localhost` to avoid it resolving to `::1` and yielding
+ECONNRESET against the dockerized Postgres) and run
+`pnpm --filter @hermes/store test`.
 
 `src/__tests__/telegram-offset-repo.test.ts` and
 `src/__tests__/advisory-lock.test.ts` are integration-only, gated the same

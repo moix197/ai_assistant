@@ -1,7 +1,7 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramClient, TelegramUpdate } from "../client";
-import { createTelegramPoller, type TelegramOffsetRepo } from "../poller";
+import { type TelegramOffsetRepo, createTelegramPoller } from "../poller";
 
 function createMockLogger(): Logger {
   return {
@@ -59,9 +59,7 @@ describe("createTelegramPoller — offset ordering", () => {
     });
     const handler = vi.fn().mockReturnValue(handlerPromise);
 
-    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
-      handler,
-    );
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
 
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
     expect(handler).toHaveBeenCalledWith(
@@ -92,9 +90,7 @@ describe("createTelegramPoller — handler failure", () => {
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("transient send failure"));
 
-    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
-      handler,
-    );
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
 
     // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
     // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
@@ -122,9 +118,7 @@ describe("createTelegramPoller — handler failure", () => {
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValueOnce(new Error("boom"));
 
-    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
-      handler,
-    );
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
 
     // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
     // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.

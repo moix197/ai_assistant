@@ -1,7 +1,7 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramClient, TelegramUpdate } from "../client";
-import { createTelegramPoller, type TelegramOffsetRepo } from "../poller";
+import { type TelegramOffsetRepo, createTelegramPoller } from "../poller";
 
 function createMockLogger(): Logger {
   return {
@@ -58,9 +58,11 @@ describe("createTelegramPoller — crash-before-persist replay", () => {
       setOffset: vi.fn().mockRejectedValueOnce(new Error("simulated crash before persistence")),
     };
 
-    createTelegramPoller({ client: client1, logger: createMockLogger(), offsetRepo: offsetRepo1 }).subscribe(
-      handler1,
-    );
+    createTelegramPoller({
+      client: client1,
+      logger: createMockLogger(),
+      offsetRepo: offsetRepo1,
+    }).subscribe(handler1);
 
     await vi.waitFor(() => expect(handler1).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(offsetRepo1.setOffset).toHaveBeenCalledTimes(1));
@@ -85,9 +87,11 @@ describe("createTelegramPoller — crash-before-persist replay", () => {
       }),
     };
 
-    createTelegramPoller({ client: client2, logger: createMockLogger(), offsetRepo: offsetRepo2 }).subscribe(
-      handler2,
-    );
+    createTelegramPoller({
+      client: client2,
+      logger: createMockLogger(),
+      offsetRepo: offsetRepo2,
+    }).subscribe(handler2);
 
     // The un-acked update is genuinely redelivered and re-handled, not just
     // asserted in prose: instance 2's first getUpdates call resumes from

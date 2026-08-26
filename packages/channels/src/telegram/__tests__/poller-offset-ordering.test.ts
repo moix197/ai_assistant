@@ -1,7 +1,7 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramClient, TelegramUpdate } from "../client";
-import { createTelegramPoller, type TelegramOffsetRepo } from "../poller";
+import { type TelegramOffsetRepo, createTelegramPoller } from "../poller";
 
 function createMockLogger(): Logger {
   return {

@@ -2,11 +2,11 @@ import { createTelegramClient, createTelegramPoller, parseAllowlist } from "@her
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { createLogger } from "@hermes/core";
 import {
+  INSTANCE_LOCK_KEY,
   acquireInstanceLock,
   createPool,
   getDefaultMigrationsDir,
   getOffset,
-  INSTANCE_LOCK_KEY,
   runMigrations,
   setOffset,
   waitForDatabase,
@@ -36,14 +36,6 @@ export async function boot(): Promise<void> {
   await waitForDatabase(pool);
   await runMigrations(pool, getDefaultMigrationsDir());
 
-  startHealthServer(pool, config.PORT, {
-    onListening: () => logger.info("health server listening", { port: config.PORT }),
-    onError: (error) => {
-      logger.error("health server error", { error: error.message });
-      process.exit(1);
-    },
-  });
-
   const telegramClient = createTelegramClient({ token: config.TELEGRAM_BOT_TOKEN });
 
   // Unconditional and idempotent: getUpdates long-polling and a webhook are
@@ -58,9 +50,26 @@ export async function boot(): Promise<void> {
   const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, config.DATABASE_URL);
   if (!instanceLock.acquired) {
     await instanceLock.release();
+    // No process.exit() here: stdout writes (e.g. Docker's piped stdout) are
+    // async, and exiting immediately can drop this log line before it
+    // flushes. Setting exitCode and closing the pool lets the event loop
+    // drain naturally once the write completes, so the process still exits
+    // non-zero without racing the log.
     logger.error("another Hermes instance is already running against this database");
-    process.exit(1);
+    process.exitCode = 1;
+    await pool.end();
+    return;
   }
+
+  // Started only after the lock is held: starting it earlier would let a
+  // losing second instance briefly report healthy before it exits.
+  startHealthServer(pool, config.PORT, {
+    onListening: () => logger.info("health server listening", { port: config.PORT }),
+    onError: (error) => {
+      logger.error("health server error", { error: error.message });
+      process.exit(1);
+    },
+  });
 
   const telegramChannel = createTelegramPoller({
     client: telegramClient,

@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getDefaultMigrationsDir, runMigrations } from "../migrate";
 import { getOffset, setOffset } from "../telegram-offset-repo";
 
 // Integration coverage — skipped unless TEST_DATABASE_URL is set. See
@@ -11,19 +12,15 @@ describe.skipIf(!testDatabaseUrl)("telegram-offset-repo (integration)", () => {
 
   beforeEach(async () => {
     pool = new Pool({ connectionString: testDatabaseUrl });
-    await pool.query("DROP TABLE IF EXISTS telegram_offset");
-    await pool.query(`
-      CREATE TABLE telegram_offset (
-        id smallint PRIMARY KEY DEFAULT 1,
-        update_id bigint NOT NULL DEFAULT 0,
-        CHECK (id = 1)
-      )
-    `);
-    await pool.query("INSERT INTO telegram_offset (id, update_id) VALUES (1, 0)");
+    // Seeds via the real migration instead of inline DDL, and never drops the
+    // table: this suite runs against a real Postgres, and the migration-owned
+    // `telegram_offset` table must survive test runs. Idempotent — a no-op
+    // once the migration is already applied.
+    await runMigrations(pool, getDefaultMigrationsDir());
+    await pool.query("UPDATE telegram_offset SET update_id = 0 WHERE id = 1");
   });
 
   afterEach(async () => {
-    await pool.query("DROP TABLE IF EXISTS telegram_offset").catch(() => {});
     await pool.end();
   });
 

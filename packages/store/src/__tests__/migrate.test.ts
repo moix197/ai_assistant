@@ -29,41 +29,55 @@ const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 describe.skipIf(!testDatabaseUrl)("runMigrations (integration)", () => {
   let pool: Pool;
   let migrationsDir: string;
-  const tableName = `test_items_${randomUUID().replace(/-/g, "")}`;
+  let tableName: string;
+  let migrationId: string;
 
   beforeEach(async () => {
     pool = new Pool({ connectionString: testDatabaseUrl });
     migrationsDir = await mkdtemp(path.join(tmpdir(), "hermes-migrations-"));
-    await pool.query("DROP TABLE IF EXISTS schema_migrations");
+    // Randomized per test: schema_migrations is the real, shared
+    // migration-tracking table (the app's own migrations use it too), so
+    // this suite must never drop it — a fresh id each run avoids colliding
+    // with rows other tests or the real app migrations left behind.
+    const suffix = randomUUID().replace(/-/g, "");
+    tableName = `test_items_${suffix}`;
+    migrationId = `001_create_table_${suffix}.sql`;
   });
 
   afterEach(async () => {
     await pool.query(`DROP TABLE IF EXISTS ${tableName}`).catch(() => {});
-    await pool.query("DROP TABLE IF EXISTS schema_migrations").catch(() => {});
+    await pool.query("DELETE FROM schema_migrations WHERE id = $1", [migrationId]).catch(() => {});
     await pool.end();
     await rm(migrationsDir, { recursive: true, force: true });
   });
 
   it("creates the tracking table, applies migrations once, and no-ops on re-run", async () => {
     await writeFile(
-      path.join(migrationsDir, "001_create_table.sql"),
+      path.join(migrationsDir, migrationId),
       `CREATE TABLE ${tableName} (id serial PRIMARY KEY)`,
     );
 
     await runMigrations(pool, migrationsDir);
-    const firstRun = await pool.query("SELECT id FROM schema_migrations");
+    const firstRun = await pool.query("SELECT id FROM schema_migrations WHERE id = $1", [
+      migrationId,
+    ]);
     expect(firstRun.rows).toHaveLength(1);
 
     await runMigrations(pool, migrationsDir);
-    const secondRun = await pool.query("SELECT id FROM schema_migrations");
+    const secondRun = await pool.query("SELECT id FROM schema_migrations WHERE id = $1", [
+      migrationId,
+    ]);
     expect(secondRun.rows).toHaveLength(1);
   });
 
   it("aborts on a failing migration and does not record it as applied", async () => {
-    await writeFile(path.join(migrationsDir, "001_bad.sql"), "NOT VALID SQL;");
+    const badMigrationId = `001_bad_${randomUUID().replace(/-/g, "")}.sql`;
+    await writeFile(path.join(migrationsDir, badMigrationId), "NOT VALID SQL;");
 
     await expect(runMigrations(pool, migrationsDir)).rejects.toThrow();
-    const applied = await pool.query("SELECT id FROM schema_migrations");
+    const applied = await pool.query("SELECT id FROM schema_migrations WHERE id = $1", [
+      badMigrationId,
+    ]);
     expect(applied.rows).toHaveLength(0);
   });
 });
