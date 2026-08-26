@@ -29,11 +29,12 @@ package's job stops at "reliably move messages in and out of Telegram."
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
   `allowed_updates=["message","edited_message"]`) plus
   `normalizeTelegramUpdate`, which converts a raw update into an
-  `InboundMessage` or returns `null` when it can't (see guards below).
-  Offset tracking is in-memory only in this phase — persistence, the
-  single-instance advisory lock, and structured backoff on failure all land
-  in Phase 3/4. A transient `getUpdates` failure is logged and retried after
-  a fixed short delay.
+  `InboundMessage` or returns `null` when it can't (see guards below). The
+  offset is loaded once at start via a `TelegramOffsetRepo` port (injected —
+  `boot.ts` wires it to `@hermes/store`'s `getOffset`/`setOffset`, keeping
+  this package decoupled from Postgres) and persisted after each update is
+  fully handled. Structured backoff on failure is Phase 4; a transient
+  `getUpdates` failure is logged and retried after a fixed short delay.
 - `telegram/allowlist.ts` — `parseAllowlist(csv): Set<number>` and
   `isAllowed(id, set)`, both pure. An empty allowlist rejects everyone
   (fail closed).
@@ -67,6 +68,40 @@ that were never actually stuck, causing reconnect storms.
   `chatType !== "private"`, logged at warn, **even from an allowlisted
   sender** — replying into a group broadcasts the reply to everyone in it,
   which is never the intent for a personal assistant bot.
+
+### Offset persistence and the idempotency contract
+
+The poller persists `update_id + 1` **after** each individual update is
+fully handled — never before, and never batched across a whole `getUpdates`
+response. This ordering is load-bearing: Telegram permanently deletes an
+update once its `update_id` has been acked via `offset` on a later
+`getUpdates` call, so persisting earlier risks losing that update forever if
+the process crashes mid-handling. Persisting later (or per-batch instead of
+per-update) means an *already-handled* update can also be replayed, which is
+harmless here but would not be for a handler with an external side effect.
+
+This creates an explicit contract: **a crash between "handler completed" and
+"offset persisted" replays exactly the one in-flight update on restart.**
+`poller-crash-replay.test.ts` simulates this concretely — persistence fails
+once, a fresh poller instance is built against the same (unchanged)
+persisted offset, and the same update is shown to be re-delivered and
+re-handled.
+
+The echo handler is safe under this replay by inspection: send-and-reply has
+no side effect beyond a second, user-visible duplicate message, so there is
+no dedupe key here. **Any future handler with an external side effect**
+(e.g. a later `log_trade`-style handler) **must add its own idempotency key**
+per the project's at-least-once-delivery invariant — this phase solves
+replay-safety only for echo, not generally.
+
+### Single-instance constraint
+
+Telegram allows exactly one `getUpdates` consumer per bot token. Hermes
+enforces this with a Postgres advisory lock acquired in `boot.ts` before the
+poller starts (see `packages/store/README.md`'s Single-instance advisory
+lock section) — a second instance against the same database fails fast at
+boot with a readable error instead of a `getUpdates` 409 surfacing later
+mid-poll.
 
 ### Deliberately deferred to Phase 4
 

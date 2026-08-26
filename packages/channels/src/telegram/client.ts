@@ -18,6 +18,7 @@ const REDACTED_TOKEN = "<REDACTED>";
 /** Client-side timeout margin added on top of the poll `timeout`. See getUpdates(). */
 const TIMEOUT_MARGIN_MS = 10_000;
 const SEND_MESSAGE_TIMEOUT_MS = 10_000;
+const DELETE_WEBHOOK_TIMEOUT_MS = 10_000;
 
 export interface TelegramUser {
   id: number;
@@ -53,6 +54,13 @@ export interface GetUpdatesParams {
 export interface TelegramClient {
   getUpdates(params: GetUpdatesParams): Promise<TelegramUpdate[]>;
   sendMessage(chatId: string | number, text: string): Promise<void>;
+  /**
+   * Deletes any webhook registered for this bot token. `getUpdates`
+   * long-polling and a webhook are mutually exclusive on Telegram's side, so
+   * this is called unconditionally at every boot (see boot.ts) — cheap and
+   * idempotent even when no webhook was ever set.
+   */
+  deleteWebhook(): Promise<void>;
 }
 
 export interface TelegramClientOptions {
@@ -158,6 +166,16 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
         "sendMessage",
         { chat_id: chatId, text },
         SEND_MESSAGE_TIMEOUT_MS,
+      );
+    },
+
+    async deleteWebhook() {
+      await callTelegramMethod<boolean>(
+        fetchImpl,
+        token,
+        "deleteWebhook",
+        {},
+        DELETE_WEBHOOK_TIMEOUT_MS,
       );
     },
   };

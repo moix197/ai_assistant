@@ -61,19 +61,32 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Persistence port for the poller's offset — a small interface rather than a
+ * direct `@hermes/store` dependency, so this package stays decoupled from
+ * Postgres and the poller stays testable with a mock. `boot.ts` wires this to
+ * `@hermes/store`'s `getOffset(pool)`/`setOffset(pool, updateId)`.
+ */
+export interface TelegramOffsetRepo {
+  getOffset(): Promise<number>;
+  setOffset(updateId: number): Promise<void>;
+}
+
 export interface TelegramPollerOptions {
   client: TelegramClient;
   logger: Logger;
+  offsetRepo: TelegramOffsetRepo;
 }
 
 /**
- * Long-poll loop against `getUpdates`. In-memory offset only at this phase —
- * no persistence, no advisory lock, no structured backoff (Phase 3/4). On a
+ * Long-poll loop against `getUpdates`. The offset is loaded from
+ * `offsetRepo` once at start and persisted after each update is fully
+ * handled — no advisory lock or structured backoff yet (Phase 4). On a
  * transient fetch error this logs and retries after a fixed short delay
  * rather than re-throwing, since a crashed poller silently stops the bot.
  */
 export function createTelegramPoller(options: TelegramPollerOptions): Channel {
-  const { client, logger } = options;
+  const { client, logger, offsetRepo } = options;
   let handler: InboundMessageHandler | undefined;
   let offset: number | undefined;
 
@@ -82,7 +95,15 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
     if (message && handler) {
       await handler(message);
     }
-    offset = update.update_id + 1;
+    const nextOffset = update.update_id + 1;
+    // Persisted only *after* the handler has fully completed: Telegram
+    // permanently deletes an update once its id is acked via `offset`, so
+    // persisting before (or without) handling it risks losing that update
+    // forever if the process crashes in between. A crash between the
+    // handler resolving and this line replays exactly this one update on
+    // restart — see poller-crash-replay.test.ts and packages/channels/README.md.
+    await offsetRepo.setOffset(nextOffset);
+    offset = nextOffset;
   }
 
   async function pollOnce(): Promise<void> {
@@ -123,6 +144,7 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
 
   // Runs for the process lifetime; graceful stop/drain is Phase 4.
   async function loop(): Promise<void> {
+    offset = await offsetRepo.getOffset();
     while (true) {
       await pollOnce();
     }

@@ -1,7 +1,7 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramClient, TelegramUpdate } from "../client";
-import { createTelegramPoller } from "../poller";
+import { createTelegramPoller, type TelegramOffsetRepo } from "../poller";
 
 function createMockLogger(): Logger {
   return {
@@ -9,6 +9,13 @@ function createMockLogger(): Logger {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+  };
+}
+
+function createMockOffsetRepo(initialOffset = 0): TelegramOffsetRepo {
+  return {
+    getOffset: vi.fn().mockResolvedValue(initialOffset),
+    setOffset: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -44,7 +51,7 @@ describe("createTelegramPoller — offset ordering", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn() };
+    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
     const logger = createMockLogger();
     let resolveHandler: () => void = () => {};
     const handlerPromise = new Promise<void>((resolve) => {
@@ -52,7 +59,9 @@ describe("createTelegramPoller — offset ordering", () => {
     });
     const handler = vi.fn().mockReturnValue(handlerPromise);
 
-    createTelegramPoller({ client, logger }).subscribe(handler);
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
+      handler,
+    );
 
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
     expect(handler).toHaveBeenCalledWith(
@@ -79,11 +88,13 @@ describe("createTelegramPoller — handler failure", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn() };
+    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("transient send failure"));
 
-    createTelegramPoller({ client, logger }).subscribe(handler);
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
+      handler,
+    );
 
     // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
     // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
@@ -93,7 +104,7 @@ describe("createTelegramPoller — handler failure", () => {
     // Second poll re-requests from the same (unadvanced) offset — update 20
     // is redelivered by Telegram rather than silently skipped, and the loop
     // is still running (a second getUpdates call happened at all).
-    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: undefined }));
+    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
     expect(logger.warn).toHaveBeenCalledWith(
       "handler failed, will retry this update",
       expect.objectContaining({ updateId: 20 }),
@@ -107,11 +118,13 @@ describe("createTelegramPoller — handler failure", () => {
       .fn()
       .mockResolvedValueOnce([first, second])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn() };
+    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValueOnce(new Error("boom"));
 
-    createTelegramPoller({ client, logger }).subscribe(handler);
+    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(
+      handler,
+    );
 
     // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
     // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
@@ -120,6 +133,6 @@ describe("createTelegramPoller — handler failure", () => {
     // Update 31 was never attempted this batch — advancing past update 30
     // despite its failure would leapfrog the offset and lose it forever.
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: undefined }));
+    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
   });
 });

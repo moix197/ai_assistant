@@ -1,7 +1,16 @@
 import { createTelegramClient, createTelegramPoller, parseAllowlist } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { createLogger } from "@hermes/core";
-import { createPool, getDefaultMigrationsDir, runMigrations, waitForDatabase } from "@hermes/store";
+import {
+  acquireInstanceLock,
+  createPool,
+  getDefaultMigrationsDir,
+  getOffset,
+  INSTANCE_LOCK_KEY,
+  runMigrations,
+  setOffset,
+  waitForDatabase,
+} from "@hermes/store";
 import { createEchoHandler } from "./handlers/echo";
 import { startHealthServer } from "./health";
 
@@ -36,7 +45,31 @@ export async function boot(): Promise<void> {
   });
 
   const telegramClient = createTelegramClient({ token: config.TELEGRAM_BOT_TOKEN });
-  const telegramChannel = createTelegramPoller({ client: telegramClient, logger });
+
+  // Unconditional and idempotent: getUpdates long-polling and a webhook are
+  // mutually exclusive on Telegram's side, so a webhook left over from a
+  // previous deployment mode would otherwise silently starve the poller.
+  await telegramClient.deleteWebhook();
+
+  // Must happen before the poller starts, never after: Telegram allows one
+  // getUpdates consumer per bot token, so a second instance racing this one
+  // must fail fast here with a readable error instead of a mysterious 409
+  // surfacing later from inside the poll loop.
+  const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, config.DATABASE_URL);
+  if (!instanceLock.acquired) {
+    await instanceLock.release();
+    logger.error("another Hermes instance is already running against this database");
+    process.exit(1);
+  }
+
+  const telegramChannel = createTelegramPoller({
+    client: telegramClient,
+    logger,
+    offsetRepo: {
+      getOffset: () => getOffset(pool),
+      setOffset: (updateId: number) => setOffset(pool, updateId),
+    },
+  });
   const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
   telegramChannel.subscribe(createEchoHandler(telegramChannel, allowlist, logger));
 }

@@ -20,5 +20,6 @@ export {
 export {
   createTelegramPoller,
   normalizeTelegramUpdate,
+  type TelegramOffsetRepo,
   type TelegramPollerOptions,
 } from "./telegram/poller";
