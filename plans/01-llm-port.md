@@ -125,6 +125,33 @@ silent-until-the-invoice-arrives failure mode, not a crash.
   price constant is a versioned snapshot with an "as of" date, per ROADMAP
   §2.1's "verify at signup — these move constantly" caveat. Keeping it current
   is an operational task, not something this PRD automates.
+- **Reasoning models return zero-content 200s, and the adapter currently calls
+  that malformed.** *(Discovered live during Phase 1 verification, against
+  `gemini-3.6-flash`.)* A budget-truncated reasoning model answers HTTP 200
+  with `finish_reason: "length"`, `completion_tokens: 0`, and **no `content`
+  field at all** — the model spent the whole output budget thinking and emitted
+  nothing. Phase 1's malformed-response rule treats a missing `text` as
+  `LlmMalformedResponseError`, which is right for a genuinely broken body but
+  wrong here: this is a legitimate truncation the caller should be able to
+  distinguish and handle. `MAX_TOKENS_PER_TURN = 1024` makes it unlikely but
+  not unreachable, and it gets *more* likely as 2c's agent loop adds tool
+  schemas and history to the prompt. Phase 2 exercises exactly this model, so
+  it may surface there first. **Deliberately not fixed in Phase 1** — the right
+  split (empty-but-valid completion vs. malformed body) depends on how 2c's
+  loop wants to react to a truncated turn, so it is recorded here rather than
+  guessed at now.
+- **Reasoning tokens break `prompt + completion = total`, and Phase 3's
+  accounting must not assume they add up.** *(Same live check.)*
+  `gemini-3.6-flash` reported `prompt_tokens: 10`, `completion_tokens: 0`,
+  `total_tokens: 27` — 17 tokens of invisible reasoning, billed but absent from
+  both visible counters. Any cost derivation that sums the two visible fields
+  **undercounts real spend**, silently, and Phase 4's monthly ceiling inherits
+  that error compounded over every call. This is the same silent-budget-hole
+  failure mode Phase 3's pricing step already warns about, arriving from a
+  direction the plan did not anticipate. Phase 3 must prefer the provider's own
+  `total_tokens` over a computed sum, and treat a `total` exceeding
+  `prompt + completion` as reasoning tokens to be priced — not as a
+  discrepancy to be discarded.
 
 ## Prerequisites (manual, before Phase 1)
 
@@ -395,6 +422,19 @@ only the orchestrator can supply.
       fixture's defensible tool, judged by a fixed expected-tool assertion,
       not a subjective read; (2) malformed-JSON rate — count of trials where
       the adapter's own JSON-Schema-shaped tool-call arguments failed to parse
+- [ ] **Expect zero-content 200s from the reasoning model, and do not score
+      them as malformed JSON.** Per the "reasoning models return zero-content
+      200s" risk above, `gemini-3.6-flash` can answer HTTP 200 with
+      `finish_reason: "length"`, `completion_tokens: 0`, and no `content` —
+      which Phase 1's adapter currently raises as
+      `LlmMalformedResponseError`. If a trial dies that way, it is a *budget
+      truncation*, not a tool-calling failure: count it in a **third, separate
+      column** (truncated-trial count) and re-run that trial with a larger
+      `maxTokens` rather than letting it inflate the malformed-JSON rate and
+      libel the provider in the D5 write-up. If truncated trials are common
+      enough to distort the comparison, say so explicitly in the decision doc —
+      "this model needs a bigger output budget to tool-call reliably" is itself
+      a D5-relevant finding
 - [ ] Record all 20 raw responses (10 per provider) as fixtures under
       `fixtures/recorded/`; the default `pnpm test` lane gets a **separate**,
       non-live test (in the normal `__tests__` tree, not `live/`) that replays
@@ -482,7 +522,7 @@ proof. Requires the live credentials from `## Prerequisites`.
 | create | `packages/store/src/migrations/002_llm_usage.sql` | `llm_usage(id bigserial pk, created_at timestamptz not null default now(), provider text not null, model text not null, input_tokens int not null, output_tokens int not null, cache_hit_tokens int not null, cost_usd numeric(12,6) not null)` |
 | create | `packages/store/src/llm-usage-repo.ts` | `recordUsage(pool, entry)`, `sumCostSince(pool, sinceUtc)` — plain exported functions taking `pool` first, matching the `telegram-offset-repo.ts` pattern exactly, no ORM, no class |
 | create | `packages/llm/src/usage/usage-repo-port.ts` | the injected port interface `LlmUsageRepo { recordUsage(entry): Promise<void> }` that `packages/llm` depends on — mirrors `TelegramOffsetRepo`'s shape in `channels`, so `llm` never imports `@hermes/store` |
-| create | `packages/llm/src/pricing.ts` | `MODEL_PRICING` versioned typed constant keyed by model id (`{ inputPerMillionUsd, outputPerMillionUsd, cacheHitDiscount }`), dated "as of 2026-08-26" per ROADMAP §2.1's directional table, covering `deepseek-v4-flash`, `gemini-flash-lite-3.5` at minimum; `resolveCostUsd(model, usage)` — unknown model logs a `warn` via an injected logger and returns `0`, never a silent miscount |
+| create | `packages/llm/src/pricing.ts` | `MODEL_PRICING` versioned typed constant keyed by model id (`{ inputPerMillionUsd, outputPerMillionUsd, cacheHitDiscount }`), dated "as of 2026-08-26" per ROADMAP §2.1's directional table, covering **`deepseek-chat` and `gemini-3.6-flash` at minimum** — these are the model ids actually configured in `.env` and verified live during Phase 1; the plan's original `deepseek-v4-flash` / `gemini-flash-lite-3.5` were speculative and `gemini-2.0-flash` was confirmed retired by the provider (HTTP 404, "no longer available") during that same check, so price what is really being called; `resolveCostUsd(model, usage)` — unknown model logs a `warn` via an injected logger and returns `0`, never a silent miscount |
 | modify | `packages/llm/src/adapter/openai-compatible.ts` | `createOpenAiCompatibleAdapter` now takes an injected `usageRepo: LlmUsageRepo` and `logger`; after every successful `complete()`, calls `resolveCostUsd` then `usageRepo.recordUsage(...)` before returning the result to the caller |
 | modify | `apps/hermes/src/boot.ts` | wire `llmUsageRepo = { recordUsage: (e) => recordUsage(pool, e) }` from `@hermes/store`, pass into `createOpenAiCompatibleAdapter` |
 | create | `packages/store/README.md` (extend) | document the `llm_usage` table shape and why cache-hit tokens are a separate column, not folded into `input_tokens` |
@@ -515,6 +555,18 @@ proof. Requires the live credentials from `## Prerequisites`.
       model ids actually configured in `LLM_PRIMARY_MODEL`/
       `LLM_FALLBACK_MODEL` as a blocking finding for this phase, not a
       follow-up
+- [ ] **Never derive total spend by summing the visible token counters.** Per
+      the "reasoning tokens break `prompt + completion = total`" risk above,
+      `gemini-3.6-flash` was observed live returning `prompt_tokens: 10`,
+      `completion_tokens: 0`, `total_tokens: 27` — 17 billed reasoning tokens
+      visible in *neither* counter. `resolveCostUsd` must therefore treat the
+      provider's own `total_tokens` as authoritative, and when
+      `total > prompt + completion`, price the remainder as reasoning/thinking
+      tokens rather than dropping it. Dropping it silently undercounts real
+      spend on every reasoning-model call and quietly widens Phase 4's ceiling
+      by the same margin. Add a unit test using these exact observed numbers
+      (10 / 0 / 27) so the case is pinned to a real provider response, not a
+      hypothetical
 - [ ] Wire usage recording into the adapter's success path only — a failed
       call (already thrown as a typed error before this point) records
       nothing, since no tokens were billed
