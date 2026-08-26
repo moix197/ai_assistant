@@ -514,17 +514,47 @@ abstraction):_
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–4 together
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] All tests pass (`pnpm -r test`, including gated integration tests against a real Postgres)
-- [ ] No CLAUDE.md invariants violated
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] All tests pass (`pnpm -r test`, including gated integration tests against a real Postgres)
+- [x] No CLAUDE.md invariants violated
 - [ ] Feature tested manually: golden path (echo, `/start`, `/ping`) + edge cases (unknown sender, crash-restart, dual-instance, SIGTERM drain, oversized outbound message)
 - [ ] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
 - [ ] All phase checkboxes above are ticked
+
+**Final-review findings and resolution (commits `f6dac76`, `4e10b4e`):**
+
+- **Retracted:** the end-to-end review called the Dockerfile's missing
+  `COPY packages/channels/package.json` a blocking, clean-build-breaking defect.
+  A `docker compose build --no-cache` was run and succeeded (exit 0) — pnpm
+  tolerates the missing importer and `COPY . .` supplies the package before
+  `pnpm -r build`. The line was added anyway as hardening: the install layer is
+  otherwise wrong the moment `packages/channels` gains a non-workspace runtime
+  dependency.
+- Clean-checkout onboarding was genuinely broken — no `.env.example` and a root
+  README that never mentioned `TELEGRAM_BOT_TOKEN`, while `docker-compose.yml`
+  interpolates it. A fresh clone crash-looped on config `exit(1)` with no
+  discoverable cause, failing this phase's first success criterion. Added
+  `.env.example` plus the README setup and allowlist-bootstrap flow.
+- The fatal-409 path called `process.exit(1)` directly, reintroducing the
+  async-stdout truncation hazard the advisory-lock path was deliberately changed
+  to avoid. It now sets `process.exitCode` and awaits `pool.end()` like the lock
+  path.
+- Documentation across the `## Documentation` table had drifted (drain/hard-exit
+  timeouts, private-chat-guard attribution, missing `packages/channels` row,
+  a `packages/core` telemetry promise that never shipped). All refreshed.
+- Cross-phase seams the review specifically cleared: no advisory-lock
+  double-release between the fatal-409 stop and the SIGTERM drain, and the
+  at-least-once invariant holds on every path including the new fatal and
+  shutdown ones.
+- Known gap carried forward (not fixed here, captured in
+  `.ai/decisions/telegram-long-polling-correctness.md`): migrations run before
+  the advisory lock is acquired, so two simultaneous cold boots race to a
+  duplicate-table error rather than the readable single-instance message.
 
 ## Documentation
 
