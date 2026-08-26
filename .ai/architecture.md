@@ -54,13 +54,17 @@ Strictly downward; no package imports one above it.
     `apps/hermes/src/llm/build-provider-profiles.ts` is the one place allowed
     to import both `@hermes/config` and `@hermes/llm`, mapping flat env fields
     into the `ProviderProfile` the adapter needs.
-  - *store* — the adapter persists a usage row per call, but through an
-    injected `LlmUsageRepo` (`{ recordUsage }`), same shape as `channels`'
-    `TelegramOffsetRepo`. `apps/hermes/src/llm/build-llm-provider.ts` binds it
-    to `@hermes/store`'s `recordUsage(pool, entry)`. That binding is extracted
-    out of `boot.ts` because `boot()` has no testable seam, and both
-    `usageRepo` and `logger` default to no-ops — dropping the wiring would
-    disable cost recording silently.
+  - *store* — the adapter both writes a usage row per call and reads this
+    month's spend for the budget ceiling, but through two injected ports:
+    `LlmUsageRepo` (`{ recordUsage }`) and `BudgetUsageRepo`
+    (`{ sumCostSince }`), same shape as `channels`' `TelegramOffsetRepo`.
+    `apps/hermes/src/llm/build-llm-provider.ts` binds both to `@hermes/store`
+    against the one pool, and is the only place that also imports
+    `@hermes/config` (for the cap). That binding is extracted out of `boot.ts`
+    because `boot()` has no testable seam. `usageRepo` and `budget` are
+    **required** adapter options — only `logger` still defaults to a no-op —
+    so a construction site that forgets either fails to compile instead of
+    silently disabling cost recording and the ceiling that reads from it.
   - The row's shape, `LlmUsageEntry`, lives in `@hermes/core` and is
     re-exported by both `llm` and `store`, so neither side can drift a field
     apart without a type error.
@@ -90,7 +94,15 @@ Telegram getUpdates (long poll, 30s)
    │                    └─ unknown sender rejected before anything else looks at it
    ▼  handler: /ping | /start | else → completionHandler   ← the fallthrough is
    │                                    │                    PAID from here on
-   │                                    ▼  packages/llm adapter → provider HTTP
+   │                                    ▼  packages/llm adapter
+   │                                    ▼  budget check: SUM(cost_usd) since the
+   │                                    │     1st of this month, UTC (injected
+   │                                    │     Clock) → packages/store → llm_usage
+   │                                    │     spend >= cap ⇒ BudgetExceededError
+   │                                    │     BEFORE any fetch: zero provider
+   │                                    │     calls, fixed reply, no new row
+   │                                    ▼  provider HTTP (retries live in here,
+   │                                    │     i.e. inside the already-checked call)
    │                                    ▼  llm_usage row via injected LlmUsageRepo
    │                                    │     →  packages/store  →  llm_usage
    │                                    ▼  result.text
@@ -108,6 +120,13 @@ usage row is written from the adapter's success path, so a failed call records
 nothing and a retried one still records exactly once; see
 [llm-cost-accounting](decisions/llm-cost-accounting.md). One `complete()` per
 message: no tool loop, no history persistence yet — that's `packages/agent`.
+
+`llm_usage` is therefore read and written on the same path: the ceiling's
+read is what the previous calls' writes fed. That makes anything which
+suppresses a write (an unpriced model, a dropped insert) also loosen the
+ceiling — see [monthly-budget-ceiling](decisions/monthly-budget-ceiling.md)
+for why the check sits before `fetch` and why it bounds spend to within one
+call's cost of the cap rather than stopping exactly at it.
 
 The offset write is the last step of handling an update, and a handler throwing
 aborts the rest of the batch so no later update's offset can leapfrog the one

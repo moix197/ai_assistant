@@ -62,9 +62,13 @@ one has a failure mode that is silent rather than loud.
 - Usage is recorded once per logical `complete()`, from the adapter's success
   path only — never from `callOnce`/`completeWithRetry`, which run once per HTTP
   attempt. A retried call must not produce two rows.
-- `usageRepo` and `logger` both default to no-ops on the adapter, so any wiring
-  path that forgets them disables cost recording *and* the unknown-model warn
-  with nothing failing. That wiring lives in one tested place
+- `usageRepo` is a **required** adapter option (as is `budget`) — it used to
+  default to a no-op, which let a wiring path disable cost recording with
+  nothing failing. `logger` still defaults to a no-op, so forgetting it costs
+  only the unknown-model warn. That wiring lives in one tested place
   (`build-llm-provider.ts`); keep it there.
+- These rows are what the monthly ceiling reads. Under-pricing a call does not
+  just misreport — it raises the real spend the cap permits; see
+  [monthly-budget-ceiling](monthly-budget-ceiling.md).
 - New fields belong on `LlmUsageEntry` in `@hermes/core`, which both `llm` and
   `store` re-export, so the two sides cannot drift a field apart silently.
