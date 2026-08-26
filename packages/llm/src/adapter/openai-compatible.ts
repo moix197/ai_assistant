@@ -43,18 +43,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Parses a `Retry-After` header value (seconds) into a number, or `undefined` when absent/non-numeric. */
+function parseRetryAfterSeconds(headerValue: string | null): number | undefined {
+  if (headerValue === null) return undefined;
+  const seconds = Number(headerValue);
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
+
 /**
- * Assembles the outgoing body with `tools` -> `system` -> `messages` in
- * that literal key order (invariant #6: stable/shared prefix before
- * variable per-request content, for provider prompt-caching).
+ * Assembles the outgoing body with `tools` -> `messages` in that literal key
+ * order (invariant #6: stable/shared prefix before variable per-request
+ * content, for provider prompt-caching). OpenAI-compatible chat-completions
+ * APIs (DeepSeek included) have no top-level `system` field — the system
+ * prompt must be `messages[0]` with `role: "system"` or providers silently
+ * ignore it. Placing it first within `messages` preserves the same
+ * stable-prefix intent: `tools` (schema, most stable) -> system message
+ * (stable per profile) -> variable per-turn messages.
  */
 function buildRequestBody(request: CompletionRequest): Record<string, unknown> {
   const body: Record<string, unknown> = { model: request.model };
   if (request.tools !== undefined) {
     body.tools = request.tools;
   }
-  body.system = request.system;
-  body.messages = request.messages;
+  body.messages = [{ role: "system", content: request.system }, ...request.messages];
   body.max_tokens = request.maxTokens;
   return body;
 }
@@ -143,10 +154,17 @@ async function callOnce(
   try {
     const response = await requestOnce(fetchImpl, url, apiKey, body, controller.signal, timeoutMs);
     if (!response.ok) {
-      const rawText = await response.text().catch(() => "");
+      const rawText = await response.text().catch(() => {
+        if (controller.signal.aborted) {
+          throw new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
+        }
+        return "";
+      });
+      const retryAfter = parseRetryAfterSeconds(response.headers.get("retry-after"));
       throw new LlmHttpError(
         redact(`LLM provider returned HTTP ${response.status}: ${rawText}`, apiKey),
         response.status,
+        retryAfter,
       );
     }
 
@@ -154,6 +172,9 @@ async function callOnce(
     try {
       payload = await response.json();
     } catch {
+      if (controller.signal.aborted) {
+        throw new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
+      }
       throw new LlmMalformedResponseError("LLM response body is not valid JSON");
     }
 
@@ -218,7 +239,7 @@ async function completeWithRetry(
         if (error.status === 429) {
           rateLimitAttempt++;
           if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
-          await delay(nextDelay(rateLimitAttempt));
+          await delay(nextDelay(rateLimitAttempt, error.retryAfter));
           continue;
         }
         if (error.status >= 500) {

@@ -10,10 +10,16 @@ const PROFILE: ProviderProfile = {
   model: "some-model",
 };
 
-function jsonResponse(body: unknown, ok = true, status = 200): Response {
+function jsonResponse(
+  body: unknown,
+  ok = true,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
   return {
     ok,
     status,
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
     json: async () => body,
     text: async () => JSON.stringify(body),
   } as unknown as Response;
@@ -43,11 +49,12 @@ afterEach(() => {
 });
 
 describe("createOpenAiCompatibleAdapter — request shape", () => {
-  it("posts to <baseUrl>/chat/completions with tools before system before messages, and max_tokens set", async () => {
+  it("posts to <baseUrl>/chat/completions with tools before messages, system as messages[0], and max_tokens set", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
     const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const request = baseRequest();
 
-    await adapter.complete(baseRequest());
+    await adapter.complete(request);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
@@ -56,8 +63,13 @@ describe("createOpenAiCompatibleAdapter — request shape", () => {
     const bodyText = init.body as string;
     const parsed = JSON.parse(bodyText);
     const keys = Object.keys(parsed);
-    expect(keys.indexOf("tools")).toBeLessThan(keys.indexOf("system"));
-    expect(keys.indexOf("system")).toBeLessThan(keys.indexOf("messages"));
+    // OpenAI-compatible chat-completions APIs have no top-level `system`
+    // field; the system prompt must be `messages[0]` with `role: "system"`
+    // or providers silently drop it.
+    expect(keys).not.toContain("system");
+    expect(keys.indexOf("tools")).toBeLessThan(keys.indexOf("messages"));
+    expect(parsed.messages[0]).toEqual({ role: "system", content: request.system });
+    expect(parsed.messages.slice(1)).toEqual(request.messages);
     expect(parsed.max_tokens).toBe(MAX_TOKENS_PER_TURN);
   });
 
@@ -109,6 +121,37 @@ describe("createOpenAiCompatibleAdapter — 429 retry", () => {
   });
 });
 
+describe("createOpenAiCompatibleAdapter — Retry-After honored on 429", () => {
+  it("waits the Retry-After header's duration before retrying, not the computed backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "rate limited" }, false, 429, { "retry-after": "7" }),
+        )
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      // 7s from the header, not the ~1s the computed backoff would use for
+      // attempt 1 — confirms the header value, not `nextDelay`'s default,
+      // drove the wait.
+      const retryDelayCall = setTimeoutSpy.mock.calls.find(
+        (call) => typeof call[1] === "number" && call[1] === 7_000,
+      );
+      expect(retryDelayCall).toBeDefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("createOpenAiCompatibleAdapter — 5xx exhausts retries", () => {
   it("throws LlmHttpError after bounded retries", async () => {
     vi.useFakeTimers();
@@ -146,6 +189,43 @@ describe("createOpenAiCompatibleAdapter — timeout", () => {
             reject(error);
           });
         });
+      });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, timeoutMs: 1_000 });
+
+      const resultPromise = adapter.complete(baseRequest()).then(
+        () => {
+          throw new Error("expected complete() to reject");
+        },
+        (error: unknown) => error,
+      );
+      await vi.runAllTimersAsync();
+      const error = await resultPromise;
+
+      expect(error).toBeInstanceOf(LlmTimeoutError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws LlmTimeoutError, not LlmMalformedResponseError, when the timeout fires while reading the body", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        const response = {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: () =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener("abort", () => {
+                const error = new Error("The operation was aborted");
+                error.name = "AbortError";
+                reject(error);
+              });
+            }),
+          text: async () => "",
+        } as unknown as Response;
+        return Promise.resolve(response);
       });
       const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, timeoutMs: 1_000 });
 

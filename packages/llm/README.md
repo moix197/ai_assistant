@@ -30,14 +30,19 @@ mega-package.
 `createOpenAiCompatibleAdapter(profile: ProviderProfile, opts?)` posts to
 `${profile.baseUrl}/chat/completions` with an `Authorization: Bearer
 <apiKey>` header. Request body key order is `model` -> `tools` (when
-present) -> `system` -> `messages` -> `max_tokens`: `tools`/`system` sit
-ahead of the per-call `messages` deliberately (invariant #6 establishes the
+present) -> `messages` -> `max_tokens`. OpenAI-compatible chat-completions
+APIs (DeepSeek included) have no top-level `system` field, so the system
+prompt is serialized as `messages[0]` with `role: "system"`, ahead of the
+per-turn messages: `tools` (schema, most stable) -> system message (stable
+per profile) -> variable per-turn messages (invariant #6 establishes the
 ordering here; Phase 3 proves it against real cache-hit numbers).
 
 Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 `callWithRetry`, reusing `@hermes/core`'s `nextDelay`:
 
-- `429` — bounded retries, backoff via `nextDelay`.
+- `429` — bounded retries, backoff via `nextDelay`; the provider's
+  `Retry-After` header (seconds) wins over the computed backoff when
+  present, same as the Telegram client's `retry_after` handling.
 - `5xx` or a network/timeout failure — bounded retries, exponential backoff.
 - Any other non-ok status — thrown immediately as `LlmHttpError` (carries
   `status`), not retried.
@@ -54,7 +59,7 @@ Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 
 ## Errors
 
-`src/errors.ts`: `LlmTimeoutError`, `LlmHttpError` (`status`),
+`src/errors.ts`: `LlmTimeoutError`, `LlmHttpError` (`status`, `retryAfter`),
 `LlmMalformedResponseError` — typed subclasses, no `Result<T,E>` in this
 package (this package throws, per project convention). `LlmTimeoutError` is
 distinct from `LlmAbortedError` (Phase 5): "the adapter itself gave up

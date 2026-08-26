@@ -15,14 +15,21 @@ export class LlmTimeoutError extends Error {
   }
 }
 
-/** Carries the HTTP status of a non-ok response from the provider. */
+/**
+ * Carries the HTTP status of a non-ok response from the provider, plus the
+ * server's `Retry-After` header (seconds) when a 429 response sends one —
+ * an authoritative signal that wins over computed backoff, mirroring
+ * `channels/src/telegram/client.ts`'s `TelegramApiError.retryAfter`.
+ */
 export class LlmHttpError extends Error {
   readonly status: number;
+  readonly retryAfter?: number;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, retryAfter?: number) {
     super(message);
     this.name = "LlmHttpError";
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 

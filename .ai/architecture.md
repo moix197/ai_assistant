@@ -17,6 +17,7 @@ packages/core      Result, ids, Clock, logger, telemetry recorder PORT
 packages/config    zod env schema, fail-fast, redaction
 packages/store     pg pool, migration runner, repos, advisory lock
 packages/channels  Channel port + telegram/ adapter
+packages/llm       LlmProvider port + OpenAI-compatible adapter over fetch
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -29,12 +30,12 @@ Strictly downward; no package imports one above it.
 
 ```
                 apps/hermes
-                     │  (imports all four; the ONLY place they are wired together)
-     ┌───────────┬───┴───────┬──────────────┐
-     ▼           ▼           ▼              ▼
-  config       store     channels ────────► core
-     │           │           (only dep)
-     └───────────┴──────────────────────────► core
+                     │  (imports all five; the ONLY place they are wired together)
+     ┌───────────┬───┴───────┬──────────────┬──────────────┐
+     ▼           ▼           ▼              ▼              ▼
+  config       store     channels          llm            core
+     │           │       (only dep)     (only dep)
+     └───────────┴──────────────┴──────────────┴───────────► core
 ```
 
 - `packages/core` depends on nothing. It is where ports live so lower packages
@@ -47,6 +48,12 @@ Strictly downward; no package imports one above it.
   Slack/WhatsApp adapter with a different persistence story. Reversing this and
   importing `@hermes/store` from `channels` is the easiest boundary in the tree
   to break by accident.
+- **`packages/llm` depends on `packages/core` only** — not `packages/config`
+  (env/config shape is boot's concern, mapped in `apps/hermes`) or
+  `packages/store` (persistence arrives as an injected port in Phase 3).
+  `apps/hermes/src/llm/build-provider-profiles.ts` is the one place allowed
+  to import both `@hermes/config` and `@hermes/llm`, mapping flat env fields
+  into the `ProviderProfile` the adapter needs.
 - **Nothing imports an implementation of `telemetry`.** The recorder port sits
   in `core`; `apps/hermes` will inject the implementation at boot (Phase 2).
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a

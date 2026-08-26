@@ -31,8 +31,9 @@ messages in and out of Telegram."
   `sendMessage`. No telegraf/grammy: two endpoints don't justify a
   mega-package. `sendMessage` chunks its text via `chunk.ts` before sending,
   awaiting each part in order. Both `getUpdates` and `sendMessage` route
-  errors through the retry policy in `backoff.ts`: a `429` waits for
-  Telegram's `retry_after` (falling back to computed backoff if absent); a
+  errors through the retry policy built on `@hermes/core`'s `nextDelay`: a
+  `429` waits for Telegram's `retry_after` (falling back to computed backoff
+  if absent); a
   `409` (another `getUpdates` consumer already running) gets a few bounded
   retries then rethrows, since that's a real conflict, not a blip; `5xx` and
   network/timeout errors back off exponentially, bounded, then rethrow to the
@@ -45,11 +46,13 @@ messages in and out of Telegram."
   markdown-entity-aware — nothing in this PRD sets `parse_mode` yet, so
   entity-safe splitting has no caller; it arrives with a future
   Markdown-formatted output layer.
-- `telegram/backoff.ts` — `nextDelay(attempt, retryAfterHeader?): number`,
-  pure and clock-independent (callers pass the attempt count directly).
-  Exponential growth from a fixed base, capped, with uniform jitter to avoid
-  synchronized retries; `retryAfterHeader` always overrides the computed
-  value when present.
+- `@hermes/core`'s `nextDelay(attempt, retryAfterHeader?): number` — pure and
+  clock-independent (callers pass the attempt count directly). Exponential
+  growth from a fixed base, capped, with uniform jitter to avoid synchronized
+  retries; `retryAfterHeader` always overrides the computed value when
+  present. Promoted out of this package (formerly `telegram/backoff.ts`) so
+  `packages/llm`'s adapter can share the same implementation instead of
+  duplicating it.
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
   `allowed_updates=["message","edited_message"]`) plus
   `normalizeTelegramUpdate`, which converts a raw update into an
