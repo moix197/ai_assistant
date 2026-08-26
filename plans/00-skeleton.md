@@ -414,7 +414,7 @@ _Carried forward from the Phase 2 code review (both required here, not earlier �
 each needs a second caller to exist before it stops being a speculative
 abstraction):_
 
-- [ ] `withAllowlist(handler)` wrapper composed in `boot.ts`, replacing the
+- [x] `withAllowlist(handler)` wrapper composed in `boot.ts`, replacing the
       per-handler allowlist check currently inlined in `echo.ts`. Phase 2's
       Success criteria says rejection happens "before it reaches any handler",
       but its File-changes table, Steps and Tests all place the check inside
@@ -423,17 +423,17 @@ abstraction):_
       make it three handlers each re-implementing the same check — the
       duplication CLAUDE.md forbids, and a fail-open risk the moment one of
       them forgets.
-- [ ] Inject the poller's retry delay (`retryDelayMs`) rather than using the
+- [x] Inject the poller's retry delay (`retryDelayMs`) rather than using the
       module constant, BEFORE structured backoff lands. Phase 2's real 3s
       delay already forced two poller tests onto 4000ms `vi.waitFor` timeouts;
       backoff multiplies that into a slow, flaky suite.
 
-- [ ] `chunk.ts`: pure function `chunkText(text, maxLen = 4096): string[]`; explicitly **not** markdown-entity-aware — justified because nothing in this PRD formats output (echo/`/start`/`/ping` are plain text; no `parse_mode` is used anywhere yet). Entity-safe splitting only matters once Markdown-formatted output exists, which arrives with the agent/LLM layer in Phase 2 — deferring it now avoids building machinery with no caller
-- [ ] `backoff.ts`: `nextDelay(attempt, retryAfterHeader?)`; unit-testable without a clock dependency by injecting attempt count directly
-- [ ] Wire chunking into `sendMessage` so any future long output (starting with `/ping`'s text) is safe by construction, not by caller discipline
-- [ ] `/ping`, `/start` handlers: small, single-purpose, call the Phase 1 DB-check function — no duplicated health logic
-- [ ] Shutdown handler in `boot.ts`, formalizing the full ordered sequence: (1) flip a `stopping` flag read by the poller's loop condition so no new `getUpdates` call starts; (2) await the in-flight handler, bounded by a timeout; (3) call the advisory-lock `release()` from Phase 3 — only now, once no more DB work from this instance is possible, so the lock is held for the full lifetime of any in-flight query and a restart-racing second instance can't acquire it while we're still draining; (4) `pool.end()`; (5) `process.exit(0)`. A hard-exit fallback timer guards against any step hanging past the container's stop grace period. Each step is a precondition for the next — get the order wrong and either a query crashes (pool closed too early) or the lock outlives its purpose (never released)
-- [ ] Confirm `Dockerfile`'s `CMD` stays exec-form (already true from Phase 1) so SIGTERM actually reaches the Node process
+- [x] `chunk.ts`: pure function `chunkText(text, maxLen = 4096): string[]`; explicitly **not** markdown-entity-aware — justified because nothing in this PRD formats output (echo/`/start`/`/ping` are plain text; no `parse_mode` is used anywhere yet). Entity-safe splitting only matters once Markdown-formatted output exists, which arrives with the agent/LLM layer in Phase 2 — deferring it now avoids building machinery with no caller
+- [x] `backoff.ts`: `nextDelay(attempt, retryAfterHeader?)`; unit-testable without a clock dependency by injecting attempt count directly
+- [x] Wire chunking into `sendMessage` so any future long output (starting with `/ping`'s text) is safe by construction, not by caller discipline
+- [x] `/ping`, `/start` handlers: small, single-purpose, call the Phase 1 DB-check function — no duplicated health logic
+- [x] Shutdown handler in `boot.ts`, formalizing the full ordered sequence: (1) flip a `stopping` flag read by the poller's loop condition so no new `getUpdates` call starts; (2) await the in-flight handler, bounded by a timeout; (3) call the advisory-lock `release()` from Phase 3 — only now, once no more DB work from this instance is possible, so the lock is held for the full lifetime of any in-flight query and a restart-racing second instance can't acquire it while we're still draining; (4) `pool.end()`; (5) `process.exit(0)`. A hard-exit fallback timer guards against any step hanging past the container's stop grace period. Each step is a precondition for the next — get the order wrong and either a query crashes (pool closed too early) or the lock outlives its purpose (never released)
+- [x] Confirm `Dockerfile`'s `CMD` stays exec-form (already true from Phase 1) so SIGTERM actually reaches the Node process
 
 **Tests:**
 
@@ -447,22 +447,48 @@ abstraction):_
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
+- [x] `pnpm -r test` green
 - [ ] Message `/ping` → reply includes uptime and DB status; `/start` → confirms allowlisted + connected
-- [ ] Chunking verified via the unit test above (a live 6000-char *inbound* message is impossible — Telegram itself caps inbound text at 4096 — so this is intentionally a unit-test-only verification, noted in the plan per the no-manual-only-verification-when-testable-logic-exists rule)
+- [x] Chunking verified via the unit test above (a live 6000-char *inbound* message is impossible — Telegram itself caps inbound text at 4096 — so this is intentionally a unit-test-only verification, noted in the plan per the no-manual-only-verification-when-testable-logic-exists rule)
 - [ ] `docker compose stop hermes` (sends SIGTERM, default 10s grace period) while a message is mid-handling → logs show clean drain and exit 0 before the grace period expires; `docker compose logs` shows no forced SIGKILL
+
+**Deviations (Phase 4 review, commit `1c5fa60`):**
+
+- A separate `withPrivateChat` wrapper was extracted and composed as
+  `withAllowlist(withPrivateChat(dispatchCommand))` in `boot.ts`, and the inline
+  `chatType` check removed from `echo.ts`. `/ping` and `/start` originally
+  skipped the non-private guard — the same fail-open duplication this phase
+  removed from the allowlist check. The `"rejected: non-private chat"` warn line
+  and its `{ channelUserId, chatType }` fields are unchanged.
+- 409 handling now matches this phase's File-changes table (bounded retries →
+  fatal) rather than the infinite 3s loop it originally shipped with. The client
+  throws a readable fatal `TelegramApiError`; `poller.ts` gained an
+  `onFatalError` callback and stops its loop; `boot.ts` logs and exits 1. A
+  permanent 409 means another instance holds the poll stream — the exact
+  mystery-failure mode this PRD exists to eliminate.
+- Failed-shutdown path: `.finally(clearTimeout)` became
+  `.catch(err => logger.error(...) + exit(1))`, so a throwing `release()` or
+  `pool.end()` (DB down at shutdown) still exits promptly with the hard-exit
+  guard armed, instead of an unhandled rejection hanging until SIGKILL.
+- Drain / hard-exit bounds widened to 5s / 8s (from 8s / 9s) for real margin
+  inside Docker's 10s default stop grace period. Revisit if that grace period
+  is ever changed.
+- `retry_after` is now capped at `MAX_DELAY_MS`; a hostile or buggy value can no
+  longer stall the poller indefinitely.
+- `matchesCommand` helper added so `/ping@botusername` (what Telegram sends in
+  groups) matches alongside the bare form.
 
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: message chunking, backoff/retry policy, /start and /ping, graceful shutdown`
+- [x] Changes committed: `feat: message chunking, backoff/retry policy, /start and /ping, graceful shutdown`
 - [ ] Phase marked complete
 
 ---
