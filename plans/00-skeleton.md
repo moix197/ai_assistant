@@ -515,16 +515,16 @@ abstraction):_
 **Steps:**
 
 - [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–4 together
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] ~~Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–4 together~~ — n/a: `/execute-prd` dispatched the reviewer as a subagent directly, so no manual handoff prompt was needed
+- [x] ~~Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session~~ — n/a: same reason; the reviewer ran in its own context by construction
 - [x] Code-reviewer agent reviews the entire change end-to-end
 - [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
 - [x] All tests pass (`pnpm -r test`, including gated integration tests against a real Postgres)
 - [x] No CLAUDE.md invariants violated
-- [ ] Feature tested manually: golden path (echo, `/start`, `/ping`) + edge cases (unknown sender, crash-restart, dual-instance, SIGTERM drain, oversized outbound message)
-- [ ] Overall success criteria met
+- [x] Feature tested manually: golden path (echo, `/start`, `/ping`) + edge cases (unknown sender, crash-restart, dual-instance, SIGTERM drain, oversized outbound message)
+- [x] Overall success criteria met
 - [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
 
 **Final-review findings and resolution (commits `f6dac76`, `4e10b4e`):**
 
