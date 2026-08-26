@@ -313,23 +313,27 @@ mysterious 409.
 
 **Steps:**
 
-- [ ] `poller-crash-replay.test.ts` (Tests table below) is the **sole** guard for
-      the happy-path ack-after-process ordering. Established by mutation testing
-      in the Phase 2 review: with the offset in memory, reordering `offset = …`
-      to before `await handler(…)` is externally unobservable — `offset` is
+- [x] The happy-path ack-after-process ordering is guarded by
+      `poller-offset-ordering.test.ts` (asserts `setOffset` resolves only after
+      the handler does), with `poller-crash-replay.test.ts` covering the crash
+      window itself. The Phase 2 review established by mutation testing that
+      with the offset in memory, reordering `offset = …` to before
+      `await handler(…)` is externally unobservable — `offset` is
       closure-private and only read by the next `getUpdates`, which is sequenced
-      after the await either way. Phase 2's unit tests catch the reorder only on
-      the failure path. Once the offset is persisted here, the gap between
-      "offset written" and "handler completed" becomes a real crash window, and
-      this test is what proves it.
+      after the await either way, so Phase 2's unit tests catch the reorder only
+      on the failure path. Once the offset is persisted here, the gap between
+      "offset written" and "handler completed" becomes a real crash window;
+      crash-replay proves the replay is real and observable. (Corrected in the
+      Phase 3 review: crash-replay alone is *not* the sole guard — its
+      instance-1 `setOffset` always rejects, so a reorder would still pass it.)
 
-- [ ] Migration `001_telegram_offset.sql`; note in `packages/store/README.md` why this is a singleton row, not a per-chat table (one bot, one poll stream)
-- [ ] `telegram-offset-repo.ts`: two functions, raw `pg` queries against the pool, no ORM
-- [ ] `advisory-lock.ts`: a fixed numeric lock key (documented constant). Acquired via `pg_try_advisory_lock(key)` on a **dedicated `pg.Client` opened outside the pool** — session-level advisory locks are tied to the connection that took them, so if this ever ran on a pooled connection, the pool could hand that connection to unrelated queries or recycle it, silently dropping the lock. Boot exits with `"another Hermes instance is already running against this database"` on failure — never a bare 409. Expose `release()` explicitly (`pg_advisory_unlock` + close); Phase 4 wires it into shutdown. Until Phase 4 lands, the lock is still released correctly on any exit path — closing a connection releases its session-level locks as a Postgres-side guarantee — just implicitly rather than via an explicit call
-- [ ] Poller change: **the offset write happens inside the per-update processing step, after `send`/handler completion, before moving to the next update in the batch** — this is the load-bearing ordering; add an explicit code comment stating *why* (Telegram permanently deletes acked updates; persisting early loses them on crash)
-- [ ] Document the idempotency contract this creates: a crash between "handler completed" and "offset persisted" replays exactly the one in-flight update on restart. The echo handler is safe under replay by inspection (send-and-reply has no side effect beyond a duplicate, user-visible message) — there is no dedupe key here. Flag explicitly in `packages/channels/README.md` that any **future** handler with an external side effect (Phase 4+ of the roadmap, e.g. `log_trade`) MUST add its own idempotency key per invariant #4 — this phase does not solve that generally, only for echo
-- [ ] `deleteWebhook()`: call unconditionally at every boot, before the poller starts, regardless of whether a webhook was ever set (cheap, idempotent)
-- [ ] `boot.ts`: reorder per the File changes table; a lock failure must exit(1) before any poller work starts
+- [x] Migration `001_telegram_offset.sql`; note in `packages/store/README.md` why this is a singleton row, not a per-chat table (one bot, one poll stream)
+- [x] `telegram-offset-repo.ts`: two functions, raw `pg` queries against the pool, no ORM
+- [x] `advisory-lock.ts`: a fixed numeric lock key (documented constant). Acquired via `pg_try_advisory_lock(key)` on a **dedicated `pg.Client` opened outside the pool** — session-level advisory locks are tied to the connection that took them, so if this ever ran on a pooled connection, the pool could hand that connection to unrelated queries or recycle it, silently dropping the lock. Boot exits with `"another Hermes instance is already running against this database"` on failure — never a bare 409. Expose `release()` explicitly (`pg_advisory_unlock` + close); Phase 4 wires it into shutdown. Until Phase 4 lands, the lock is still released correctly on any exit path — closing a connection releases its session-level locks as a Postgres-side guarantee — just implicitly rather than via an explicit call
+- [x] Poller change: **the offset write happens inside the per-update processing step, after `send`/handler completion, before moving to the next update in the batch** — this is the load-bearing ordering; add an explicit code comment stating *why* (Telegram permanently deletes acked updates; persisting early loses them on crash)
+- [x] Document the idempotency contract this creates: a crash between "handler completed" and "offset persisted" replays exactly the one in-flight update on restart. The echo handler is safe under replay by inspection (send-and-reply has no side effect beyond a duplicate, user-visible message) — there is no dedupe key here. Flag explicitly in `packages/channels/README.md` that any **future** handler with an external side effect (Phase 4+ of the roadmap, e.g. `log_trade`) MUST add its own idempotency key per invariant #4 — this phase does not solve that generally, only for echo
+- [x] `deleteWebhook()`: call unconditionally at every boot, before the poller starts, regardless of whether a webhook was ever set (cheap, idempotent)
+- [x] `boot.ts`: reorder per the File changes table; a lock failure must exit(1) before any poller work starts
 
 **Tests:**
 
@@ -342,23 +346,43 @@ mysterious 409.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green (including the gated integration tests, run with `TEST_DATABASE_URL` pointed at the compose Postgres)
+- [x] `pnpm -r test` green (including the gated integration tests, run with `TEST_DATABASE_URL` pointed at the compose Postgres)
 - [ ] Send a message to the bot, then `docker compose kill hermes` before the echo arrives; `docker compose up -d hermes`; confirm the echo eventually arrives (a duplicate echo is acceptable and expected — document why in the PR description)
 - [ ] Send a message, wait for the echo, restart the container; confirm no unrelated old message is replayed (offset only rewinds to the one in-flight update, never further)
 - [ ] Manually run a second `hermes` process against the same `DATABASE_URL`/token (e.g. `docker compose run --rm hermes`) → it exits non-zero with the advisory-lock error, not a crash loop
 - [ ] Inspect Telegram's `getWebhookInfo` (via a one-off curl) after boot → confirms no webhook is set
+
+**Deviations (Phase 3 review, commit `913569e`):**
+
+- Boot's lock-loss path sets `process.exitCode = 1` and awaits `pool.end()`
+  instead of calling `process.exit(1)` directly. `process.exit()` truncates
+  async stdout to a Docker pipe, which can drop the very "another Hermes
+  instance is already running against this database" line this phase's success
+  criterion depends on. Exit code is still non-zero.
+- The health server now starts *after* the advisory lock is acquired, so a
+  losing second instance never briefly reports healthy.
+- `createTelegramPoller` takes an injected `offsetRepo` port rather than
+  importing `@hermes/store`, keeping `channels` free of a Postgres dependency;
+  `boot.ts` wires it to `getOffset`/`setOffset`.
+- Store integration tests seed schema via `runMigrations` and clean rows rather
+  than dropping migration-owned tables; `packages/store/README.md` now documents
+  a dedicated scratch database (and `127.0.0.1`, since `localhost` resolves to
+  `::1` and yields ECONNRESET).
+- Known, deferred to Phase 4: migrations run before the lock is taken, so two
+  simultaneous cold boots race to a duplicate-table error rather than the
+  readable single-instance message.
 
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: persist telegram offset, single-instance advisory lock, deleteWebhook at boot`
+- [x] Changes committed: `feat: persist telegram offset, single-instance advisory lock, deleteWebhook at boot`
 - [ ] Phase marked complete
 
 ---
