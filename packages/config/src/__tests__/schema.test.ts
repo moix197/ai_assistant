@@ -156,4 +156,19 @@ describe("toRedactedLog", () => {
     expect(redacted.LLM_PRIMARY_BASE_URL).toBe(validEnvWithFallback.LLM_PRIMARY_BASE_URL);
     expect(redacted.LLM_PRIMARY_MODEL).toBe(validEnvWithFallback.LLM_PRIMARY_MODEL);
   });
+
+  it("masks a set secret as REDACTED without leaking its real value", () => {
+    const config = loadConfig(validEnvWithFallback);
+    const redacted = toRedactedLog(config);
+    expect(redacted.LLM_FALLBACK_API_KEY).toBe("***REDACTED***");
+    expect(redacted.LLM_FALLBACK_API_KEY).not.toBe(validEnvWithFallback.LLM_FALLBACK_API_KEY);
+    expect(JSON.stringify(redacted)).not.toContain(validEnvWithFallback.LLM_FALLBACK_API_KEY);
+  });
+
+  it("omits an unset secret entirely instead of logging it as REDACTED", () => {
+    const config = loadConfig(validEnv);
+    const redacted = toRedactedLog(config);
+    expect(redacted.LLM_FALLBACK_API_KEY).toBeUndefined();
+    expect(JSON.stringify(redacted)).not.toContain("LLM_FALLBACK_API_KEY");
+  });
 });

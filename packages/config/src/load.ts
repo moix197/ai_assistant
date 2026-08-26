@@ -24,7 +24,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Env {
 export function toRedactedLog(env: Env): Record<string, unknown> {
   const redacted: Record<string, unknown> = { ...env };
   for (const key of SECRET_ENV_KEYS) {
-    if (key in redacted) redacted[key] = "***REDACTED***";
+    if (redacted[key] !== undefined) redacted[key] = "***REDACTED***";
   }
   return redacted;
 }
