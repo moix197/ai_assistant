@@ -100,7 +100,14 @@ describe.skipIf(!liveProfiles)("invariant #6 — DeepSeek prefix cache-hit token
       const profiles = liveProfiles as LiveProfiles;
       const profile = profiles.primary;
       const logger = createLogger({ level: "warn" });
-      const adapter = createOpenAiCompatibleAdapter(profile);
+      // `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap
+      // fix); this live check pays real provider cost by design and isn't
+      // exercising usage accounting or the budget ceiling, so a permissive
+      // no-op stands in for both.
+      const adapter = createOpenAiCompatibleAdapter(profile, {
+        usageRepo: { recordUsage: async () => {} },
+        budget: { usageRepo: { sumCostSince: async () => 0 }, capUsd: Number.POSITIVE_INFINITY },
+      });
 
       const first = await adapter.complete(
         buildRequest(profile.model, "Reply with the word: one."),

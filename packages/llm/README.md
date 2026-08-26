@@ -114,14 +114,53 @@ a direct `@hermes/store` dependency, mirroring `packages/channels`'
 `TelegramOffsetRepo`. `apps/hermes/src/boot.ts` wires it to `@hermes/store`'s
 `recordUsage(pool, entry)`.
 
-`createOpenAiCompatibleAdapter`'s `opts` accepts `usageRepo` and `logger`,
-both optional (defaulting to a no-op repo and a no-op logger, so existing
-callers that don't care about usage accounting need no changes). After every
-successful `complete()`, the adapter resolves cost via `resolveCostUsd` and
-calls `usageRepo.recordUsage(...)` before returning the result — a failed
-call records nothing, since no tokens were billed. The recorded `provider`
-label is the profile's `baseUrl` hostname (e.g. `api.deepseek.com`), derived
+`createOpenAiCompatibleAdapter`'s `opts.usageRepo` is mandatory (`opts.logger`
+stays optional, defaulting to a no-op — its only job is a diagnostic warn, so
+omitting it can't silently disable spend tracking or the budget ceiling
+below). `usageRepo` used to default to a no-op the same way, which meant a
+construction site could forget to wire it and cost recording would simply,
+silently stop happening — exactly the failure mode Phase 4's budget ceiling
+depends on not existing, since the ceiling reads its "spend so far" from the
+same recorded rows. Every caller, including every test, now wires an
+explicit `usageRepo` (a real one or a fake). After every successful
+`complete()`, the adapter resolves cost via `resolveCostUsd` and calls
+`usageRepo.recordUsage(...)` before returning the result — a failed call
+records nothing, since no tokens were billed. The recorded `provider` label
+is the profile's `baseUrl` hostname (e.g. `api.deepseek.com`), derived
 rather than hardcoded so a new host needs no code change here.
+
+## Budget ceiling
+
+`src/budget/resolve-budget-cap.ts` exports `resolveBudgetCapUsd(env)`, the
+single seam that reads the configured monthly cap — a future DB-backed or
+per-tenant cap replaces only this function's body. `src/budget/check-budget.ts`
+exports `assertBudgetNotExceeded(usageRepo, capUsd, clock)`, which sums spend
+recorded since the start of the current calendar month **in UTC** (via the
+injected `BudgetUsageRepo.sumCostSince`) and throws `BudgetExceededError`
+when that sum meets or exceeds the cap.
+
+`createOpenAiCompatibleAdapter`'s `opts.budget` (`{ usageRepo, capUsd, clock?
+}`) is mandatory, for the same reason `usageRepo` above is: an
+optional-with-a-silent-skip default would let any construction site —
+production or test — bypass the ceiling without anyone noticing.
+`apps/hermes/src/llm/build-llm-provider.ts` is the one production
+construction site and wires `resolveBudgetCapUsd(config)` and a
+`sumCostSince(pool, ...)`-backed `usageRepo` together; every test that
+doesn't care about budget behavior passes an explicit, permissive cap
+instead. The check runs as the very first thing `complete()` does, before
+the request is built or `fetch` is issued — a breach must cost nothing, not
+merely record nothing.
+
+**Design note — granularity of "breached mid-conversation":** the check
+gates the *next* call against spend already recorded, not against spend
+still in flight. A call that passed the check and is executing when its own
+cost would push cumulative spend over the cap still completes and is
+recorded — the ceiling stops the *following* call, not that one. In 2a
+(today's single-shot completion handler — no loop, no multi-call turn) this
+window is exactly one call wide: cumulative monthly spend is bounded to
+within one call's cost of the configured cap, never to an exact hard stop.
+That is deliberate, not a bug. A 2c multi-call turn would revisit this if a
+tighter, per-turn-aware cap is ever needed.
 
 ## Max tokens
 

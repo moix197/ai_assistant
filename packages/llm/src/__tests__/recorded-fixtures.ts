@@ -125,7 +125,14 @@ export async function replayRecordedAttempt(
     });
   const adapter = createOpenAiCompatibleAdapter(
     { baseUrl: "https://replay.invalid/v1", apiKey: "replay", model: attempt.model },
-    { fetchImpl },
+    {
+      fetchImpl,
+      // `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap
+      // fix); this replay lane re-scores recorded bodies offline and has
+      // nothing to do with usage accounting or the budget ceiling.
+      usageRepo: { recordUsage: async () => {} },
+      budget: { usageRepo: { sumCostSince: async () => 0 }, capUsd: Number.POSITIVE_INFINITY },
+    },
   );
 
   try {

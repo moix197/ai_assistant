@@ -2,12 +2,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "../../errors";
 import { MAX_TOKENS_PER_TURN } from "../../max-tokens";
 import type { ProviderProfile } from "../../port";
-import { createOpenAiCompatibleAdapter } from "../openai-compatible";
+import {
+  type OpenAiCompatibleAdapterOptions,
+  createOpenAiCompatibleAdapter,
+} from "../openai-compatible";
 
 const PROFILE: ProviderProfile = {
   baseUrl: "https://provider.example/v1",
   apiKey: "sk-super-secret-key",
   model: "some-model",
+};
+
+// `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap fix: an
+// optional-with-a-silent-default budget/usageRepo let a call site bypass the
+// ceiling without anyone noticing). This file's tests exercise unrelated
+// request/response behavior, so they wire a no-op usage repo and a cap no
+// real test spend could ever reach, rather than relying on a default.
+const PERMISSIVE_OPTS: Pick<OpenAiCompatibleAdapterOptions, "usageRepo" | "budget"> = {
+  usageRepo: { recordUsage: async () => {} },
+  budget: { usageRepo: { sumCostSince: async () => 0 }, capUsd: Number.POSITIVE_INFINITY },
 };
 
 function jsonResponse(
@@ -51,7 +64,7 @@ afterEach(() => {
 describe("createOpenAiCompatibleAdapter — request shape", () => {
   it("posts to <baseUrl>/chat/completions with tools before messages, system as messages[0], and max_tokens set", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
     const request = baseRequest();
 
     await adapter.complete(request);
@@ -75,7 +88,7 @@ describe("createOpenAiCompatibleAdapter — request shape", () => {
 
   it("sends the API key as a Bearer authorization header", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await adapter.complete(baseRequest());
 
@@ -112,7 +125,7 @@ describe("createOpenAiCompatibleAdapter — tool wire format", () => {
 
   async function postedBody(tools: typeof TOOLS | undefined) {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await adapter.complete({ ...baseRequest(), tools });
 
@@ -191,7 +204,7 @@ describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(jsonResponse(toolCallBody('{"amount":250,"from":"USD","to":"JPY"}')));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     const result = await adapter.complete(baseRequest());
 
@@ -207,7 +220,7 @@ describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
 
   it("returns empty text rather than throwing when a tool call comes back with content: null", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(toolCallBody("{}")));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     const result = await adapter.complete(baseRequest());
 
@@ -225,7 +238,7 @@ describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
         }),
       ),
     );
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await expect(adapter.complete(baseRequest())).rejects.toBeInstanceOf(LlmMalformedResponseError);
   });
@@ -234,7 +247,7 @@ describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
 describe("createOpenAiCompatibleAdapter — success path", () => {
   it("parses text, usage, and finishReason", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     const result = await adapter.complete(baseRequest());
 
@@ -258,7 +271,7 @@ describe("createOpenAiCompatibleAdapter — 429 retry", () => {
         .fn()
         .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, false, 429))
         .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
       const resultPromise = adapter.complete(baseRequest());
       await vi.runAllTimersAsync();
@@ -282,7 +295,7 @@ describe("createOpenAiCompatibleAdapter — Retry-After honored on 429", () => {
           jsonResponse({ error: "rate limited" }, false, 429, { "retry-after": "7" }),
         )
         .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
       const setTimeoutSpy = vi.spyOn(global, "setTimeout");
 
       const resultPromise = adapter.complete(baseRequest());
@@ -308,7 +321,7 @@ describe("createOpenAiCompatibleAdapter — 5xx exhausts retries", () => {
     vi.useFakeTimers();
     try {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: "boom" }, false, 503));
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
       const resultPromise = adapter.complete(baseRequest()).then(
         () => {
@@ -341,7 +354,11 @@ describe("createOpenAiCompatibleAdapter — timeout", () => {
           });
         });
       });
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, timeoutMs: 1_000 });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, {
+        ...PERMISSIVE_OPTS,
+        fetchImpl,
+        timeoutMs: 1_000,
+      });
 
       const resultPromise = adapter.complete(baseRequest()).then(
         () => {
@@ -378,7 +395,11 @@ describe("createOpenAiCompatibleAdapter — timeout", () => {
         } as unknown as Response;
         return Promise.resolve(response);
       });
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, timeoutMs: 1_000 });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, {
+        ...PERMISSIVE_OPTS,
+        fetchImpl,
+        timeoutMs: 1_000,
+      });
 
       const resultPromise = adapter.complete(baseRequest()).then(
         () => {
@@ -406,7 +427,7 @@ describe("createOpenAiCompatibleAdapter — malformed responses", () => {
       },
       text: async () => "not json",
     } as unknown as Response);
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await expect(adapter.complete(baseRequest())).rejects.toBeInstanceOf(LlmMalformedResponseError);
   });
@@ -417,7 +438,7 @@ describe("createOpenAiCompatibleAdapter — malformed responses", () => {
         choices: [{ message: { content: "hi" }, finish_reason: "stop" }],
       }),
     );
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await expect(adapter.complete(baseRequest())).rejects.toBeInstanceOf(LlmMalformedResponseError);
   });
@@ -428,7 +449,7 @@ describe("createOpenAiCompatibleAdapter — API key redaction", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(jsonResponse({ error: `bad key ${PROFILE.apiKey}` }, false, 401));
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     try {
       await adapter.complete(baseRequest());
@@ -446,7 +467,7 @@ describe("createOpenAiCompatibleAdapter — API key redaction", () => {
       const fetchImpl = vi
         .fn()
         .mockRejectedValue(new TypeError(`request with key ${PROFILE.apiKey} failed: ECONNRESET`));
-      const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl });
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
       const resultPromise = adapter.complete(baseRequest()).then(
         () => {

@@ -244,7 +244,7 @@ export async function boot(): Promise<void> {
   const startHandler = createStartHandler(telegramChannel, pool);
 
   const providerProfiles = buildProviderProfiles(config);
-  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger);
+  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger, config);
   const completionHandler = createCompletionHandler({
     channel: telegramChannel,
     llmProvider,

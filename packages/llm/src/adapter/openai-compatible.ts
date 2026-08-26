@@ -20,11 +20,6 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 /** 5xx and network/timeout errors: bounded exponential backoff, then rethrow. */
 const MAX_TRANSIENT_RETRIES = 5;
 
-/** Used when the caller supplies no `usageRepo` — usage recording becomes a no-op rather than mandatory. */
-const NOOP_USAGE_REPO: LlmUsageRepo = {
-  recordUsage: async () => {},
-};
-
 /** Used when the caller supplies no `logger` — `resolveCostUsd`'s unknown-model warn has somewhere safe to go. */
 const NOOP_LOGGER: Logger = {
   debug: () => {},
@@ -37,22 +32,30 @@ export interface OpenAiCompatibleAdapterOptions {
   fetchImpl?: typeof fetch;
   /** Per-request timeout, ms. Default 30s. */
   timeoutMs?: number;
-  /** Records usage/cost after every successful `complete()`. Default: a no-op (nothing recorded). */
-  usageRepo?: LlmUsageRepo;
+  /**
+   * Records usage/cost after every successful `complete()`. Mandatory, not
+   * optional-with-a-no-op-default: an adapter constructed without one used
+   * to silently disable cost recording, which is exactly the failure mode
+   * that let Phase 4's budget ceiling go unenforced for the real bot (see
+   * `build-llm-provider.ts`). Every caller — production and test — must now
+   * wire one explicitly, even a fake, so a missing wire is a compile error
+   * instead of a silent no-op.
+   */
+  usageRepo: LlmUsageRepo;
   /** Receives `resolveCostUsd`'s unknown-model warning. Default: a no-op logger. */
   logger?: Logger;
   /**
    * Monthly budget ceiling (Phase 4). `usageRepo` and `capUsd` travel
    * together in one object so a partial config (one without the other) is
-   * unrepresentable. `apps/hermes/src/llm/build-llm-provider.ts` is the one
-   * real construction site and always supplies this, making the check
-   * mandatory in practice for every live call; omitting it here — as every
-   * pre-existing unit test in this file does, since they exercise unrelated
-   * behavior — skips the check with no default cap to fall back to,
-   * deliberately unlike `usageRepo`/`logger`'s silent no-op defaults above
-   * (see `check-budget.ts` for the check itself).
+   * unrepresentable. Mandatory for the same reason `usageRepo` above is:
+   * an optional-with-a-silent-skip default would let any construction site
+   * — production or test — bypass the ceiling without anyone noticing.
+   * `apps/hermes/src/llm/build-llm-provider.ts` is the one production
+   * construction site and always supplies this; every test that doesn't
+   * care about budget behavior passes an explicit, permissive cap instead
+   * of relying on a default (see `check-budget.ts` for the check itself).
    */
-  budget?: { usageRepo: BudgetUsageRepo; capUsd: number; clock?: Clock };
+  budget: { usageRepo: BudgetUsageRepo; capUsd: number; clock?: Clock };
 }
 
 interface OpenAiToolCall {
@@ -403,22 +406,21 @@ async function recordCompletionUsage(
 /** OpenAI-compatible adapter over raw `fetch`. No SDK: two endpoints don't justify a mega-package. */
 export function createOpenAiCompatibleAdapter(
   profile: ProviderProfile,
-  opts?: OpenAiCompatibleAdapterOptions,
+  opts: OpenAiCompatibleAdapterOptions,
 ): LlmProvider {
-  const fetchImpl = opts?.fetchImpl ?? fetch;
-  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const usageRepo = opts?.usageRepo ?? NOOP_USAGE_REPO;
-  const logger = opts?.logger ?? NOOP_LOGGER;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const usageRepo = opts.usageRepo;
+  const logger = opts.logger ?? NOOP_LOGGER;
   const url = `${profile.baseUrl}/chat/completions`;
 
   return {
     async complete(request: CompletionRequest): Promise<CompletionResult> {
       // Checked before building the request or issuing any fetch — a breach
-      // must cost nothing, not merely record nothing.
-      if (opts?.budget) {
-        const { usageRepo: budgetUsageRepo, capUsd, clock } = opts.budget;
-        await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
-      }
+      // must cost nothing, not merely record nothing. `opts.budget` is
+      // mandatory (see OpenAiCompatibleAdapterOptions), so this always runs.
+      const { usageRepo: budgetUsageRepo, capUsd, clock } = opts.budget;
+      await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
 
       const body = buildRequestBody(request);
       const result = await completeWithRetry(fetchImpl, url, profile.apiKey, body, timeoutMs);

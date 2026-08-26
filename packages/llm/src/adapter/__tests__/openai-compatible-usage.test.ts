@@ -2,12 +2,23 @@ import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderProfile } from "../../port";
 import type { LlmUsageEntry, LlmUsageRepo } from "../../usage/usage-repo-port";
-import { createOpenAiCompatibleAdapter } from "../openai-compatible";
+import {
+  type OpenAiCompatibleAdapterOptions,
+  createOpenAiCompatibleAdapter,
+} from "../openai-compatible";
 
 const PROFILE: ProviderProfile = {
   baseUrl: "https://api.deepseek.com/v1",
   apiKey: "sk-secret",
   model: "deepseek-v4-flash",
+};
+
+// `budget` is mandatory now (Phase 4 gap fix). This suite is about usage
+// accounting, not the budget ceiling, so every adapter here gets a cap no
+// test spend could reach rather than relying on a removed default.
+const PERMISSIVE_BUDGET: OpenAiCompatibleAdapterOptions["budget"] = {
+  usageRepo: { sumCostSince: async () => 0 },
+  capUsd: Number.POSITIVE_INFINITY,
 };
 
 function createMockLogger(): Logger {
@@ -61,7 +72,12 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
     );
     const usageRepo = createMockUsageRepo();
     const logger = createMockLogger();
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, usageRepo, logger });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, {
+      fetchImpl,
+      usageRepo,
+      logger,
+      budget: PERMISSIVE_BUDGET,
+    });
 
     const result = await adapter.complete(baseRequest());
 
@@ -92,7 +108,7 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
     const logger = createMockLogger();
     const adapter = createOpenAiCompatibleAdapter(
       { ...PROFILE, model: "gemini-3.6-flash" },
-      { fetchImpl, usageRepo, logger },
+      { fetchImpl, usageRepo, logger, budget: PERMISSIVE_BUDGET },
     );
 
     const result = await adapter.complete({ ...baseRequest(), model: "gemini-3.6-flash" });
@@ -116,6 +132,7 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
       fetchImpl,
       usageRepo,
       logger: createMockLogger(),
+      budget: PERMISSIVE_BUDGET,
     });
 
     const result = await adapter.complete(baseRequest());
@@ -134,7 +151,12 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
     const usageRepo = createMockUsageRepo();
     usageRepo.recordUsage.mockRejectedValue(new Error("db down"));
     const logger = createMockLogger();
-    const adapter = createOpenAiCompatibleAdapter(PROFILE, { fetchImpl, usageRepo, logger });
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, {
+      fetchImpl,
+      usageRepo,
+      logger,
+      budget: PERMISSIVE_BUDGET,
+    });
 
     const result = await adapter.complete(baseRequest());
 
@@ -157,6 +179,7 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
       fetchImpl,
       usageRepo,
       logger: createMockLogger(),
+      budget: PERMISSIVE_BUDGET,
     });
 
     await expect(adapter.complete(baseRequest())).rejects.toThrow();

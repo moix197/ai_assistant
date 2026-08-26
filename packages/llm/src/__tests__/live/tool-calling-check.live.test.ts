@@ -141,7 +141,15 @@ async function runProviderTrials(
   profile: ProviderProfile,
 ): Promise<ProviderMetrics> {
   const recorder = createRecordingFetch();
-  const provider = createOpenAiCompatibleAdapter(profile, { fetchImpl: recorder.fetchImpl });
+  // `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap fix);
+  // this live check pays real provider cost by design and isn't exercising
+  // usage accounting or the budget ceiling, so a permissive no-op stands in
+  // for both.
+  const provider = createOpenAiCompatibleAdapter(profile, {
+    fetchImpl: recorder.fetchImpl,
+    usageRepo: { recordUsage: async () => {} },
+    budget: { usageRepo: { sumCostSince: async () => 0 }, capUsd: Number.POSITIVE_INFINITY },
+  });
   const providerFamily = identifyProviderFamily(profile);
   const base = { profileSlot, providerFamily, model: profile.model };
   const trials: TrialOutcome[][] = [];

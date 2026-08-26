@@ -16,6 +16,7 @@ export {
   createOpenAiCompatibleAdapter,
   type OpenAiCompatibleAdapterOptions,
 } from "./adapter/openai-compatible";
+export { resolveBudgetCapUsd } from "./budget/resolve-budget-cap";
 export { MAX_TOKENS_PER_TURN } from "./max-tokens";
 export {
   type BilledTokens,
