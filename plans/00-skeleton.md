@@ -448,9 +448,9 @@ abstraction):_
 **Verification:**
 
 - [x] `pnpm -r test` green
-- [ ] Message `/ping` → reply includes uptime and DB status; `/start` → confirms allowlisted + connected
+- [x] Message `/ping` → reply includes uptime and DB status; `/start` → confirms allowlisted + connected
 - [x] Chunking verified via the unit test above (a live 6000-char *inbound* message is impossible — Telegram itself caps inbound text at 4096 — so this is intentionally a unit-test-only verification, noted in the plan per the no-manual-only-verification-when-testable-logic-exists rule)
-- [ ] `docker compose stop hermes` (sends SIGTERM, default 10s grace period) while a message is mid-handling → logs show clean drain and exit 0 before the grace period expires; `docker compose logs` shows no forced SIGKILL
+- [x] `docker compose stop hermes` (sends SIGTERM, default 10s grace period) while a message is mid-handling → logs show clean drain and exit 0 before the grace period expires; `docker compose logs` shows no forced SIGKILL
 
 **Deviations (Phase 4 review, commit `1c5fa60`):**
 
@@ -480,16 +480,16 @@ abstraction):_
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: message chunking, backoff/retry policy, /start and /ping, graceful shutdown`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
