@@ -55,7 +55,12 @@ describe.skipIf(!testDatabaseUrl)("llm-usage-repo (integration)", () => {
   });
 
   it("sumCostSince sums cost_usd across multiple rows recorded at or after the given time", async () => {
-    const since = new Date();
+    // Backdated a second: `created_at` defaults to Postgres `now()`, whose
+    // clock is not this process's. A `since` taken from `new Date()` at the
+    // same instant intermittently lands *after* the first row's timestamp and
+    // drops it from the sum. The window under test is minutes wide, so a
+    // second of slack costs the assertion nothing.
+    const since = new Date(Date.now() - 1_000);
 
     await recordUsage(pool, {
       provider: "p",
