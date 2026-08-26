@@ -37,6 +37,17 @@ per-turn messages: `tools` (schema, most stable) -> system message (stable
 per profile) -> variable per-turn messages (invariant #6 establishes the
 ordering here; Phase 3 proves it against real cache-hit numbers).
 
+Tool calling is the adapter's job on both sides of the wire. Outbound, each
+port-level `ToolDefinition` is wrapped in the OpenAI envelope
+`{ type: "function", function: { name, description, parameters } }` — posting
+the bare port shape is rejected outright (DeepSeek: HTTP 400 "tools[0]: missing
+field `type`"; Gemini's OpenAI-compatible endpoint: `Unknown name "name" at
+'tools[0]'`). Inbound, `choices[0].message.tool_calls` is mapped back to
+`ToolCall[]`, with each call's `arguments` string `JSON.parse`d — a parse
+failure yields an empty argument object rather than throwing, leaving schema
+enforcement to the caller. A tool-call reply carries `content: null`, which is
+**not** malformed: the tool call is the message, and `text` is `""` for it.
+
 Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 `callWithRetry`, reusing `@hermes/core`'s `nextDelay`:
 
@@ -49,9 +60,11 @@ Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 - Per-request timeout via an internally-owned `AbortController` +
   `setTimeout`; firing throws `LlmTimeoutError`. Retries resend the
   identical request body.
-- An HTTP-200 body that isn't valid JSON, or is valid JSON missing `text` or
-  a well-formed `usage` block, throws `LlmMalformedResponseError` — never a
-  silent partial success. A missing `usage` in particular is never defaulted
+- An HTTP-200 body that isn't valid JSON, or is valid JSON carrying neither
+  `content` nor `tool_calls`, or missing a well-formed `usage` block, throws
+  `LlmMalformedResponseError` — never a silent partial success. A tool-call
+  reply with `content: null` is not that case; it is valid, and yields `text:
+  ""`. A missing `usage` in particular is never defaulted
   to zero: that would let a later phase record zero cost for a real, billed
   call.
 - Every thrown error's message is redacted so the API key never appears in

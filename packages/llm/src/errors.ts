@@ -34,11 +34,13 @@ export class LlmHttpError extends Error {
 }
 
 /**
- * An HTTP-200 body that is non-JSON, or valid JSON missing a required field
- * (`text` or `usage`), is treated identically: malformed, not a silent
- * partial success. In particular, a missing `usage` block never defaults to
- * zero — that would let a later phase silently record zero cost for a real,
- * billed call.
+ * An HTTP-200 body that is non-JSON, or valid JSON carrying neither text nor a
+ * tool call, or missing a well-formed `usage` block, is treated identically:
+ * malformed, not a silent partial success. Text alone is not required — an
+ * OpenAI-compatible provider answers a tool call with `content: null`, and the
+ * tool call *is* the message. In particular, a missing `usage` block never
+ * defaults to zero — that would let a later phase silently record zero cost
+ * for a real, billed call.
  */
 export class LlmMalformedResponseError extends Error {
   constructor(message: string) {

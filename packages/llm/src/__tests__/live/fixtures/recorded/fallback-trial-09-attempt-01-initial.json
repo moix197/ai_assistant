@@ -1,0 +1,11 @@
+{
+  "profileSlot": "fallback",
+  "providerFamily": "gemini",
+  "model": "gemini-3.6-flash",
+  "trial": 9,
+  "attemptIndex": 1,
+  "attemptKind": "initial",
+  "maxTokens": 8192,
+  "status": 200,
+  "bodyText": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EtEECs4EARFNMg+pwK3q/dF1wcCZ6AfuSdztRpkrVaIeHL8OgeFUg5nDCLfqGFb4EtNMsqzgR8kkZL6DeOHntV/SnSBkk5XVWKqVhXRbpZe/bbM42LTcZiVuFvoxUponresE7yYBTVnbC7ViTHWwan1zZfFur7A0eoJ3hoHzoBlQ7OBNwZa2SkbSDhv3jenw+gwa2rJRqEZULdxKft9lExZNAQMdY3Yxpg32ecx4M5Un2xX/3DlBGI2CKLhmBdE9TY8YBYdN8amBFlDz07ozYYKoOVVv4/670D8Sm7Zajz35vXym+5e6Yc/GOdfOJdOMCzl7cu0I0Hj81uRTKAT3UIFAlRTVP15t2fiR40LmTWljbZYTWKFafU2ML1dLJt0txh4m7ELiBzbmQO+sUkWx/JvDxSpIDKEQL8fPB3kjNnxq0cswu2SodJEtgEf6DgSjYycqACujUcLdkb1e2zNx7BfFofQIuqSixNxxmUv51mXM7b+hDK0Rre68SONJLaRtovpUNPtYgEwbe/k0SY3/e3LzvLLwSTZvZf+icjlyS3wHuu7ndTfIw3W0H3GQPl3y8NyVldAxF4hyhxAaNo6RiEzJBH0DbaIVcmw4JrJY8QbZvlOunLo8IL5WGdrsWYJwDsDfgePG2ZE0hMxvgSHc7JerGsjngk95VeSh0I9WpucokSvTR3+vy2nghhMyUs0K7jFRa6s29ZF4HI1cgvTQEetFOoFRhw7iy43Lj7ZoyA87pxtBBm9jM7bhXVGA9OONadFztLfpIOmOXvFxtl6MlAkKfsI=\"}},\"function\":{\"arguments\":\"{\\\"amount\\\":250,\\\"to\\\":\\\"JPY\\\",\\\"from\\\":\\\"USD\\\"}\",\"name\":\"convert_currency\"},\"id\":\"call_1828965\",\"type\":\"function\"}]}}],\"created\":1787767914,\"id\":\"ZSyPaoSNHMGkmtkPga2soQM\",\"model\":\"gemini-3.6-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":28,\"prompt_tokens\":674,\"total_tokens\":866}}"
+}

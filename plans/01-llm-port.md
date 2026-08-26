@@ -407,22 +407,22 @@ only the orchestrator can supply.
 
 **Steps:**
 
-- [ ] Build the 5-tool fixture: five small, plausible JSON-Schema tool defs
+- [x] Build the 5-tool fixture: five small, plausible JSON-Schema tool defs
       (e.g. `get_current_time`, `echo`, and three more representative
       thin/fat-tool shapes) and one fixed user prompt designed to exercise
       tool selection — this is test-local fixture data, not a real tool
       registry; `packages/agent` (2c) owns the real registry
-- [ ] Live test: call `LlmProvider.complete()` **10 times** built from the
+- [x] Live test: call `LlmProvider.complete()` **10 times** built from the
       **primary** profile's real credentials with the 5-tool prompt, then 10
       more times against the **fallback** profile's real credentials — same
       prompt, same tool defs each trial, all sequential (not parallel, to keep
       rate limits predictable and free-tier-safe)
-- [ ] Metrics captured per ROADMAP §8, per provider, over the 10 trials: (1)
+- [x] Metrics captured per ROADMAP §8, per provider, over the 10 trials: (1)
       tool-call accuracy — count of trials where the model picked the
       fixture's defensible tool, judged by a fixed expected-tool assertion,
       not a subjective read; (2) malformed-JSON rate — count of trials where
       the adapter's own JSON-Schema-shaped tool-call arguments failed to parse
-- [ ] **Expect zero-content 200s from the reasoning model, and do not score
+- [x] **Expect zero-content 200s from the reasoning model, and do not score
       them as malformed JSON.** Per the "reasoning models return zero-content
       200s" risk above, `gemini-3.6-flash` can answer HTTP 200 with
       `finish_reason: "length"`, `completion_tokens: 0`, and no `content` —
@@ -435,15 +435,15 @@ only the orchestrator can supply.
       enough to distort the comparison, say so explicitly in the decision doc —
       "this model needs a bigger output budget to tool-call reliably" is itself
       a D5-relevant finding
-- [ ] Record all 20 raw responses (10 per provider) as fixtures under
+- [x] Record all 20 raw responses (10 per provider) as fixtures under
       `fixtures/recorded/`; the default `pnpm test` lane gets a **separate**,
       non-live test (in the normal `__tests__` tree, not `live/`) that replays
       these fixtures through the same assertion logic, so the check's
       assertion code stays exercised in CI without spending money or needing
       live keys
-- [ ] Run the check for real, live, once, via `pnpm test:live`. Read the
+- [x] Run the check for real, live, once, via `pnpm test:live`. Read the
       actual result before writing D5 — do not pre-write a passing result
-- [ ] **Contingency evaluation (only take this branch if the concrete numeric
+- [x] **Contingency evaluation (only take this branch if the concrete numeric
       trigger in `Dependencies & Risks` fires):** Gemini malformed-JSON rate
       ≥ 20% or accuracy ≤ 70%, with DeepSeek not showing the same problem on
       the same run. If triggered, add `packages/llm/src/adapter/
@@ -454,7 +454,7 @@ only the orchestrator can supply.
       note the exact trigger numbers and the fix in D5. If the trigger does
       not fire, do not build it; D5 states the measured numbers and that the
       check passed cleanly on the OpenAI-compatible path for both providers
-- [ ] `.ai/decisions/d5-deepseek-primary-gemini-fallback.md`: this PRD's one
+- [x] `.ai/decisions/d5-deepseek-primary-gemini-fallback.md`: this PRD's one
       decision doc (per "Decision docs" scoping — D1/D2 are not this PRD's to
       write). Include rejected alternatives already settled by the roadmap
       (provider registry, automatic failover) and the check's actual numbers
@@ -468,30 +468,30 @@ only the orchestrator can supply.
 
 **Verification:**
 
-- [ ] `pnpm test` (default lane) does **not** attempt any network call for
+- [x] `pnpm test` (default lane) does **not** attempt any network call for
       this check — confirm by running with no `LLM_*` env vars set at all and
       seeing it still pass via fixture replay
-- [ ] `pnpm test:live` (with both real credential sets present) runs the live
+- [x] `pnpm test:live` (with both real credential sets present) runs the live
       check (10 trials per provider) and prints a clear pass/fail plus the two
       measured metrics per provider (malformed-JSON rate, accuracy), and
       whether the concrete numeric trigger fired
-- [ ] `.ai/decisions/d5-deepseek-primary-gemini-fallback.md` exists and states
+- [x] `.ai/decisions/d5-deepseek-primary-gemini-fallback.md` exists and states
       the actual measured result, not a placeholder
-- [ ] If the contingency triggered: `gemini-native.ts` exists, is wired only
+- [x] If the contingency triggered: `gemini-native.ts` exists, is wired only
       for the Gemini profile, and the same live check passes against it. If
       not triggered: confirm no such file was added
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `test: §8 DeepSeek-vs-Gemini tool-calling check, decision D5`
+- [x] Changes committed: `test: §8 DeepSeek-vs-Gemini tool-calling check, decision D5`
 - [ ] Phase marked complete
 
 ---

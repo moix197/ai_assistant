@@ -1,0 +1,11 @@
+{
+  "profileSlot": "fallback",
+  "providerFamily": "gemini",
+  "model": "gemini-3.6-flash",
+  "trial": 7,
+  "attemptIndex": 1,
+  "attemptKind": "initial",
+  "maxTokens": 8192,
+  "status": 200,
+  "bodyText": "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"Ep4DCpsDARFNMg9fQoPTs6cQ/lA8MRJ7E8AId/OzfhR1ExkBYYIdY+4/KkFXWqR/8OrjyDrIPYvDbT2pVg+vhtqJtnOzQnqwwvZpMJXzB1ABulTwWsd76zgBOYqmAqw+6LRBSugSO56Ysb00XG1SxGboGY4oXOxbxft3882b3T3JJQOWyMJCVslXf9Vm7JdfAhRz+In7KAyJJl/QllUvs7rKq1p1FOZTNj8wspumUmOEf6fnlDp4/Aabf0eiv8a3WJvQOT8fc9F3Uv4lgJDpSaxH7g3beJx/Ze6DVa9SHGVJotFRSuoaztPaMBqGG1AD+0nBwI8a83gNKMYc7OI8WedFC0ggMFnIFz1x53Dx6lMh/9LrP0sF724HmCRr4B+ODLWSTflUBdpM/kOWkdS9YaJdERekGxw0+xGp3mtL9FwxJ/0RutpkF6qPko0s7LBB57FtMEZcU51qq8TePAH1aVUN4CjVcYoGd1JBPLOG3uDIMOpjW1DTE7w+wAXJzb6PGSnIHz8SE2qY2bcZZevBbWVQkCh1a6GEtb9QlnG3QCCw\"}},\"function\":{\"arguments\":\"{\\\"from\\\":\\\"USD\\\",\\\"amount\\\":250,\\\"to\\\":\\\"JPY\\\"}\",\"name\":\"convert_currency\"},\"id\":\"call_2177389\",\"type\":\"function\"}]}}],\"created\":1787767907,\"id\":\"WSyPaoxMj6Kq2w_FkcewBg\",\"model\":\"gemini-3.6-flash\",\"object\":\"chat.completion\",\"usage\":{\"completion_tokens\":28,\"prompt_tokens\":674,\"total_tokens\":820}}"
+}

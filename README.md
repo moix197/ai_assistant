@@ -52,5 +52,8 @@ curl -i localhost:3000/health
 
 - `pnpm build` — build every package (`pnpm -r build`)
 - `pnpm test` — run every package's tests (`pnpm -r test`)
+- `pnpm test:live` — the §8 live tool-calling check in `@hermes/llm`. Excluded
+  from `pnpm test`: it spends real money against live provider APIs and skips
+  itself unless both `LLM_*` profiles are set.
 - `pnpm lint` — Biome check across the repo
 - `pnpm dev` — run `apps/hermes` natively with `tsx watch`

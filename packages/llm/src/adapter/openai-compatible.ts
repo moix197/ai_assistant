@@ -133,7 +133,9 @@ function parseCompletionResponse(raw: unknown): CompletionResult {
   // tool call *is* the message. Only a reply carrying neither is malformed.
   const content = choice?.message?.content;
   if (typeof content !== "string" && toolCalls.length === 0) {
-    throw new LlmMalformedResponseError("LLM response is missing choices[0].message.content");
+    throw new LlmMalformedResponseError(
+      "LLM response has neither choices[0].message.content nor choices[0].message.tool_calls",
+    );
   }
   const text = typeof content === "string" ? content : "";
 
