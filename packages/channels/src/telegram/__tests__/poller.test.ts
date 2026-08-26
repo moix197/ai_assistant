@@ -90,11 +90,14 @@ describe("createTelegramPoller — handler failure", () => {
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("transient send failure"));
 
-    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
+    createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      retryDelayMs: 1,
+    }).subscribe(handler);
 
-    // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
-    // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
 
     expect(handler).toHaveBeenCalledTimes(1);
     // Second poll re-requests from the same (unadvanced) offset — update 20
@@ -118,11 +121,14 @@ describe("createTelegramPoller — handler failure", () => {
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValueOnce(new Error("boom"));
 
-    createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
+    createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      retryDelayMs: 1,
+    }).subscribe(handler);
 
-    // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
-    // path now waits out the real RETRY_DELAY_MS (3000ms) before retrying.
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
 
     // Update 31 was never attempted this batch — advancing past update 30
     // despite its failure would leapfrog the offset and lose it forever.

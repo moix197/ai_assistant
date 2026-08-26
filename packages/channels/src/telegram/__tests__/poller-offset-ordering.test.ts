@@ -85,11 +85,9 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       setOffset,
     };
 
-    createTelegramPoller({ client, logger, offsetRepo }).subscribe(handler);
+    createTelegramPoller({ client, logger, offsetRepo, retryDelayMs: 1 }).subscribe(handler);
 
-    // Timeout raised past vi.waitFor's 1000ms default: the handler-failure
-    // path waits out the real RETRY_DELAY_MS (3000ms) before retrying.
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(setOffset).not.toHaveBeenCalled();
