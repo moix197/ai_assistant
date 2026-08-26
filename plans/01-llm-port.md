@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-26
 **Branch:** `feat/01-llm-port`
-**Status:** Phase 2 complete — Phase 3 next
+**Status:** Phase 3 complete — Phase 4 next
 
 ## Context
 
@@ -529,18 +529,18 @@ proof. Requires the live credentials from `## Prerequisites`.
 
 **Steps:**
 
-- [ ] Migration `002_llm_usage.sql`, following `001_telegram_offset.sql`'s
+- [x] Migration `002_llm_usage.sql`, following `001_telegram_offset.sql`'s
       conventions (own transaction, tracked in `schema_migrations`)
-- [ ] `llm-usage-repo.ts`: two functions against the pool; `sumCostSince`
+- [x] `llm-usage-repo.ts`: two functions against the pool; `sumCostSince`
       exists here already (used by Phase 4, built now since it's the natural
       home next to `recordUsage`, not because Phase 4 needs it yet — this is
       not speculative, both consumers land in this same PRD)
-- [ ] Injected-port shape in `packages/llm`: confirm `llm` still declares no
+- [x] Injected-port shape in `packages/llm`: confirm `llm` still declares no
       dependency on `@hermes/store` in `package.json` — this is the same
       boundary rule Phase 1 established, now under real pressure since
       there's an actual DB write to make
-- [ ] Pricing constant: start from the ROADMAP §2.1 directional table values
-      as a draft, then **[ ] verify every model id string and both
+- [x] Pricing constant: start from the ROADMAP §2.1 directional table values
+      as a draft, then **[x] verify every model id string and both
       per-token prices against current provider pricing docs before this
       phase ships — do not carry the roadmap's directional numbers over
       unverified.** Record the actual verification date as the file-level
@@ -555,7 +555,7 @@ proof. Requires the live credentials from `## Prerequisites`.
       model ids actually configured in `LLM_PRIMARY_MODEL`/
       `LLM_FALLBACK_MODEL` as a blocking finding for this phase, not a
       follow-up
-- [ ] **Never derive total spend by summing the visible token counters.** Per
+- [x] **Never derive total spend by summing the visible token counters.** Per
       the "reasoning tokens break `prompt + completion = total`" risk above,
       `gemini-3.6-flash` was observed live returning `prompt_tokens: 10`,
       `completion_tokens: 0`, `total_tokens: 27` — 17 billed reasoning tokens
@@ -567,10 +567,10 @@ proof. Requires the live credentials from `## Prerequisites`.
       by the same margin. Add a unit test using these exact observed numbers
       (10 / 0 / 27) so the case is pinned to a real provider response, not a
       hypothetical
-- [ ] Wire usage recording into the adapter's success path only — a failed
+- [x] Wire usage recording into the adapter's success path only — a failed
       call (already thrown as a typed error before this point) records
       nothing, since no tokens were billed
-- [ ] **Invariant #6 proof, live:** two sequential `complete()` calls sharing
+- [x] **Invariant #6 proof, live:** two sequential `complete()` calls sharing
       an identical `tools`+`system` prefix and differing only in the trailing
       `messages` content (matching the invariant's "volatile content last"
       rule). Assert the **second** call's `usage.cacheHitTokens` is greater
@@ -578,7 +578,7 @@ proof. Requires the live credentials from `## Prerequisites`.
       — read from the actual provider response, never inferred from the
       request JSON's key order. A shape-only assertion does not satisfy this
       step
-- [ ] `packages/store/README.md`: document the table and the cache-hit column
+- [x] `packages/store/README.md`: document the table and the cache-hit column
 
 **Tests:**
 
@@ -591,32 +591,103 @@ proof. Requires the live credentials from `## Prerequisites`.
 
 **Verification:**
 
-- [ ] `pnpm test` green (fake `fetch`, fake usage repo)
-- [ ] `pnpm test:db` green against the docker-compose Postgres — confirms the
+- [x] `pnpm test` green (fake `fetch`, fake usage repo)
+- [x] `pnpm test:db` green against the docker-compose Postgres — confirms the
       migration and the cache-hit-column round-trip for real
-- [ ] `pnpm test:live` green — confirms real cache-hit token counts are
+- [x] `pnpm test:live` green — confirms real cache-hit token counts are
       nonzero on the second of two prefix-sharing calls. **This is the
       concrete, unfalsifiable check the requester called out by name — a
       failing or skipped result here means invariant #6 is not actually
       proven, regardless of what the request-shape unit tests say**
-- [ ] Manually inspect one `llm_usage` row via `psql` after a live call:
+- [x] Manually inspect one `llm_usage` row via `psql` after a live call:
       `cache_hit_tokens` is populated and distinct from `input_tokens`
-- [ ] **Pricing verification, explicit:** every key in `MODEL_PRICING`
+- [x] **Pricing verification, explicit:** every key in `MODEL_PRICING`
       matches a model id currently configured in `LLM_PRIMARY_MODEL` /
       `LLM_FALLBACK_MODEL`, each price was checked against the provider's
       current published pricing page (not copied from the roadmap without
       re-checking), and the file-level "as of" comment carries the actual
       verification date
 
+**Execution notes (deviations from the plan as written):**
+
+- **`deepseek-chat` was retired by the provider.** `GET /v1/models` on the
+  live key returns only `deepseek-v4-flash`, `deepseek-v4-pro`,
+  `deepseek-v4-flash-vision-exp`. This is exactly the blocking failure mode
+  the pricing step warned about, and it had already happened: the configured
+  `LLM_PRIMARY_MODEL` was a dead id, so the primary provider was broken, not
+  merely mispriced. `.env` now sets `LLM_PRIMARY_MODEL=deepseek-v4-flash`.
+  `.ai/decisions/d5-deepseek-primary-gemini-fallback.md` still records the
+  Phase 2 tool-calling measurement against `deepseek-chat` — that result is
+  stale and must be flagged during the knowledge-base sync.
+- **`packages/core` was modified, though Phase 3's file table did not list
+  it.** `Usage` had no `cacheHitTokens` field, so the phase's own
+  verification (`usage.cacheHitTokens > 0`) was unsatisfiable as specified.
+  Added `cacheHitTokens` to `Usage` and parsed both wire shapes in the
+  adapter: DeepSeek's `usage.prompt_cache_hit_tokens` and the
+  OpenAI-compatible `usage.prompt_tokens_details.cached_tokens` (Gemini).
+  Absent/non-numeric cache info yields `0` — unlike an absent `usage` block,
+  which still throws.
+- **`MODEL_PRICING` carries DeepSeek's peak prices, not off-peak.** DeepSeek
+  publishes a ~50% off-peak discount that the flat table shape deliberately
+  does not model. Pricing high can only over-report spend, which is the safe
+  direction for the Phase 4 ceiling.
+- **`input_tokens` stores the cache-MISS portion only**, so
+  `input_tokens + cache_hit_tokens` recovers the provider's raw prompt count
+  with no double counting. Documented in `packages/store/README.md`.
+- **The live cache-hit test seeds its prefix per run.** A literally constant
+  prefix stays warm in DeepSeek's cache once any run has populated it, so
+  every later run reported a hit on the FIRST call too and the cold→warm
+  transition became unobservable — the test passed while proving nothing.
+  A `randomUUID()` in the system prompt guarantees call one is a genuine
+  miss, and the test now asserts `first.cacheHitTokens === 0` as well.
+- **Invariant #6, measured:** cold call `promptTokens 3166 / cacheHitTokens 0
+  / $0.001452`; warm call `promptTokens 3166 / cacheHitTokens 3072 /
+  $0.000113` — a 12.8x cost reduction on an identical prefix, from real
+  provider-reported counts. 3072 = 48 x 64, on DeepSeek's documented
+  64-token cache granularity.
+- **`llm_usage` row verified end-to-end through `boot.ts`'s own wiring**, not
+  a test double: row 23 shows `input_tokens 27, cache_hit_tokens 1536`.
+- **`pnpm test:live` runs the whole live directory**, so it also re-fires
+  Phase 2's 10-trials-per-provider tool-calling check (~140s, 20 billed
+  calls) and rewrites that phase's tracked fixtures under
+  `fixtures/recorded/`. Those fixtures were reverted. In that run Gemini
+  recorded 2 hard failures, both HTTP 429 free-tier rate limits on trials 9
+  and 10 — not a regression from this phase.
+- **A `recordUsage` failure logs and continues; it does not throw.** The
+  provider call has already succeeded and the tokens are already billed by
+  that point, so letting the insert's rejection propagate would cost the
+  operator the reply *on top of* the lost row. The `error` log carries
+  provider, model, all three token counts and the resolved cost, so a dropped
+  row can be reconstructed from logs.
+- **Adapter construction was extracted to
+  `apps/hermes/src/llm/build-llm-provider.ts`** (shaped like
+  `build-provider-profiles.ts`). `boot.ts` offered no testable seam — it
+  builds a real pool, Telegram channel and advisory lock — so the wiring that
+  routes `usageRepo` to the store's `recordUsage` had no test pinning it, and
+  `usageRepo`/`logger` both default to no-ops: dropping them would have
+  silently disabled all cost recording with nothing failing.
+- **`pricing.test.ts` now validates `MODEL_PRICING` against the configured
+  `LLM_*_MODEL` env vars when they are set**, falling back to literal-key
+  assertions when they are not. Literal-only assertions could not have caught
+  the `deepseek-chat` retirement that this phase ran into.
+- **`LlmUsageEntry` now lives in `@hermes/core`**, re-exported from both `llm`
+  and `store`, so the two sides can no longer drift a field apart without a
+  type error.
+
+- **`deepseek-v4-flash` spends its output budget on reasoning.** A 32-token
+  `maxTokens` call returned empty text with `completionTokens: 32`. Phase 1's
+  max-tokens ladder covers this; noted here because the model swap above
+  changes which model the ladder is exercising.
+
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [ ] Code-reviewer agent has verified this phase
 - [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
 - [ ] Changes committed: `feat: llm usage accounting with cache-hit token tracking`
 - [ ] Phase marked complete

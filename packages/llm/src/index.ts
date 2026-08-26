@@ -12,3 +12,11 @@ export {
   type OpenAiCompatibleAdapterOptions,
 } from "./adapter/openai-compatible";
 export { MAX_TOKENS_PER_TURN } from "./max-tokens";
+export {
+  type BilledTokens,
+  MODEL_PRICING,
+  type ModelPricing,
+  deriveBilledTokens,
+  resolveCostUsd,
+} from "./pricing";
+export type { LlmUsageEntry, LlmUsageRepo } from "./usage/usage-repo-port";

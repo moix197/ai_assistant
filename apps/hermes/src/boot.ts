@@ -6,7 +6,6 @@ import {
 } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { type Logger, createLogger } from "@hermes/core";
-import { createOpenAiCompatibleAdapter } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
   acquireInstanceLock,
@@ -23,6 +22,7 @@ import { createStartHandler } from "./handlers/start";
 import { withAllowlist } from "./handlers/with-allowlist";
 import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
+import { buildLlmProvider } from "./llm/build-llm-provider";
 import { buildProviderProfiles } from "./llm/build-provider-profiles";
 
 /**
@@ -244,7 +244,7 @@ export async function boot(): Promise<void> {
   const startHandler = createStartHandler(telegramChannel, pool);
 
   const providerProfiles = buildProviderProfiles(config);
-  const llmProvider = createOpenAiCompatibleAdapter(providerProfiles.primary);
+  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger);
   const completionHandler = createCompletionHandler({
     channel: telegramChannel,
     llmProvider,

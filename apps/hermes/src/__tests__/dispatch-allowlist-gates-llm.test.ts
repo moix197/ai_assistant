@@ -45,7 +45,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
     const complete = vi.fn().mockResolvedValue({
       text: "should never be reached",
       toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheHitTokens: 0 },
       finishReason: "stop",
     });
     const llmProvider: LlmProvider = { complete };
@@ -81,7 +81,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
     const complete = vi.fn().mockResolvedValue({
       text: "a real reply",
       toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
       finishReason: "stop",
     });
     const llmProvider: LlmProvider = { complete };

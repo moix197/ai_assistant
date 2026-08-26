@@ -1,4 +1,4 @@
-import { nextDelay } from "@hermes/core";
+import { type Logger, nextDelay } from "@hermes/core";
 import { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "../errors";
 import type {
   CompletionRequest,
@@ -8,6 +8,8 @@ import type {
   ProviderProfile,
   ToolDefinition,
 } from "../port";
+import { deriveBilledTokens, resolveCostUsd } from "../pricing";
+import type { LlmUsageEntry, LlmUsageRepo } from "../usage/usage-repo-port";
 
 const REDACTED_KEY = "<REDACTED>";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -17,10 +19,27 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 /** 5xx and network/timeout errors: bounded exponential backoff, then rethrow. */
 const MAX_TRANSIENT_RETRIES = 5;
 
+/** Used when the caller supplies no `usageRepo` — usage recording becomes a no-op rather than mandatory. */
+const NOOP_USAGE_REPO: LlmUsageRepo = {
+  recordUsage: async () => {},
+};
+
+/** Used when the caller supplies no `logger` — `resolveCostUsd`'s unknown-model warn has somewhere safe to go. */
+const NOOP_LOGGER: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
 export interface OpenAiCompatibleAdapterOptions {
   fetchImpl?: typeof fetch;
   /** Per-request timeout, ms. Default 30s. */
   timeoutMs?: number;
+  /** Records usage/cost after every successful `complete()`. Default: a no-op (nothing recorded). */
+  usageRepo?: LlmUsageRepo;
+  /** Receives `resolveCostUsd`'s unknown-model warning. Default: a no-op logger. */
+  logger?: Logger;
 }
 
 interface OpenAiToolCall {
@@ -33,7 +52,15 @@ interface OpenAiChatCompletionResponse {
     message?: { content?: string | null; tool_calls?: OpenAiToolCall[] };
     finish_reason?: string;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    /** DeepSeek's own wire field for prefix-cache hits. */
+    prompt_cache_hit_tokens?: number;
+    /** The OpenAI-compatible shape Gemini's endpoint uses instead. */
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }
 
 function redact(value: string, apiKey: string): string {
@@ -114,6 +141,19 @@ function normalizeFinishReason(raw: string | undefined): FinishReason {
 }
 
 /**
+ * Reads cache-hit tokens from either wire shape a provider might use:
+ * DeepSeek's own `prompt_cache_hit_tokens`, or the OpenAI-compatible
+ * `prompt_tokens_details.cached_tokens` Gemini's endpoint uses. Absent or
+ * non-numeric in both is a legitimate "no cache info" and returns `0` — only
+ * a missing `usage` block entirely is treated as malformed.
+ */
+function parseCacheHitTokens(usage: OpenAiChatCompletionResponse["usage"]): number {
+  if (typeof usage?.prompt_cache_hit_tokens === "number") return usage.prompt_cache_hit_tokens;
+  const cachedTokens = usage?.prompt_tokens_details?.cached_tokens;
+  return typeof cachedTokens === "number" ? cachedTokens : 0;
+}
+
+/**
  * Parses an HTTP-200 body into a `CompletionResult`. A body carrying neither
  * text nor a tool call, or a missing/partial `usage` block, throws
  * `LlmMalformedResponseError` rather than defaulting — a defaulted zero
@@ -156,6 +196,7 @@ function parseCompletionResponse(raw: unknown): CompletionResult {
       promptTokens: usage.prompt_tokens,
       completionTokens: usage.completion_tokens,
       totalTokens: usage.total_tokens,
+      cacheHitTokens: parseCacheHitTokens(usage),
     },
     finishReason: normalizeFinishReason(choice?.finish_reason),
   };
@@ -286,6 +327,66 @@ async function completeWithRetry(
   }
 }
 
+/**
+ * The `provider` label recorded on each usage row: the API host, derived
+ * from the profile's own `baseUrl` rather than a hardcoded family name, so
+ * a future model/host needs no change here to be labeled correctly.
+ */
+function deriveProviderLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Records one successful call's usage and cost. Called from the adapter's
+ * success path only — a failed call has no billed tokens to record. Never
+ * called from `parseCompletionResponse`/`callOnce`/`completeWithRetry`
+ * directly: those run once per HTTP attempt, including retries, and usage
+ * must be recorded exactly once per logical `complete()` call.
+ */
+async function recordCompletionUsage(
+  usageRepo: LlmUsageRepo,
+  logger: Logger,
+  profile: ProviderProfile,
+  request: CompletionRequest,
+  result: CompletionResult,
+): Promise<void> {
+  const costUsd = resolveCostUsd(request.model, result.usage, logger);
+  const { missTokens, reasoningTokens } = deriveBilledTokens(result.usage);
+  const entry: LlmUsageEntry = {
+    provider: deriveProviderLabel(profile.baseUrl),
+    model: request.model,
+    inputTokens: missTokens,
+    outputTokens: result.usage.completionTokens + reasoningTokens,
+    cacheHitTokens: result.usage.cacheHitTokens,
+    costUsd,
+  };
+
+  // The provider call already succeeded and the tokens are already billed by
+  // this point — a bookkeeping failure here must not throw away an
+  // already-paid-for reply. Log and continue instead of letting complete()
+  // reject; the fields below let the row be reconstructed from logs.
+  try {
+    await usageRepo.recordUsage(entry);
+  } catch (error) {
+    logger.error(
+      "failed to record llm usage — call succeeded and was billed, but the row was not persisted",
+      {
+        provider: entry.provider,
+        model: entry.model,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        cacheHitTokens: entry.cacheHitTokens,
+        costUsd: entry.costUsd,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+}
+
 /** OpenAI-compatible adapter over raw `fetch`. No SDK: two endpoints don't justify a mega-package. */
 export function createOpenAiCompatibleAdapter(
   profile: ProviderProfile,
@@ -293,12 +394,16 @@ export function createOpenAiCompatibleAdapter(
 ): LlmProvider {
   const fetchImpl = opts?.fetchImpl ?? fetch;
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const usageRepo = opts?.usageRepo ?? NOOP_USAGE_REPO;
+  const logger = opts?.logger ?? NOOP_LOGGER;
   const url = `${profile.baseUrl}/chat/completions`;
 
   return {
     async complete(request: CompletionRequest): Promise<CompletionResult> {
       const body = buildRequestBody(request);
-      return completeWithRetry(fetchImpl, url, profile.apiKey, body, timeoutMs);
+      const result = await completeWithRetry(fetchImpl, url, profile.apiKey, body, timeoutMs);
+      await recordCompletionUsage(usageRepo, logger, profile, request, result);
+      return result;
     },
   };
 }

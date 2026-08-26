@@ -45,7 +45,7 @@ function completionResult(
   return {
     text: toolCalls.length > 0 ? "" : "I'd rather explain it in prose.",
     toolCalls,
-    usage: { promptTokens: 900, completionTokens: 40, totalTokens: 940 },
+    usage: { promptTokens: 900, completionTokens: 40, totalTokens: 940, cacheHitTokens: 0 },
     finishReason,
   };
 }

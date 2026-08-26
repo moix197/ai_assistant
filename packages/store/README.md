@@ -60,6 +60,36 @@ their connection closes, crash or not.
 `src/migrations/` holds `001_telegram_offset.sql` — the first real
 migration.
 
+## LLM usage accounting
+
+`src/migrations/002_llm_usage.sql` creates `llm_usage` (`id bigserial pk,
+created_at timestamptz not null default now(), provider text not null, model
+text not null, input_tokens int not null, output_tokens int not null,
+cache_hit_tokens int not null, cost_usd numeric(12,6) not null`), plus an
+index on `created_at` for the `sumCostSince` access pattern below. One row
+per completed LLM call.
+
+`cache_hit_tokens` is its own column, **never folded into `input_tokens`**:
+`input_tokens` holds only the "miss" portion of the prompt (tokens *not*
+served from the provider's prefix cache), so the two columns are additive —
+`input_tokens + cache_hit_tokens` recovers the provider's raw prompt token
+count. Keeping them separate is what lets `@hermes/llm`'s `resolveCostUsd`
+(see `packages/llm/README.md`) price cache hits at their own, steeply
+discounted rate instead of the full input rate, and what makes a `psql`
+inspection of the table immediately show whether a given call actually hit
+the cache.
+
+- `recordUsage(pool, entry)` — inserts one row. `entry` is
+  `{ provider, model, inputTokens, outputTokens, cacheHitTokens, costUsd }`.
+  Called from `@hermes/llm`'s OpenAI-compatible adapter, on its success path
+  only, via the `LlmUsageRepo` port (`packages/llm/src/usage/usage-repo-port.ts`)
+  — `apps/hermes/src/boot.ts` wires this function into that port so `llm`
+  never depends on `@hermes/store` directly.
+- `sumCostSince(pool, sinceUtc)` — sums `cost_usd` for every row recorded at
+  or after `sinceUtc`. Built now, next to `recordUsage`, because it's the
+  natural home for it; used by Phase 4's budget ceiling, not by anything in
+  this phase.
+
 ## Testing
 
 `src/__tests__/migrate.test.ts` covers `sortMigrationFilenames` as a pure
@@ -78,3 +108,9 @@ ECONNRESET against the dockerized Postgres) and run
 `src/__tests__/advisory-lock.test.ts` are integration-only, gated the same
 way: get/set round-tripping for the offset repo, and lock
 acquire/contend/crash-release/re-acquire semantics for the advisory lock.
+
+`src/__tests__/llm-usage-repo.test.ts` is integration-only, gated the same
+way: the migration applies cleanly, a recorded row round-trips with
+`cache_hit_tokens` distinct from `input_tokens`, and `sumCostSince` sums
+correctly across multiple rows and excludes rows recorded before the given
+time.

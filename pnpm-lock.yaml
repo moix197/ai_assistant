@@ -67,6 +67,9 @@ importers:
 
   packages/store:
     dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
       pg:
         specifier: ^8.13.1
         version: 8.23.0

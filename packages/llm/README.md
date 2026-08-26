@@ -78,6 +78,51 @@ package (this package throws, per project convention). `LlmTimeoutError` is
 distinct from `LlmAbortedError` (Phase 5): "the adapter itself gave up
 waiting" vs. "the process was asked to shut down mid-call".
 
+## Usage accounting
+
+`Usage` (from `@hermes/core`) carries a `cacheHitTokens` field alongside
+`promptTokens`/`completionTokens`/`totalTokens` — a subset of
+`promptTokens`, not additional tokens. The adapter parses it from either wire
+shape a provider might use: DeepSeek's own `usage.prompt_cache_hit_tokens`,
+or the OpenAI-compatible `usage.prompt_tokens_details.cached_tokens` shape
+Gemini's endpoint uses. Absent in both is a legitimate "no cache info" and
+parses to `0` — only a missing `usage` block entirely is malformed (see
+Errors above).
+
+`src/pricing.ts` exports `MODEL_PRICING` (per-model
+`{ inputPerMillionUsd, outputPerMillionUsd, cacheHitDiscount }`, verified
+against each provider's own pricing page — see the file-level comment for
+the "as of" date and sources) and `resolveCostUsd(model, usage, logger)`. An
+unknown model id logs a `warn` via the injected logger and returns `0`
+rather than throwing — silent, uncounted `$0` on a real, billed call is the
+failure mode this guards against, so the `warn` is what keeps a stale or
+mistyped `MODEL_PRICING` key loud instead of quietly disabling Phase 4's
+budget ceiling for that model.
+
+The provider's own `total_tokens` is authoritative: `resolveCostUsd` never
+derives spend by summing `promptTokens + completionTokens` alone.
+`gemini-3.6-flash` has been observed live returning `prompt_tokens: 10,
+completion_tokens: 0, total_tokens: 27` — 17 billed reasoning tokens in
+neither visible counter. `deriveBilledTokens(usage)` computes that
+remainder (`reasoningTokens`, floored at 0) plus the non-cache-hit `miss`
+portion of the prompt (`missTokens`), and prices `reasoningTokens` at the
+output rate rather than dropping it.
+
+`src/usage/usage-repo-port.ts` exports `LlmUsageRepo { recordUsage(entry):
+Promise<void> }` and its `LlmUsageEntry` shape — a small injected port, not
+a direct `@hermes/store` dependency, mirroring `packages/channels`'
+`TelegramOffsetRepo`. `apps/hermes/src/boot.ts` wires it to `@hermes/store`'s
+`recordUsage(pool, entry)`.
+
+`createOpenAiCompatibleAdapter`'s `opts` accepts `usageRepo` and `logger`,
+both optional (defaulting to a no-op repo and a no-op logger, so existing
+callers that don't care about usage accounting need no changes). After every
+successful `complete()`, the adapter resolves cost via `resolveCostUsd` and
+calls `usageRepo.recordUsage(...)` before returning the result — a failed
+call records nothing, since no tokens were billed. The recorded `provider`
+label is the profile's `baseUrl` hostname (e.g. `api.deepseek.com`), derived
+rather than hardcoded so a new host needs no code change here.
+
 ## Max tokens
 
 `src/max-tokens.ts` exports `MAX_TOKENS_PER_TURN` (1024) — invariant #9's

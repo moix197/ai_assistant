@@ -42,7 +42,7 @@ describe("createCompletionHandler", () => {
       complete: vi.fn().mockResolvedValue({
         text: "a real llm reply",
         toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
         finishReason: "stop",
       }),
     };
@@ -59,7 +59,7 @@ describe("createCompletionHandler", () => {
     const complete = vi.fn().mockResolvedValue({
       text: "ok",
       toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
       finishReason: "stop",
     });
     const llmProvider: LlmProvider = { complete };

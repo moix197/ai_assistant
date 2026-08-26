@@ -31,4 +31,29 @@ export interface Usage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /**
+   * Prompt tokens served from the provider's prefix cache, already counted
+   * within `promptTokens` — not additional tokens. `0` when the provider
+   * reports no cache info; that's a legitimate "no hit", distinct from a
+   * missing `usage` block entirely (which adapters still throw on).
+   */
+  cacheHitTokens: number;
+}
+
+/**
+ * One completed LLM call's billed usage and cost, as persisted by
+ * `@hermes/store`'s `recordUsage` and consumed by `@hermes/llm`'s adapter via
+ * the injected `LlmUsageRepo` port. Lives here, not duplicated in each
+ * package, so a field added on one side can't silently fail to persist on
+ * the other.
+ */
+export interface LlmUsageEntry {
+  provider: string;
+  model: string;
+  /** "Miss" prompt tokens only — excludes cacheHitTokens, see `packages/llm/src/pricing.ts`. */
+  inputTokens: number;
+  /** Includes reasoning/thinking tokens billed as output but invisible in `completionTokens`. */
+  outputTokens: number;
+  cacheHitTokens: number;
+  costUsd: number;
 }

@@ -239,7 +239,12 @@ describe("createOpenAiCompatibleAdapter — success path", () => {
     const result = await adapter.complete(baseRequest());
 
     expect(result.text).toBe("hello there");
-    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    expect(result.usage).toEqual({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      cacheHitTokens: 0,
+    });
     expect(result.finishReason).toBe("stop");
     expect(result.toolCalls).toEqual([]);
   });
