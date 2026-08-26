@@ -317,15 +317,15 @@ builds on.
 
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green (catches a missing `tsconfig.base.json` path entry)
-- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
-- [ ] With `LLM_PRIMARY_*` pointed at Gemini free tier: message the bot →
+- [x] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
+- [x] With `LLM_PRIMARY_*` pointed at Gemini free tier: message the bot →
       reply is a real, non-echoed LLM completion
-- [ ] Unset one `LLM_FALLBACK_*` key while leaving the other two set → boot
+- [x] Unset one `LLM_FALLBACK_*` key while leaving the other two set → boot
       fails with a readable error naming the missing key, not a stack trace
-- [ ] Unset all three `LLM_FALLBACK_*` keys → boot succeeds with `fallback`
+- [x] Unset all three `LLM_FALLBACK_*` keys → boot succeeds with `fallback`
       undefined — primary-only boot is a valid, supported configuration, not
       an error path
-- [ ] `docker compose logs hermes | grep -i <api-key-prefix>` → no match,
+- [x] `docker compose logs hermes | grep -i <api-key-prefix>` → no match,
       including in a forced network-error scenario
 - [ ] Send a message from a `channelUserId` **not** on `TELEGRAM_ALLOWLIST` →
       no reply, no provider call, `docker compose logs hermes` shows the
