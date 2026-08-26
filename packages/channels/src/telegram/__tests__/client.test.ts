@@ -72,6 +72,46 @@ describe("createTelegramClient — getUpdates timeout margin", () => {
   });
 });
 
+describe("createTelegramClient — 409 conflict retry policy", () => {
+  it("retries a persistent 409 a bounded number of times, then rejects fatally with a readable message", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            ok: false,
+            error_code: 409,
+            description: "Conflict: terminated by other getUpdates request",
+          },
+          false,
+          409,
+        ),
+      );
+      const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+      const resultPromise = client
+        .getUpdates({ timeout: 30, limit: 100, allowedUpdates: ["message"] })
+        .then(
+          () => {
+            throw new Error("expected getUpdates to reject");
+          },
+          (error: unknown) => error,
+        );
+      await vi.runAllTimersAsync();
+      const error = await resultPromise;
+
+      // 1 initial attempt + 3 bounded retries, then it gives up for good.
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain("409");
+      expect(message).toContain("another instance is already polling");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("createTelegramClient — token redaction", () => {
   it("never surfaces the raw token in a thrown error on a network failure", async () => {
     // Network/timeout errors are retried with backoff before rethrowing

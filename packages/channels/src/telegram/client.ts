@@ -228,7 +228,17 @@ async function callWithRetry<T>(
         }
         if (error.status === 409) {
           conflictAttempt++;
-          if (conflictAttempt > MAX_CONFLICT_RETRIES) throw error;
+          if (conflictAttempt > MAX_CONFLICT_RETRIES) {
+            // A 409 that survives bounded retries means another process is
+            // holding this bot token's getUpdates stream long-term, not a
+            // transient blip — rethrow with a readable, actionable message
+            // instead of leaving the caller to decode an HTTP status.
+            throw new TelegramApiError(
+              `Telegram getUpdates conflict (409) persisted after ${MAX_CONFLICT_RETRIES} retries: ` +
+                `another instance is already polling with this bot token. ${error.message}`,
+              { status: error.status, errorCode: error.errorCode, retryAfter: error.retryAfter },
+            );
+          }
           await delay(nextDelay(conflictAttempt));
           continue;
         }

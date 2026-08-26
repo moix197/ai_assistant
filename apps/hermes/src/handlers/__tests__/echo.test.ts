@@ -59,20 +59,6 @@ describe("createEchoHandler", () => {
     );
   });
 
-  it("drops a non-private chat message, logged, no reply", async () => {
-    const channel = createMockChannel();
-    const logger = createMockLogger();
-    const handler = createEchoHandler(channel, logger);
-
-    await handler(inboundMessage({ chatType: "group" }));
-
-    expect(channel.send).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      "rejected: non-private chat",
-      expect.objectContaining({ channelUserId: ALLOWED_ID, chatType: "group" }),
-    );
-  });
-
   it("never crashes on a raw update with no message.from — dropped before any handler runs", () => {
     const logger = createMockLogger();
 

@@ -1,6 +1,6 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TelegramClient, TelegramUpdate } from "../client";
+import { TelegramApiError, type TelegramClient, type TelegramUpdate } from "../client";
 import { type TelegramOffsetRepo, createTelegramPoller } from "../poller";
 
 function createMockLogger(): Logger {
@@ -134,5 +134,39 @@ describe("createTelegramPoller — handler failure", () => {
     // despite its failure would leapfrog the offset and lose it forever.
     expect(handler).toHaveBeenCalledTimes(1);
     expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
+  });
+});
+
+describe("createTelegramPoller — fatal 409 conflict", () => {
+  it("stops polling and reports the fatal error instead of retrying forever", async () => {
+    const conflictError = new TelegramApiError("conflict, gave up after retries", {
+      status: 409,
+    });
+    const getUpdates = vi.fn().mockRejectedValue(conflictError);
+    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const logger = createMockLogger();
+    const onFatalError = vi.fn();
+    const handler = vi.fn();
+
+    createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      retryDelayMs: 1,
+      onFatalError,
+    }).subscribe(handler);
+
+    await vi.waitFor(() => expect(onFatalError).toHaveBeenCalledTimes(1));
+    expect(onFatalError).toHaveBeenCalledWith(conflictError);
+    expect(logger.error).toHaveBeenCalledWith(
+      "fatal: telegram getUpdates conflict, stopping poller",
+      expect.objectContaining({ error: conflictError.message }),
+    );
+
+    const callsAtFatal = getUpdates.mock.calls.length;
+    // Give the loop a chance to run again if it hadn't actually stopped.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getUpdates.mock.calls.length).toBe(callsAtFatal);
+    expect(logger.warn).not.toHaveBeenCalledWith("getUpdates failed, retrying", expect.anything());
   });
 });

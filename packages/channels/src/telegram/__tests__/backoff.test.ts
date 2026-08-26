@@ -28,4 +28,9 @@ describe("nextDelay", () => {
     const delay = nextDelay(10, 1);
     expect(delay).toBe(1000);
   });
+
+  it("caps a hostile/buggy retry_after at the same ceiling as the computed backoff", () => {
+    const delay = nextDelay(1, 10_000);
+    expect(delay).toBe(30_000);
+  });
 });

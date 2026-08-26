@@ -20,16 +20,34 @@ import { createEchoHandler } from "./handlers/echo";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
 import { withAllowlist } from "./handlers/with-allowlist";
+import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
 
-/** Bounded wait for in-flight work to drain before moving on to lock release. */
-const DRAIN_TIMEOUT_MS = 8_000;
+/**
+ * Bounded wait for in-flight work to drain before moving on to lock release.
+ * Kept well under HARD_EXIT_TIMEOUT_MS (3s of gap) so lock.release(),
+ * pool.end() and the final log still have room to run before the hard-exit
+ * fallback fires.
+ */
+const DRAIN_TIMEOUT_MS = 5_000;
 /**
  * Guards against any shutdown step hanging past the container's stop grace
- * period (10s by default) — comfortably under it, leaving margin for the
- * final log/exit to run after the drain bound elapses.
+ * period (10s by default). Set 2s under that ceiling so the forced
+ * `process.exit(1)` and its log line still land before Docker sends SIGKILL,
+ * while leaving DRAIN_TIMEOUT_MS enough room above it for the post-drain
+ * steps (see above).
  */
-const HARD_EXIT_TIMEOUT_MS = 9_000;
+const HARD_EXIT_TIMEOUT_MS = 8_000;
+
+/**
+ * Matches a command allowing Telegram's optional `@botusername` suffix
+ * (sent in groups, and by some clients even in DMs) — not a full command
+ * parser, just this one allowance. `text` must otherwise equal `command`
+ * exactly; no argument parsing.
+ */
+export function matchesCommand(text: string, command: string): boolean {
+  return text === command || text.startsWith(`${command}@`);
+}
 
 function loadConfigOrExit(): Env {
   try {
@@ -97,7 +115,16 @@ export function registerShutdown(deps: ShutdownDeps): void {
     }, HARD_EXIT_TIMEOUT_MS);
     hardExitTimer.unref();
 
-    void shutdown(deps).finally(() => clearTimeout(hardExitTimer));
+    // No .finally() here: clearing the timer unconditionally would also
+    // clear it on a REJECTED shutdown (e.g. lock.release()/pool.end()
+    // throwing because the DB is already down) — the exact case this guard
+    // exists for. A failed shutdown must still exit promptly and audibly.
+    void shutdown(deps).catch((error) => {
+      deps.logger.error("shutdown failed, forcing exit", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      process.exit(1);
+    });
   }
 
   process.once("SIGTERM", handleSignal);
@@ -156,6 +183,13 @@ export async function boot(): Promise<void> {
       getOffset: () => getOffset(pool),
       setOffset: (updateId: number) => setOffset(pool, updateId),
     },
+    // Same rationale as the health server's onError: a fatal poller error
+    // (e.g. a persistent 409 conflict) must surface loudly and exit
+    // non-zero, not disappear into a silently-looping retry.
+    onFatalError: (error) => {
+      logger.error("fatal telegram poller error, exiting", { error: error.message });
+      process.exit(1);
+    },
   });
 
   const echoHandler = createEchoHandler(telegramChannel, logger);
@@ -163,13 +197,19 @@ export async function boot(): Promise<void> {
   const startHandler = createStartHandler(telegramChannel, pool);
 
   function dispatchCommand(message: InboundMessage): Promise<void> {
-    if (message.text === "/ping") return pingHandler(message);
-    if (message.text === "/start") return startHandler(message);
+    if (matchesCommand(message.text, "/ping")) return pingHandler(message);
+    if (matchesCommand(message.text, "/start")) return startHandler(message);
     return echoHandler(message);
   }
 
   const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
-  telegramChannel.subscribe(withAllowlist(dispatchCommand, allowlist, logger));
+  // Every handler (ping/start/echo) must pass both gates — composed once
+  // here rather than duplicated per handler, so neither check can be
+  // forgotten by a future handler. Allowlist runs outermost so an unknown
+  // sender is rejected before the private-chat check even looks at them.
+  telegramChannel.subscribe(
+    withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger),
+  );
 
   registerShutdown({ channel: telegramChannel, lock: instanceLock, pool, logger });
 }

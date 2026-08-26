@@ -5,7 +5,12 @@ import type {
   InboundMessage,
   InboundMessageHandler,
 } from "../channel";
-import type { TelegramClient, TelegramMessage, TelegramUpdate } from "./client";
+import {
+  TelegramApiError,
+  type TelegramClient,
+  type TelegramMessage,
+  type TelegramUpdate,
+} from "./client";
 
 const POLL_TIMEOUT_SECONDS = 30;
 const POLL_LIMIT = 100;
@@ -78,6 +83,15 @@ export interface TelegramPollerOptions {
   offsetRepo: TelegramOffsetRepo;
   /** Delay before retrying after a transient getUpdates/handler failure. Default DEFAULT_RETRY_DELAY_MS. */
   retryDelayMs?: number;
+  /**
+   * Called when the poller hits an error it must not retry forever — today,
+   * a 409 that already exhausted `client.ts`'s own bounded retries, meaning
+   * another instance holds this bot token's getUpdates stream long-term.
+   * Retrying that on a fixed delay indefinitely is exactly the
+   * mystery-failure mode this PRD exists to eliminate, so the loop stops
+   * itself and hands the error to the caller (boot.ts) instead.
+   */
+  onFatalError?: (error: Error) => void;
 }
 
 /** A Telegram `Channel` plus graceful-shutdown control. */
@@ -100,7 +114,7 @@ export interface TelegramPoller extends Channel {
  * backoff before one reaches here.
  */
 export function createTelegramPoller(options: TelegramPollerOptions): TelegramPoller {
-  const { client, logger, offsetRepo } = options;
+  const { client, logger, offsetRepo, onFatalError } = options;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   let handler: InboundMessageHandler | undefined;
   let offset: number | undefined;
@@ -133,6 +147,20 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
         allowedUpdates: ALLOWED_UPDATES,
       });
     } catch (error) {
+      // A 409 that already exhausted client.ts's own bounded retries is a
+      // permanent conflict (another instance holds the poll stream), not a
+      // transient blip — retrying it forever on a fixed delay would hide
+      // exactly the failure mode this PRD exists to surface. Stop the loop
+      // and hand it to the caller instead of looping.
+      if (error instanceof TelegramApiError && error.status === 409) {
+        logger.error("fatal: telegram getUpdates conflict, stopping poller", {
+          error: error.message,
+        });
+        stopping = true;
+        onFatalError?.(error);
+        return;
+      }
+
       logger.warn("getUpdates failed, retrying", {
         error: error instanceof Error ? error.message : String(error),
       });

@@ -1,6 +1,6 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { shutdown } from "../boot";
+import { registerShutdown, shutdown } from "../boot";
 
 function createMockLogger(): Logger {
   return {
@@ -66,5 +66,36 @@ describe("shutdown", () => {
     await shutdown({ channel, lock, pool, logger, drainTimeoutMs: 20 });
 
     expect(callOrder).toEqual(["lock.release", "pool.end"]);
+  });
+});
+
+describe("registerShutdown", () => {
+  it("still forces a non-zero exit when a shutdown step throws, without clearing the hard-exit guard early", async () => {
+    vi.useFakeTimers();
+    try {
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      const channel = { stop: vi.fn().mockResolvedValue(undefined) };
+      const lock = { release: vi.fn().mockRejectedValue(new Error("DB down")) };
+      const pool = { end: vi.fn().mockResolvedValue(undefined) };
+      const logger = createMockLogger();
+
+      registerShutdown({ channel, lock, pool, logger, drainTimeoutMs: 10 });
+      process.emit("SIGTERM");
+
+      await vi.runAllTimersAsync();
+
+      // The failed shutdown itself forces exit(1) — not the hard-exit
+      // fallback timer, which must remain armed (never cleared) on this path.
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(pool.end).not.toHaveBeenCalled();
+      expect(clearTimeoutSpy).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        "shutdown failed, forcing exit",
+        expect.objectContaining({ error: expect.stringContaining("DB down") }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
