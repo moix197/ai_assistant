@@ -7,6 +7,16 @@ const validEnv = {
   LOG_LEVEL: "info",
   TELEGRAM_BOT_TOKEN: "123456:FAKE-TOKEN-abcDEF",
   TELEGRAM_ALLOWLIST: "111,222",
+  LLM_PRIMARY_BASE_URL: "https://primary.example/v1",
+  LLM_PRIMARY_API_KEY: "primary-key",
+  LLM_PRIMARY_MODEL: "primary-model",
+};
+
+const validEnvWithFallback = {
+  ...validEnv,
+  LLM_FALLBACK_BASE_URL: "https://fallback.example/v1",
+  LLM_FALLBACK_API_KEY: "fallback-key",
+  LLM_FALLBACK_MODEL: "fallback-model",
 };
 
 describe("loadConfig", () => {
@@ -23,6 +33,9 @@ describe("loadConfig", () => {
     const config = loadConfig({
       DATABASE_URL: validEnv.DATABASE_URL,
       TELEGRAM_BOT_TOKEN: validEnv.TELEGRAM_BOT_TOKEN,
+      LLM_PRIMARY_BASE_URL: validEnv.LLM_PRIMARY_BASE_URL,
+      LLM_PRIMARY_API_KEY: validEnv.LLM_PRIMARY_API_KEY,
+      LLM_PRIMARY_MODEL: validEnv.LLM_PRIMARY_MODEL,
     });
     expect(config.PORT).toBe(3000);
     expect(config.LOG_LEVEL).toBe("info");
@@ -74,6 +87,56 @@ describe("loadConfig", () => {
   });
 });
 
+describe("loadConfig — LLM provider profiles", () => {
+  it("parses a valid primary-only config with fallback undefined", () => {
+    const config = loadConfig(validEnv);
+    expect(config.LLM_PRIMARY_BASE_URL).toBe(validEnv.LLM_PRIMARY_BASE_URL);
+    expect(config.LLM_PRIMARY_API_KEY).toBe(validEnv.LLM_PRIMARY_API_KEY);
+    expect(config.LLM_PRIMARY_MODEL).toBe(validEnv.LLM_PRIMARY_MODEL);
+    expect(config.LLM_FALLBACK_BASE_URL).toBeUndefined();
+    expect(config.LLM_FALLBACK_API_KEY).toBeUndefined();
+    expect(config.LLM_FALLBACK_MODEL).toBeUndefined();
+  });
+
+  it("parses a valid primary+fallback config with both populated", () => {
+    const config = loadConfig(validEnvWithFallback);
+    expect(config.LLM_FALLBACK_BASE_URL).toBe(validEnvWithFallback.LLM_FALLBACK_BASE_URL);
+    expect(config.LLM_FALLBACK_API_KEY).toBe(validEnvWithFallback.LLM_FALLBACK_API_KEY);
+    expect(config.LLM_FALLBACK_MODEL).toBe(validEnvWithFallback.LLM_FALLBACK_MODEL);
+  });
+
+  it("fails naming the missing key when only one of three LLM_FALLBACK_* keys is set", () => {
+    const env = { ...validEnv, LLM_FALLBACK_BASE_URL: "https://fallback.example/v1" };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/LLM_FALLBACK_API_KEY/);
+  });
+
+  it("fails naming the missing key when two of three LLM_FALLBACK_* keys are set", () => {
+    const env = {
+      ...validEnv,
+      LLM_FALLBACK_BASE_URL: "https://fallback.example/v1",
+      LLM_FALLBACK_API_KEY: "fallback-key",
+    };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/LLM_FALLBACK_MODEL/);
+  });
+
+  it("fails naming LLM_PRIMARY_BASE_URL when missing", () => {
+    const { LLM_PRIMARY_BASE_URL: _omit, ...rest } = validEnv;
+    expect(() => loadConfig(rest)).toThrow(/LLM_PRIMARY_BASE_URL/);
+  });
+
+  it("fails naming LLM_PRIMARY_API_KEY when missing", () => {
+    const { LLM_PRIMARY_API_KEY: _omit, ...rest } = validEnv;
+    expect(() => loadConfig(rest)).toThrow(/LLM_PRIMARY_API_KEY/);
+  });
+
+  it("fails naming LLM_PRIMARY_MODEL when missing", () => {
+    const { LLM_PRIMARY_MODEL: _omit, ...rest } = validEnv;
+    expect(() => loadConfig(rest)).toThrow(/LLM_PRIMARY_MODEL/);
+  });
+});
+
 describe("toRedactedLog", () => {
   it("masks DATABASE_URL and TELEGRAM_BOT_TOKEN, and leaves other fields intact", () => {
     const config = loadConfig(validEnv);
@@ -83,5 +146,14 @@ describe("toRedactedLog", () => {
     expect(redacted.PORT).toBe(3000);
     expect(redacted.LOG_LEVEL).toBe("info");
     expect(redacted.TELEGRAM_ALLOWLIST).toBe(validEnv.TELEGRAM_ALLOWLIST);
+  });
+
+  it("masks LLM_PRIMARY_API_KEY and LLM_FALLBACK_API_KEY, leaves base URL and model intact", () => {
+    const config = loadConfig(validEnvWithFallback);
+    const redacted = toRedactedLog(config);
+    expect(redacted.LLM_PRIMARY_API_KEY).toBe("***REDACTED***");
+    expect(redacted.LLM_FALLBACK_API_KEY).toBe("***REDACTED***");
+    expect(redacted.LLM_PRIMARY_BASE_URL).toBe(validEnvWithFallback.LLM_PRIMARY_BASE_URL);
+    expect(redacted.LLM_PRIMARY_MODEL).toBe(validEnvWithFallback.LLM_PRIMARY_MODEL);
   });
 });

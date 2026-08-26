@@ -38,6 +38,9 @@ importers:
       '@hermes/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@hermes/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@hermes/store':
         specifier: workspace:*
         version: link:../../packages/store
@@ -55,6 +58,12 @@ importers:
         version: 3.25.76
 
   packages/core: {}
+
+  packages/llm:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/store:
     dependencies:

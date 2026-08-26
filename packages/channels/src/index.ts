@@ -8,7 +8,6 @@ export type {
 } from "./channel";
 export { isAllowed, parseAllowlist } from "./telegram/allowlist";
 export { chunkText } from "./telegram/chunk";
-export { nextDelay } from "./telegram/backoff";
 export {
   createTelegramClient,
   TelegramApiError,

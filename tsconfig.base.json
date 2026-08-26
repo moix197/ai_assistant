@@ -11,7 +11,8 @@
       "@hermes/core": ["packages/core/src/index.ts"],
       "@hermes/config": ["packages/config/src/index.ts"],
       "@hermes/store": ["packages/store/src/index.ts"],
-      "@hermes/channels": ["packages/channels/src/index.ts"]
+      "@hermes/channels": ["packages/channels/src/index.ts"],
+      "@hermes/llm": ["packages/llm/src/index.ts"]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,

@@ -35,6 +35,17 @@ services:
       # plans/00-skeleton.md Prerequisites). TELEGRAM_ALLOWLIST may be empty.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_ALLOWLIST: ${TELEGRAM_ALLOWLIST:-}
+      # LLM primary provider profile, required; LLM_FALLBACK_* are optional
+      # but must be set all-or-none (see packages/config/src/schema.ts).
+      LLM_PRIMARY_BASE_URL: ${LLM_PRIMARY_BASE_URL}
+      LLM_PRIMARY_API_KEY: ${LLM_PRIMARY_API_KEY}
+      LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL}
+      LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-}
+      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
+      # Not read until Phase 4, passed through here so operators don't
+      # discover a missing var mid-Phase-4.
+      LLM_MONTHLY_BUDGET_USD: ${LLM_MONTHLY_BUDGET_USD:-}
     ports:
       - "3000:3000"
     # Telegram allows exactly one getUpdates consumer per bot token, so this

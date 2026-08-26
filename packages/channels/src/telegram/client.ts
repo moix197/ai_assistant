@@ -1,4 +1,4 @@
-import { nextDelay } from "./backoff";
+import { nextDelay } from "@hermes/core";
 import { chunkText } from "./chunk";
 
 /**

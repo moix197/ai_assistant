@@ -5,10 +5,10 @@ const JITTER_RATIO = 0.2;
 
 /**
  * Computes the delay before the next retry attempt (1-based `attempt`).
- * `retryAfterHeader` (seconds, from Telegram's 429 response) always wins
+ * `retryAfterHeader` (seconds, from a server's 429 response) always wins
  * when present — it's an authoritative signal from the server, not an
  * estimate — but is still capped at `MAX_DELAY_MS`, the same ceiling as the
- * computed backoff, so a hostile or buggy value can't stall the poller
+ * computed backoff, so a hostile or buggy value can't stall a caller
  * indefinitely. Otherwise, exponential backoff capped at `MAX_DELAY_MS` with
  * jitter. No clock dependency: callers pass the attempt count directly.
  */

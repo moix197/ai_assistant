@@ -9,3 +9,5 @@ export {
   type Logger,
 } from "./logger";
 export type { TelemetryEvent, TelemetryRecorder } from "./telemetry";
+export { nextDelay } from "./backoff";
+export type { Message, MessageRole, ToolCall, ToolResult, Usage } from "./llm-types";

@@ -6,6 +6,7 @@ import {
 } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { type Logger, createLogger } from "@hermes/core";
+import { createOpenAiCompatibleAdapter } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
   acquireInstanceLock,
@@ -16,12 +17,13 @@ import {
   setOffset,
   waitForDatabase,
 } from "@hermes/store";
-import { createEchoHandler } from "./handlers/echo";
+import { createCompletionHandler } from "./handlers/complete";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
 import { withAllowlist } from "./handlers/with-allowlist";
 import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
+import { buildProviderProfiles } from "./llm/build-provider-profiles";
 
 /**
  * Bounded wait for in-flight work to drain before moving on to lock release.
@@ -47,6 +49,31 @@ const HARD_EXIT_TIMEOUT_MS = 8_000;
  */
 export function matchesCommand(text: string, command: string): boolean {
   return text === command || text.startsWith(`${command}@`);
+}
+
+export interface DispatchCommandDeps {
+  pingHandler: (message: InboundMessage) => Promise<void>;
+  startHandler: (message: InboundMessage) => Promise<void>;
+  completionHandler: (message: InboundMessage) => Promise<void>;
+}
+
+/**
+ * Command dispatch, extracted to a factory (rather than left inline in
+ * `boot()`) so it can be composed under `withAllowlist(withPrivateChat(...))`
+ * in a test the same way `boot()` composes it for real — see
+ * `__tests__/dispatch-allowlist-gates-llm.test.ts`. `/ping` and `/start`
+ * short-circuit; anything else falls through to `completionHandler`, which
+ * replaced `echoHandler` here — `echo.ts` stays in the tree as a documented
+ * reference/fallback but is no longer wired.
+ */
+export function createDispatchCommand(
+  deps: DispatchCommandDeps,
+): (message: InboundMessage) => Promise<void> {
+  return function dispatchCommand(message: InboundMessage): Promise<void> {
+    if (matchesCommand(message.text, "/ping")) return deps.pingHandler(message);
+    if (matchesCommand(message.text, "/start")) return deps.startHandler(message);
+    return deps.completionHandler(message);
+  };
 }
 
 function loadConfigOrExit(): Env {
@@ -210,21 +237,30 @@ export async function boot(): Promise<void> {
     },
   });
 
-  const echoHandler = createEchoHandler(telegramChannel, logger);
+  // echoHandler stays available (createEchoHandler, "./handlers/echo") as a
+  // documented reference/fallback but is no longer wired — completionHandler
+  // (below) is dispatchCommand's fallthrough now.
   const pingHandler = createPingHandler(telegramChannel, pool);
   const startHandler = createStartHandler(telegramChannel, pool);
 
-  function dispatchCommand(message: InboundMessage): Promise<void> {
-    if (matchesCommand(message.text, "/ping")) return pingHandler(message);
-    if (matchesCommand(message.text, "/start")) return startHandler(message);
-    return echoHandler(message);
-  }
+  const providerProfiles = buildProviderProfiles(config);
+  const llmProvider = createOpenAiCompatibleAdapter(providerProfiles.primary);
+  const completionHandler = createCompletionHandler({
+    channel: telegramChannel,
+    llmProvider,
+    model: providerProfiles.primary.model,
+    logger,
+  });
+
+  const dispatchCommand = createDispatchCommand({ pingHandler, startHandler, completionHandler });
 
   const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
-  // Every handler (ping/start/echo) must pass both gates — composed once
-  // here rather than duplicated per handler, so neither check can be
+  // Every handler (ping/start/completion) must pass both gates — composed
+  // once here rather than duplicated per handler, so neither check can be
   // forgotten by a future handler. Allowlist runs outermost so an unknown
-  // sender is rejected before the private-chat check even looks at them.
+  // sender is rejected before the private-chat check even looks at them —
+  // and, since completionHandler is the fallthrough, before it ever reaches
+  // llmProvider.complete(), so an unknown sender never costs anything.
   telegramChannel.subscribe(
     withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger),
   );
