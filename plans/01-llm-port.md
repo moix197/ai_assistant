@@ -640,11 +640,14 @@ proof. Requires the live credentials from `## Prerequisites`.
   transition became unobservable — the test passed while proving nothing.
   A `randomUUID()` in the system prompt guarantees call one is a genuine
   miss, and the test now asserts `first.cacheHitTokens === 0` as well.
-- **Invariant #6, measured:** cold call `promptTokens 3166 / cacheHitTokens 0
-  / $0.001452`; warm call `promptTokens 3166 / cacheHitTokens 3072 /
-  $0.000113` — a 12.8x cost reduction on an identical prefix, from real
-  provider-reported counts. 3072 = 48 x 64, on DeepSeek's documented
-  64-token cache granularity.
+- **Invariant #6, measured** (final run, after the run seed moved ahead of
+  the tools block): cold call `promptTokens 3190 / cacheHitTokens 0 /
+  $0.001427`; warm call `promptTokens 3190 / cacheHitTokens 3072 /
+  $0.000144` — a ~9.9x cost reduction on an identical prefix, from real
+  provider-reported counts. 3072 = 48 x 64, on DeepSeek's documented 64-token
+  cache granularity. An earlier run with the seed in the system prompt only
+  measured 3166 / 0 -> 3072 at 12.8x; both agree on the cold->warm
+  transition.
 - **`llm_usage` row verified end-to-end through `boot.ts`'s own wiring**, not
   a test double: row 23 shows `input_tokens 27, cache_hit_tokens 1536`.
 - **`pnpm test:live` runs the whole live directory**, so it also re-fires

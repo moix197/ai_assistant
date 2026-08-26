@@ -3,10 +3,11 @@
 **Decision:** One pnpm workspace holding the whole system. Every concern the
 roadmap knows will be separate gets its own package **in the phase where it
 first appears** — never grown inside another package and extracted later, and
-never scaffolded ahead of its phase. Phases 0–1 therefore created exactly
-`apps/hermes`, `packages/core`, `packages/config`, `packages/store`,
-`packages/channels`, and nothing else: no empty `llm/`, `agent/`, `telemetry/`,
-or `google-*` directories exist, and their absence is the decision, not an
+never scaffolded ahead of its phase. The skeleton phase therefore created
+exactly `apps/hermes`, `packages/core`, `packages/config`, `packages/store`,
+`packages/channels`, and nothing else; `packages/llm` appeared only when the
+LLM-port phase actually needed it. No empty `agent/`, `telemetry/`, or
+`google-*` directories exist, and their absence is the decision, not an
 oversight.
 
 **Why:**

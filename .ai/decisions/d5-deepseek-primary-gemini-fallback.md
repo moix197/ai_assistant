@@ -20,7 +20,23 @@ rather than replaces it:
 > superset of its native API — if tool calling is quirky there, the contained fix
 > is a small native adapter behind the same port. See §2.1.
 
-## The measured result
+## ⚠ The measurement below is SUPERSEDED — the decision is not
+
+**DeepSeek retired `deepseek-chat`, the model every number in this document was
+measured against.** `GET /v1/models` on the live key now returns only
+`deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; the
+configured `LLM_PRIMARY_MODEL` is `deepseek-v4-flash`. The tool-calling table,
+the contingency arithmetic, and the truncation observation therefore describe a
+model that can no longer be called.
+
+The primary/fallback choice itself still stands and is not in question — nothing
+suggests the successor behaves worse. But **treat every number below as
+unverified against the model actually in production.** No replacement
+measurement has been taken: re-running `pnpm test:live` costs real money and
+20 billed calls, and has not been done. Do not quote these figures as current,
+and do not fabricate substitutes — re-run the check instead.
+
+## The measured result (against the now-retired `deepseek-chat`)
 
 Live run via `pnpm test:live`, 10 sequential trials per provider, the same
 5-tool prompt, through the real adapter. Duration 128s.
@@ -106,10 +122,13 @@ either):
 - Adding a provider means adding a profile (base URL + key + model, moved
   together), not a code path. Anything that can't be expressed that way is a
   signal to revisit D5, not to special-case the adapter.
-- The models actually measured are `deepseek-chat` and `gemini-3.6-flash`, not
-  the roadmap's directional `V4-Flash` / `Gemini Flash` labels. Model IDs are
-  config, and the pricing table in ROADMAP §2.1 is explicitly directional —
-  re-verify cost against the real IDs before relying on the budget estimate.
+- The models actually measured were `deepseek-chat` (since retired — see the
+  banner above) and `gemini-3.6-flash`, not the roadmap's directional
+  `V4-Flash` / `Gemini Flash` labels. Model IDs are config and providers retire
+  them without warning, so a stale id is a *breakage*, not just a mispricing:
+  `packages/llm/src/pricing.ts` must carry a key for every configured
+  `LLM_*_MODEL`, verified against the provider's live pricing page. See
+  [llm-cost-accounting](llm-cost-accounting.md).
 - The check is reproducible: `pnpm test:live` re-runs it, and the recorded
   responses are replayed offline by the default `pnpm test` lane. Re-run it
   before any provider swap; do not carry these numbers forward to a model this

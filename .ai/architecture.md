@@ -9,7 +9,7 @@ its rationale* — not API-level detail the code already documents.
 pnpm workspace, one package per concern, each created in the phase where it
 first appears (ROADMAP §3 / D3 — see
 [d3-monorepo-package-per-concern](decisions/d3-monorepo-package-per-concern.md)).
-What exists today is Phases 0–1 only:
+What exists today:
 
 ```
 apps/hermes        wiring + boot + shutdown, no logic
@@ -48,12 +48,22 @@ Strictly downward; no package imports one above it.
   Slack/WhatsApp adapter with a different persistence story. Reversing this and
   importing `@hermes/store` from `channels` is the easiest boundary in the tree
   to break by accident.
-- **`packages/llm` depends on `packages/core` only** — not `packages/config`
-  (env/config shape is boot's concern, mapped in `apps/hermes`) or
-  `packages/store` (persistence arrives as an injected port in Phase 3).
-  `apps/hermes/src/llm/build-provider-profiles.ts` is the one place allowed
-  to import both `@hermes/config` and `@hermes/llm`, mapping flat env fields
-  into the `ProviderProfile` the adapter needs.
+- **`packages/llm` depends on `packages/core` only** — never `@hermes/config`
+  or `@hermes/store`, both of which it has a standing temptation to import:
+  - *config* — env shape is boot's concern.
+    `apps/hermes/src/llm/build-provider-profiles.ts` is the one place allowed
+    to import both `@hermes/config` and `@hermes/llm`, mapping flat env fields
+    into the `ProviderProfile` the adapter needs.
+  - *store* — the adapter persists a usage row per call, but through an
+    injected `LlmUsageRepo` (`{ recordUsage }`), same shape as `channels`'
+    `TelegramOffsetRepo`. `apps/hermes/src/llm/build-llm-provider.ts` binds it
+    to `@hermes/store`'s `recordUsage(pool, entry)`. That binding is extracted
+    out of `boot.ts` because `boot()` has no testable seam, and both
+    `usageRepo` and `logger` default to no-ops — dropping the wiring would
+    disable cost recording silently.
+  - The row's shape, `LlmUsageEntry`, lives in `@hermes/core` and is
+    re-exported by both `llm` and `store`, so neither side can drift a field
+    apart without a type error.
 - **Nothing imports an implementation of `telemetry`.** The recorder port sits
   in `core`; `apps/hermes` will inject the implementation at boot (Phase 2).
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
@@ -78,11 +88,26 @@ Telegram getUpdates (long poll, 30s)
    │                    │                 allowlisted sender: replying into a
    │                    │                 group broadcasts to everyone in it
    │                    └─ unknown sender rejected before anything else looks at it
-   ▼  handler: /ping | /start | echo   →  channel.send() → chunkText → sendMessage
+   ▼  handler: /ping | /start | else → completionHandler   ← the fallthrough is
+   │                                    │                    PAID from here on
+   │                                    ▼  packages/llm adapter → provider HTTP
+   │                                    ▼  llm_usage row via injected LlmUsageRepo
+   │                                    │     →  packages/store  →  llm_usage
+   │                                    ▼  result.text
+   │                                 channel.send() → chunkText → sendMessage
    │
    ▼  offsetRepo.setOffset(update_id + 1)  →  packages/store  →  telegram_offset
        ^^ AFTER the handler resolves. Never before. See the polling decision doc.
 ```
+
+`echo.ts` is still in the tree as a reference/fallback but is no longer wired:
+`completionHandler` took its place as `dispatchCommand`'s fallthrough. The
+allowlist gate stays outermost precisely because that fallthrough now spends
+money — an unknown sender is rejected before it can reach `complete()`. The
+usage row is written from the adapter's success path, so a failed call records
+nothing and a retried one still records exactly once; see
+[llm-cost-accounting](decisions/llm-cost-accounting.md). One `complete()` per
+message: no tool loop, no history persistence yet — that's `packages/agent`.
 
 The offset write is the last step of handling an update, and a handler throwing
 aborts the rest of the batch so no later update's offset can leapfrog the one
