@@ -5,7 +5,7 @@ import { getOffset, setOffset } from "../telegram-offset-repo";
 
 // Integration coverage — skipped unless TEST_DATABASE_URL is set. See
 // packages/store/README.md for how to run this locally.
-const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+import { testDatabaseUrl } from "./db-env";
 
 describe.skipIf(!testDatabaseUrl)("telegram-offset-repo (integration)", () => {
   let pool: Pool;

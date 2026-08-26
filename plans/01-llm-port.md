@@ -682,18 +682,50 @@ proof. Requires the live credentials from `## Prerequisites`.
   max-tokens ladder covers this; noted here because the model swap above
   changes which model the ladder is exercising.
 
+
+- **Code review: green, no blocking findings.** All six focus areas verified
+  (`total_tokens` authoritative with the reasoning remainder priced, the
+  10/0/27 case pinned, `MODEL_PRICING` keys matching the configured
+  `LLM_*_MODEL`, cache-miss-only `input_tokens` with both wire shapes,
+  `packages/llm` still core-only, non-throwing `recordUsage` with a
+  reconstructable error log, success-path-only recording). Four nits recorded,
+  none fixed here: (1) the no-op `usageRepo`/`logger` defaults in
+  `openai-compatible.ts` re-open the silent-$0 hole at a second seam, pinned
+  only by `build-llm-provider.test.ts`; (2) doc drift — `usage-repo-port.ts`,
+  `llm-usage-repo.ts` and `packages/store/README.md` still say `boot.ts` wires
+  the port, which moved to `build-llm-provider.ts`; (3) `cacheHitDiscount` as
+  a derived multiplier (`0.031818`) is less checkable than an explicit
+  `cacheHitPerMillionUsd`; (4) `cost_usd numeric(12,6)` floors sub-$5e-7 calls
+  to zero — harmless at present volumes, relevant to Phase 4's ceiling.
+- **`pnpm test:db` did not exist when this phase ticked it green.** No such
+  script was defined in any `package.json`; the DB integration tests are
+  `describe.skipIf(!TEST_DATABASE_URL)` under plain `pnpm test`, and
+  `TEST_DATABASE_URL` was absent from `.env`, so all 11 DB tests silently
+  skipped. The claims themselves hold — run properly against a scratch
+  database, all 14 `@hermes/store` tests pass, `llm-usage-repo.test.ts`
+  included — but the gate that was supposed to prove them was vacuous. The
+  script is added as separate infrastructure before Phase 4, since Phases 4
+  and 5 both depend on it and Phase 5's invariant-#4 proof is `test:db`-only.
+  The DB test files also cannot run in parallel against one database
+  (concurrent `runMigrations` + `DELETE` produce `ECONNRESET`), so the script
+  forces serial execution.
+- **Orchestrator approval for this phase was delegated, not individually
+  given** ("please do what you can from here, just let me know when we get to
+  the spending money part"). The green review plus the re-run DB suite is what
+  the approval box rests on here.
+
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: llm usage accounting with cache-hit token tracking`
-- [ ] Phase marked complete
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: llm usage accounting with cache-hit token tracking`
+- [x] Phase marked complete
 
 ---
 

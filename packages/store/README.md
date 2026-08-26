@@ -102,7 +102,19 @@ since these tests seed and mutate real tables (e.g.
 `postgres://hermes:hermes@127.0.0.1:5432/hermes_test`, using `127.0.0.1`
 rather than `localhost` to avoid it resolving to `::1` and yielding
 ECONNRESET against the dockerized Postgres) and run
-`pnpm --filter @hermes/store test`.
+`pnpm test:db` from the repo root.
+
+`pnpm test:db` is the lane that actually proves these tests ran. The `skipIf`
+gate above makes a credential-free run indistinguishable from a passing one, so
+`test:db` refuses to start when `TEST_DATABASE_URL` is unset rather than exiting
+green on zero assertions, and it runs the files serially — they share one
+database, and concurrent `runMigrations`/`DELETE` across files is not safe.
+`src/__tests__/db-env.ts` resolves the URL, falling back to the repo-root `.env`
+when the shell did not export it; it mirrors
+`packages/llm/src/__tests__/live/setup.ts` because there is no `vitest.config.ts`
+anywhere to load `.env` for us. With that `.env` in place a plain `pnpm test`
+runs these tests too; without it they skip, and the default lane still needs no
+credentials.
 
 `src/__tests__/telegram-offset-repo.test.ts` and
 `src/__tests__/advisory-lock.test.ts` are integration-only, gated the same

@@ -5,7 +5,7 @@ import { acquireInstanceLock } from "../advisory-lock";
 
 // Integration coverage — skipped unless TEST_DATABASE_URL is set. See
 // packages/store/README.md for how to run this locally.
-const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+import { testDatabaseUrl } from "./db-env";
 
 describe.skipIf(!testDatabaseUrl)("acquireInstanceLock (integration)", () => {
   // A fresh key per test avoids collisions between tests racing on the same key.

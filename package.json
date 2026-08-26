@@ -8,6 +8,7 @@
     "build": "pnpm -r typecheck && pnpm -r build",
     "test": "pnpm -r test",
     "test:live": "pnpm --filter @hermes/llm run test:live",
+    "test:db": "pnpm -r --workspace-concurrency=1 run test:db",
     "lint": "biome check .",
     "dev": "tsx watch apps/hermes/src/index.ts"
   },
