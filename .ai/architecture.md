@@ -6,17 +6,109 @@ its rationale* — not API-level detail the code already documents.
 
 ## System shape
 
-_Empty. Describe the top-level decomposition once the first packages exist:_
-_what each package owns, and the boundaries between them._
+pnpm workspace, one package per concern, each created in the phase where it
+first appears (ROADMAP §3 / D3 — see
+[d3-monorepo-package-per-concern](decisions/d3-monorepo-package-per-concern.md)).
+What exists today is Phases 0–1 only:
+
+```
+apps/hermes        wiring + boot + shutdown, no logic
+packages/core      Result, ids, Clock, logger, telemetry recorder PORT
+packages/config    zod env schema, fail-fast, redaction
+packages/store     pg pool, migration runner, repos, advisory lock
+packages/channels  Channel port + telegram/ adapter
+```
+
+Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
+image (`pnpm deploy --filter`), which is what makes "one agent per VM" possible
+later — see [lean-docker-build](decisions/lean-docker-build.md).
 
 ## Dependency direction
 
-_Empty. Record which packages may depend on which, and the one-way rule that_
-_prevents cycles (see CLAUDE.md Architecture)._
+Strictly downward; no package imports one above it.
+
+```
+                apps/hermes
+                     │  (imports all four; the ONLY place they are wired together)
+     ┌───────────┬───┴───────┬──────────────┐
+     ▼           ▼           ▼              ▼
+  config       store     channels ────────► core
+     │           │           (only dep)
+     └───────────┴──────────────────────────► core
+```
+
+- `packages/core` depends on nothing. It is where ports live so lower packages
+  can be depended on without depending on their implementations.
+- **`packages/channels` must not depend on `packages/store`.** It needs a
+  persisted poll offset, but takes an injected `TelegramOffsetRepo` port
+  (`{ getOffset, setOffset }`) instead of importing Postgres. `boot.ts` binds it
+  to `@hermes/store`'s `getOffset`/`setOffset`. This keeps the channel adapter
+  free of a database, testable with a two-method mock, and reusable by a future
+  Slack/WhatsApp adapter with a different persistence story. Reversing this and
+  importing `@hermes/store` from `channels` is the easiest boundary in the tree
+  to break by accident.
+- **Nothing imports an implementation of `telemetry`.** The recorder port sits
+  in `core`; `apps/hermes` will inject the implementation at boot (Phase 2).
+- Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
+  re-export from `@hermes/store`, so `pg` stays store's declared dependency and
+  a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
 
 ## Data flow
 
-_Empty. Sketch the main flows (request → service → store, etc.) once they exist._
+Inbound, one update at a time:
 
-> Update via the `sync-knowledge` skill when an architectural boundary, package,
-> or flow is introduced or changed.
+```
+Telegram getUpdates (long poll, 30s)
+   │
+   ▼  packages/channels/src/telegram/client.ts   ← retry/backoff, token redaction
+   ▼  .../poller.ts  normalizeTelegramUpdate     ← drops updates with no message.from
+   │                                                (no user id ⇒ fail-open risk)
+   ▼  InboundMessage (provider-neutral)
+   │
+   ▼  apps/hermes  withAllowlist( withPrivateChat( dispatchCommand ) )
+   │                    │              │
+   │                    │              └─ non-private chat rejected even for an
+   │                    │                 allowlisted sender: replying into a
+   │                    │                 group broadcasts to everyone in it
+   │                    └─ unknown sender rejected before anything else looks at it
+   ▼  handler: /ping | /start | echo   →  channel.send() → chunkText → sendMessage
+   │
+   ▼  offsetRepo.setOffset(update_id + 1)  →  packages/store  →  telegram_offset
+       ^^ AFTER the handler resolves. Never before. See the polling decision doc.
+```
+
+The offset write is the last step of handling an update, and a handler throwing
+aborts the rest of the batch so no later update's offset can leapfrog the one
+that failed.
+
+## Boot and shutdown order
+
+Both orders are load-bearing; each step is a precondition for the next.
+
+**Boot** (`apps/hermes/src/boot.ts`): config → logger → pool → `waitForDatabase`
+→ migrations → `deleteWebhook()` → **advisory lock** → health server → poller.
+
+- `deleteWebhook` is unconditional and idempotent: a webhook and `getUpdates`
+  are mutually exclusive on Telegram's side, so a leftover webhook from another
+  deployment mode would silently starve the poller.
+- The lock is taken **before** the health server starts, so an instance that
+  loses the race never briefly reports healthy.
+- Losing the lock sets `process.exitCode = 1` and awaits `pool.end()` rather
+  than calling `process.exit(1)` — `process.exit` truncates async stdout piped
+  to Docker and can drop the very error line the operator needs. The same
+  pattern guards the fatal-poller-error path.
+- **Known gap:** migrations run *before* the lock is taken, so two simultaneous
+  cold boots race to a duplicate-table error instead of the readable
+  single-instance message. Accepted, not fixed.
+
+**Shutdown** (SIGTERM/SIGINT, registered once): `channel.stop()` (bounded 5s) →
+`lock.release()` → `pool.end()` → `process.exit(0)`, with an 8s hard-exit timer.
+
+- Release before the drain finishes and a restart-racing instance can acquire
+  the lock while this one is still querying. Close the pool before the drain
+  finishes and an in-flight query crashes. Hence this exact order.
+- 5s / 8s are sized against Docker's **10s default stop grace period** — revisit
+  both if that grace period ever changes.
+- The hard-exit timer is deliberately *not* cleared in a `finally`: a rejected
+  shutdown (`release()`/`pool.end()` throwing because the DB is already down) is
+  the exact case the guard exists for, so it must survive the failure path.

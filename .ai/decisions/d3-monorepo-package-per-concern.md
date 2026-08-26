@@ -1,0 +1,52 @@
+# D3 — Monorepo, one package per concern, created at its phase
+
+**Decision:** One pnpm workspace holding the whole system. Every concern the
+roadmap knows will be separate gets its own package **in the phase where it
+first appears** — never grown inside another package and extracted later, and
+never scaffolded ahead of its phase. Phases 0–1 therefore created exactly
+`apps/hermes`, `packages/core`, `packages/config`, `packages/store`,
+`packages/channels`, and nothing else: no empty `llm/`, `agent/`, `telemetry/`,
+or `google-*` directories exist, and their absence is the decision, not an
+oversight.
+
+**Why:**
+
+- *Monorepo over separate repos* — this is one system with shared domain types,
+  not independent products. Changing the `Channel` interface across a repo split
+  would mean an npm publish and a version bump; here it's one atomic commit.
+- *Create-at-phase over merge-then-split* — an unenforced boundary decays. Code
+  reaches across it because nothing stops it, and by extraction time there is no
+  clean seam left, only entangled imports. The module system is the only thing
+  that makes a boundary real, so it has to be there from the first line of code
+  that belongs behind it. Merge-then-split costs more in both the short and the
+  long term.
+- *No scaffolding ahead of phase* — an empty package is speculative structure
+  that invites the wrong code and rots un-reviewed. The one deliberate exception
+  is the `TelemetryRecorder` **port** in `core`: the boundary rule ("nothing
+  imports `telemetry` directly") requires the port to pre-date the
+  implementation, or it gets retrofitted through half the tree. It is a
+  type-only export with zero runtime footprint and no callers.
+
+**Rejected:**
+
+- *Separate repos per package* — publishing and version-juggling for a
+  single-tenant system, to buy an independence nothing needs.
+- *One package now, split when it hurts* — the failure mode described above.
+  "When it hurts" is precisely when the seam no longer exists.
+- *Scaffold the whole roadmap's package list up front* — creates ten boundaries
+  nobody is defending and files nobody has reviewed.
+
+**Constraints it creates:**
+
+- Dependencies flow strictly downward; a package never imports one above it, and
+  two packages that need each other mean a third package is missing. Concretely:
+  `channels` does not import `store` — it takes an injected offset port.
+- New code goes in the package that owns its concern. If none does, create the
+  package; do not park it in the nearest one "for now".
+- A monorepo is not one deployable. The Docker build must keep emitting a lean
+  single-app image (see [lean-docker-build](lean-docker-build.md)) — that is
+  what keeps ROADMAP D4's one-agent-per-VM aim reachable.
+- The workspace `paths` mapping in `tsconfig.base.json` (`@hermes/* → src`) is
+  kept deliberately: dropping it would catch a removed workspace dependency, but
+  breaks `pnpm -r typecheck` on a clean clone, since typecheck runs before
+  `dist/` exists. The frozen-lockfile install in Docker is the backstop instead.

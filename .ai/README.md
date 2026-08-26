@@ -29,5 +29,5 @@ Don't edit `.ai/` ad hoc. Use the `sync-knowledge` skill — it owns the format,
 the index-update protocol, and the anti-wiki rules. Every PRD declares its
 `## Knowledge Base Impact`; `execute-prd` syncs `.ai/` at closeout.
 
-This scaffold ships empty on purpose. Populate it as the project grows — prefer
-**editing or retiring** stale entries over appending new ones.
+Prefer **editing or retiring** stale entries over appending new ones — unbounded
+growth is this directory's default failure mode.
