@@ -11,6 +11,7 @@ const baseEnv: Env = {
   LLM_PRIMARY_BASE_URL: "https://primary.example/v1",
   LLM_PRIMARY_API_KEY: "primary-key",
   LLM_PRIMARY_MODEL: "primary-model",
+  LLM_MONTHLY_BUDGET_USD: 100,
 };
 
 describe("buildProviderProfiles", () => {

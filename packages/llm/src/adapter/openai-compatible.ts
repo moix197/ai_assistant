@@ -1,4 +1,5 @@
-import { type Logger, nextDelay } from "@hermes/core";
+import { type Clock, type Logger, nextDelay, systemClock } from "@hermes/core";
+import { type BudgetUsageRepo, assertBudgetNotExceeded } from "../budget/check-budget";
 import { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "../errors";
 import type {
   CompletionRequest,
@@ -40,6 +41,18 @@ export interface OpenAiCompatibleAdapterOptions {
   usageRepo?: LlmUsageRepo;
   /** Receives `resolveCostUsd`'s unknown-model warning. Default: a no-op logger. */
   logger?: Logger;
+  /**
+   * Monthly budget ceiling (Phase 4). `usageRepo` and `capUsd` travel
+   * together in one object so a partial config (one without the other) is
+   * unrepresentable. `apps/hermes/src/llm/build-llm-provider.ts` is the one
+   * real construction site and always supplies this, making the check
+   * mandatory in practice for every live call; omitting it here — as every
+   * pre-existing unit test in this file does, since they exercise unrelated
+   * behavior — skips the check with no default cap to fall back to,
+   * deliberately unlike `usageRepo`/`logger`'s silent no-op defaults above
+   * (see `check-budget.ts` for the check itself).
+   */
+  budget?: { usageRepo: BudgetUsageRepo; capUsd: number; clock?: Clock };
 }
 
 interface OpenAiToolCall {
@@ -400,6 +413,13 @@ export function createOpenAiCompatibleAdapter(
 
   return {
     async complete(request: CompletionRequest): Promise<CompletionResult> {
+      // Checked before building the request or issuing any fetch — a breach
+      // must cost nothing, not merely record nothing.
+      if (opts?.budget) {
+        const { usageRepo: budgetUsageRepo, capUsd, clock } = opts.budget;
+        await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
+      }
+
       const body = buildRequestBody(request);
       const result = await completeWithRetry(fetchImpl, url, profile.apiKey, body, timeoutMs);
       await recordCompletionUsage(usageRepo, logger, profile, request, result);

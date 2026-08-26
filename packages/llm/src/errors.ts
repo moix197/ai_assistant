@@ -48,3 +48,26 @@ export class LlmMalformedResponseError extends Error {
     this.name = "LlmMalformedResponseError";
   }
 }
+
+/**
+ * Thrown by `assertBudgetNotExceeded` (see `budget/check-budget.ts`) when
+ * cumulative spend for the current calendar month (UTC) meets or exceeds the
+ * configured cap. Carries both numbers so boot logs are useful, but the
+ * **user-facing** Telegram reply must never surface `message` directly — it
+ * would leak internal cost figures to chat. `apps/hermes/src/handlers/
+ * complete.ts` catches this specifically and replies with a fixed, friendly
+ * string instead; `/stats` (02-telemetry) is where spend surfaces to users.
+ */
+export class BudgetExceededError extends Error {
+  readonly capUsd: number;
+  readonly spentUsd: number;
+
+  constructor(capUsd: number, spentUsd: number) {
+    super(
+      `monthly LLM budget exceeded: spent $${spentUsd.toFixed(6)} of a $${capUsd.toFixed(2)} cap`,
+    );
+    this.name = "BudgetExceededError";
+    this.capUsd = capUsd;
+    this.spentUsd = spentUsd;
+  }
+}

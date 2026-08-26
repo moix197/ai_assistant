@@ -6,7 +6,12 @@ export type {
   ProviderProfile,
   ToolDefinition,
 } from "./port";
-export { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "./errors";
+export {
+  BudgetExceededError,
+  LlmHttpError,
+  LlmMalformedResponseError,
+  LlmTimeoutError,
+} from "./errors";
 export {
   createOpenAiCompatibleAdapter,
   type OpenAiCompatibleAdapterOptions,

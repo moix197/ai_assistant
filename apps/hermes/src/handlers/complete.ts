@@ -1,6 +1,6 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import { type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
+import { BudgetExceededError, type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
 
 /**
  * Fixed placeholder — no persona/tool instructions beyond this string.
@@ -12,6 +12,15 @@ const SYSTEM_PROMPT_PLACEHOLDER = "You are Hermes, a helpful assistant.";
 /** Never leaks a stack trace or provider error detail into chat. */
 const GENERIC_FAILURE_REPLY =
   "Sorry, I couldn't process that message right now. Please try again in a moment.";
+
+/**
+ * Distinct from `GENERIC_FAILURE_REPLY`: a deliberate, fixed string, never
+ * `BudgetExceededError.message` — that message carries `capUsd`/`spentUsd`,
+ * useful in boot logs but not something to leak to chat by default. Spend
+ * figures surface to users via `/stats` (02-telemetry), not here.
+ */
+const OUT_OF_BUDGET_REPLY =
+  "Hermes is out of budget for this month. Please try again after the monthly reset.";
 
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
@@ -52,6 +61,16 @@ export function createCompletionHandler(
       });
       await channel.send(message.chatId, result.text);
     } catch (error) {
+      if (error instanceof BudgetExceededError) {
+        logger.error("llm completion rejected, monthly budget exceeded", {
+          channelUserId,
+          capUsd: error.capUsd,
+          spentUsd: error.spentUsd,
+        });
+        await channel.send(message.chatId, OUT_OF_BUDGET_REPLY);
+        return;
+      }
+
       logger.error("llm completion failed", {
         channelUserId,
         error: error instanceof Error ? error.message : String(error),

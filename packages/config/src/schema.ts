@@ -70,6 +70,20 @@ function checkFallbackAllOrNone(
   }
 }
 
+/**
+ * Defaults to a de-facto-unlimited cap (rather than failing boot) when the
+ * key is entirely absent — same precedent as `PORT`/`LOG_LEVEL` above.
+ * Every real deployment sets an explicit value (see `.env.example`); this
+ * default exists only so a caller that doesn't touch the budget feature
+ * (e.g. an older test fixture) isn't forced to supply one. Compose's
+ * `${VAR:-}` passthrough (see docker-compose.yml) still sets an unset host
+ * var to `""` in the container rather than omitting it, which `z.coerce
+ * .number()` reads as `0` — that fails `.positive()` loudly instead of
+ * silently falling through to the default, so a real deployment that leaves
+ * this genuinely unset still fails boot naming the key.
+ */
+const DEFAULT_LLM_MONTHLY_BUDGET_USD = 1_000_000;
+
 export const envSchema = z
   .object({
     DATABASE_URL: z.string().url({ message: "DATABASE_URL must be a valid connection URL" }),
@@ -83,6 +97,10 @@ export const envSchema = z
     LLM_FALLBACK_BASE_URL: optionalLlmString,
     LLM_FALLBACK_API_KEY: optionalLlmString,
     LLM_FALLBACK_MODEL: optionalLlmString,
+    LLM_MONTHLY_BUDGET_USD: z.coerce
+      .number()
+      .positive({ message: "LLM_MONTHLY_BUDGET_USD must be a positive number" })
+      .default(DEFAULT_LLM_MONTHLY_BUDGET_USD),
   })
   .superRefine(checkFallbackAllOrNone);
 
@@ -105,6 +123,7 @@ export const IS_SECRET_ENV_KEY: Record<keyof Env, boolean> = {
   LLM_FALLBACK_BASE_URL: false,
   LLM_FALLBACK_API_KEY: true,
   LLM_FALLBACK_MODEL: false,
+  LLM_MONTHLY_BUDGET_USD: false,
 };
 
 /** Env keys whose values must never appear unmasked in a log line. */

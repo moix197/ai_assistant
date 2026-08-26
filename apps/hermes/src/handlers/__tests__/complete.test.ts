@@ -1,6 +1,6 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import { LlmHttpError, type LlmProvider, LlmTimeoutError } from "@hermes/llm";
+import { BudgetExceededError, LlmHttpError, type LlmProvider, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createCompletionHandler } from "../complete";
 
@@ -103,6 +103,27 @@ describe("createCompletionHandler", () => {
 
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
     expect(channel.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("replies with the specific out-of-budget message, not the generic fallback, when the provider throws BudgetExceededError", async () => {
+    const channel = createMockChannel();
+    const logger = createMockLogger();
+    const llmProvider: LlmProvider = {
+      complete: vi.fn().mockRejectedValue(new BudgetExceededError(5, 5.5)),
+    };
+    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+    ];
+    expect(replyText).toMatch(/budget/i);
+    expect(replyText).not.toMatch(/\$5/);
+    expect(replyText).not.toBe(
+      "Sorry, I couldn't process that message right now. Please try again in a moment.",
+    );
   });
 
   it("ignores an edited message, no provider call", async () => {
