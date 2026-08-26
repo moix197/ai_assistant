@@ -66,10 +66,10 @@ single-instance poller constraint (a bug here causes a mysterious, hard-to-diagn
 
 **Mode:** hil
 
-- [ ] Message `@BotFather` on Telegram, run `/newbot`, record the bot token.
-- [ ] Set `TELEGRAM_BOT_TOKEN` in a local `.env` (never committed — confirm
+- [x] Message `@BotFather` on Telegram, run `/newbot`, record the bot token.
+- [x] Set `TELEGRAM_BOT_TOKEN` in a local `.env` (never committed — confirm
       `.env` is in `.gitignore` from Phase 1).
-- [ ] Leave `TELEGRAM_ALLOWLIST` **empty** for the first boot. Your numeric
+- [x] Leave `TELEGRAM_ALLOWLIST` **empty** for the first boot. Your numeric
       Telegram user id isn't known yet — Phase 2's verification steps are the
       intended way to discover it: message the bot once, read your id off the
       "rejected, unknown user" warn-level log line, then set
