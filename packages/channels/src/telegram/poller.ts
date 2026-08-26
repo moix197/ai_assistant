@@ -10,8 +10,8 @@ import type { TelegramClient, TelegramMessage, TelegramUpdate } from "./client";
 const POLL_TIMEOUT_SECONDS = 30;
 const POLL_LIMIT = 100;
 const ALLOWED_UPDATES = ["message", "edited_message"] as const;
-/** Fixed short delay before retrying after a transient getUpdates failure. Structured backoff is Phase 4. */
-const RETRY_DELAY_MS = 3_000;
+/** Default fixed delay before retrying after a transient getUpdates/handler failure. Overridable via TelegramPollerOptions.retryDelayMs so tests don't have to wait out the real value. */
+const DEFAULT_RETRY_DELAY_MS = 3_000;
 
 const TELEGRAM_CAPABILITIES: ChannelCapabilities = {
   markdown: true,
@@ -76,19 +76,36 @@ export interface TelegramPollerOptions {
   client: TelegramClient;
   logger: Logger;
   offsetRepo: TelegramOffsetRepo;
+  /** Delay before retrying after a transient getUpdates/handler failure. Default DEFAULT_RETRY_DELAY_MS. */
+  retryDelayMs?: number;
+}
+
+/** A Telegram `Channel` plus graceful-shutdown control. */
+export interface TelegramPoller extends Channel {
+  /**
+   * Flips the loop's stopping flag so no new `getUpdates` call starts, then
+   * resolves once the loop has actually exited — including any in-flight
+   * `pollOnce()` iteration. Does not itself impose a timeout; callers
+   * (boot.ts) bound how long they wait for this to settle.
+   */
+  stop(): Promise<void>;
 }
 
 /**
  * Long-poll loop against `getUpdates`. The offset is loaded from
  * `offsetRepo` once at start and persisted after each update is fully
- * handled — no advisory lock or structured backoff yet (Phase 4). On a
- * transient fetch error this logs and retries after a fixed short delay
- * rather than re-throwing, since a crashed poller silently stops the bot.
+ * handled. On a transient fetch error this logs and retries after a fixed
+ * delay rather than re-throwing, since a crashed poller silently stops the
+ * bot; `client.ts` already absorbs most transient failures via structured
+ * backoff before one reaches here.
  */
-export function createTelegramPoller(options: TelegramPollerOptions): Channel {
+export function createTelegramPoller(options: TelegramPollerOptions): TelegramPoller {
   const { client, logger, offsetRepo } = options;
+  const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   let handler: InboundMessageHandler | undefined;
   let offset: number | undefined;
+  let stopping = false;
+  let loopPromise: Promise<void> = Promise.resolve();
 
   async function handleUpdate(update: TelegramUpdate): Promise<void> {
     const message = normalizeTelegramUpdate(update, logger);
@@ -119,7 +136,7 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
       logger.warn("getUpdates failed, retrying", {
         error: error instanceof Error ? error.message : String(error),
       });
-      await delay(RETRY_DELAY_MS);
+      await delay(retryDelayMs);
       return;
     }
 
@@ -136,16 +153,17 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
           updateId: update.update_id,
           error: error instanceof Error ? error.message : String(error),
         });
-        await delay(RETRY_DELAY_MS);
+        await delay(retryDelayMs);
         return;
       }
     }
   }
 
-  // Runs for the process lifetime; graceful stop/drain is Phase 4.
+  // Runs until stop() flips `stopping`; the in-flight pollOnce() iteration
+  // (including its handler) is still awaited before the loop exits.
   async function loop(): Promise<void> {
     offset = await offsetRepo.getOffset();
-    while (true) {
+    while (!stopping) {
       await pollOnce();
     }
   }
@@ -154,10 +172,14 @@ export function createTelegramPoller(options: TelegramPollerOptions): Channel {
     capabilities: TELEGRAM_CAPABILITIES,
     subscribe(inboundHandler) {
       handler = inboundHandler;
-      void loop();
+      loopPromise = loop();
     },
     async send(target, text) {
       await client.sendMessage(target, text);
+    },
+    async stop() {
+      stopping = true;
+      await loopPromise;
     },
   };
 }

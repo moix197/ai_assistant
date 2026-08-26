@@ -1,6 +1,11 @@
-import { createTelegramClient, createTelegramPoller, parseAllowlist } from "@hermes/channels";
+import {
+  type InboundMessage,
+  createTelegramClient,
+  createTelegramPoller,
+  parseAllowlist,
+} from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
-import { createLogger } from "@hermes/core";
+import { type Logger, createLogger } from "@hermes/core";
 import {
   INSTANCE_LOCK_KEY,
   acquireInstanceLock,
@@ -12,7 +17,19 @@ import {
   waitForDatabase,
 } from "@hermes/store";
 import { createEchoHandler } from "./handlers/echo";
+import { createPingHandler } from "./handlers/ping";
+import { createStartHandler } from "./handlers/start";
+import { withAllowlist } from "./handlers/with-allowlist";
 import { startHealthServer } from "./health";
+
+/** Bounded wait for in-flight work to drain before moving on to lock release. */
+const DRAIN_TIMEOUT_MS = 8_000;
+/**
+ * Guards against any shutdown step hanging past the container's stop grace
+ * period (10s by default) — comfortably under it, leaving margin for the
+ * final log/exit to run after the drain bound elapses.
+ */
+const HARD_EXIT_TIMEOUT_MS = 9_000;
 
 function loadConfigOrExit(): Env {
   try {
@@ -24,6 +41,67 @@ function loadConfigOrExit(): Env {
     }
     throw error;
   }
+}
+
+function withTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
+  return Promise.race([promise, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+}
+
+export interface ShutdownDeps {
+  channel: { stop(): Promise<void> };
+  lock: { release(): Promise<void> };
+  pool: { end(): Promise<void> };
+  logger: Logger;
+  drainTimeoutMs?: number;
+}
+
+/**
+ * The ordered, load-bearing shutdown sequence: (1) `channel.stop()` flips
+ * the poller's stopping flag so no new `getUpdates` call starts, then awaits
+ * the in-flight handler — bounded here so a stuck drain doesn't block the
+ * rest of shutdown forever; (2) release the advisory lock, only once no more
+ * DB work from this instance is possible, so a restart-racing instance can't
+ * acquire it mid-drain; (3) close the pool; (4) `process.exit(0)`. Each step
+ * is a precondition for the next: releasing the lock before the drain
+ * finishes would let a second instance start while we're still querying;
+ * closing the pool before the drain finishes would crash an in-flight query.
+ */
+export async function shutdown(deps: ShutdownDeps): Promise<void> {
+  const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
+  await withTimeout(deps.channel.stop(), drainTimeoutMs);
+  await deps.lock.release();
+  await deps.pool.end();
+  deps.logger.info("shutdown complete");
+  // Gives the (possibly async, e.g. piped-to-Docker) stdout write above a
+  // chance to flush before process.exit(0) below truncates it.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  process.exit(0);
+}
+
+/**
+ * Registers the SIGTERM/SIGINT handler once. A hard-exit fallback timer
+ * guards against any shutdown step hanging past the container's stop grace
+ * period instead of being hard-killed.
+ */
+export function registerShutdown(deps: ShutdownDeps): void {
+  let shuttingDown = false;
+
+  function handleSignal(signal: NodeJS.Signals): void {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    deps.logger.info("received shutdown signal, draining", { signal });
+
+    const hardExitTimer = setTimeout(() => {
+      deps.logger.error("shutdown exceeded grace period, forcing exit");
+      process.exit(1);
+    }, HARD_EXIT_TIMEOUT_MS);
+    hardExitTimer.unref();
+
+    void shutdown(deps).finally(() => clearTimeout(hardExitTimer));
+  }
+
+  process.once("SIGTERM", handleSignal);
+  process.once("SIGINT", handleSignal);
 }
 
 /** Thin entry point: load config -> build logger -> run migrations -> serve /health. */
@@ -79,6 +157,19 @@ export async function boot(): Promise<void> {
       setOffset: (updateId: number) => setOffset(pool, updateId),
     },
   });
+
+  const echoHandler = createEchoHandler(telegramChannel, logger);
+  const pingHandler = createPingHandler(telegramChannel, pool);
+  const startHandler = createStartHandler(telegramChannel, pool);
+
+  function dispatchCommand(message: InboundMessage): Promise<void> {
+    if (message.text === "/ping") return pingHandler(message);
+    if (message.text === "/start") return startHandler(message);
+    return echoHandler(message);
+  }
+
   const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
-  telegramChannel.subscribe(createEchoHandler(telegramChannel, allowlist, logger));
+  telegramChannel.subscribe(withAllowlist(dispatchCommand, allowlist, logger));
+
+  registerShutdown({ channel: telegramChannel, lock: instanceLock, pool, logger });
 }

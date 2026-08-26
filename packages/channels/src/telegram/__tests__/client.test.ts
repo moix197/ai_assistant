@@ -14,6 +14,7 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("createTelegramClient — request shape", () => {
@@ -73,22 +74,36 @@ describe("createTelegramClient — getUpdates timeout margin", () => {
 
 describe("createTelegramClient — token redaction", () => {
   it("never surfaces the raw token in a thrown error on a network failure", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockRejectedValue(
-        new TypeError(
-          `request to https://api.telegram.org/bot${TOKEN}/getUpdates failed, reason: ECONNRESET`,
-        ),
-      );
-    const client = createTelegramClient({ token: TOKEN, fetchImpl });
-
+    // Network/timeout errors are retried with backoff before rethrowing
+    // (see client.ts's callWithRetry) — fake timers fast-forward through
+    // those delays so this test doesn't take several real seconds.
+    vi.useFakeTimers();
     try {
-      await client.getUpdates({ timeout: 30, limit: 100, allowedUpdates: ["message"] });
-      throw new Error("expected getUpdates to reject");
-    } catch (error) {
+      const fetchImpl = vi
+        .fn()
+        .mockRejectedValue(
+          new TypeError(
+            `request to https://api.telegram.org/bot${TOKEN}/getUpdates failed, reason: ECONNRESET`,
+          ),
+        );
+      const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+      const resultPromise = client
+        .getUpdates({ timeout: 30, limit: 100, allowedUpdates: ["message"] })
+        .then(
+          () => {
+            throw new Error("expected getUpdates to reject");
+          },
+          (error: unknown) => error,
+        );
+      await vi.runAllTimersAsync();
+      const error = await resultPromise;
+
       const message = error instanceof Error ? error.message : String(error);
       expect(message).not.toContain(TOKEN);
       expect(message).toContain("<REDACTED>");
+    } finally {
+      vi.useRealTimers();
     }
   });
 

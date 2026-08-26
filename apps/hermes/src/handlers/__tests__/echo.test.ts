@@ -5,8 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import { createEchoHandler } from "../echo";
 
 const ALLOWED_ID = 111;
-const DISALLOWED_ID = 999;
-const ALLOWLIST = new Set([ALLOWED_ID]);
 
 function createMockLogger(): Logger {
   return {
@@ -37,34 +35,20 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
 }
 
 describe("createEchoHandler", () => {
-  it("echoes the text back for an allowed sender in a private chat", async () => {
+  it("echoes the text back for a sender in a private chat", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const handler = createEchoHandler(channel, ALLOWLIST, logger);
+    const handler = createEchoHandler(channel, logger);
 
     await handler(inboundMessage());
 
     expect(channel.send).toHaveBeenCalledWith("555", "hello");
   });
 
-  it("drops a message from a disallowed sender, no send, warn logged with the id", async () => {
-    const channel = createMockChannel();
-    const logger = createMockLogger();
-    const handler = createEchoHandler(channel, ALLOWLIST, logger);
-
-    await handler(inboundMessage({ channelUserId: String(DISALLOWED_ID) }));
-
-    expect(channel.send).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      "rejected: unknown user",
-      expect.objectContaining({ channelUserId: DISALLOWED_ID }),
-    );
-  });
-
   it("ignores an edited message with no reply, info logged", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const handler = createEchoHandler(channel, ALLOWLIST, logger);
+    const handler = createEchoHandler(channel, logger);
 
     await handler(inboundMessage({ kind: "edited_message" }));
 
@@ -75,10 +59,10 @@ describe("createEchoHandler", () => {
     );
   });
 
-  it("drops a non-private chat message even from an allowlisted sender, logged, no reply", async () => {
+  it("drops a non-private chat message, logged, no reply", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const handler = createEchoHandler(channel, ALLOWLIST, logger);
+    const handler = createEchoHandler(channel, logger);
 
     await handler(inboundMessage({ chatType: "group" }));
 

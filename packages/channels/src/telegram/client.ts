@@ -1,3 +1,6 @@
+import { nextDelay } from "./backoff";
+import { chunkText } from "./chunk";
+
 /**
  * Raw-`fetch` Telegram Bot API client. No telegraf/grammy — per the
  * dependency policy, `getUpdates`/`sendMessage` are the only two methods this
@@ -7,9 +10,9 @@
  * Token redaction: Telegram embeds the bot token in the URL *path*
  * (`/bot<token>/<method>`), not in an `Authorization` header, so nothing
  * redacts it automatically the way a header-based scheme would. Every
- * thrown error's message is passed through `redact()` before it leaves this
- * module, on every code path — including the network-failure path, where the
- * raw URL most often leaks via the underlying fetch error's message.
+ * thrown error's message is redacted before it leaves this module, on every
+ * code path — including the network-failure path, where the raw URL most
+ * often leaks via the underlying fetch error's message.
  */
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
@@ -19,6 +22,13 @@ const REDACTED_TOKEN = "<REDACTED>";
 const TIMEOUT_MARGIN_MS = 10_000;
 const SEND_MESSAGE_TIMEOUT_MS = 10_000;
 const DELETE_WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** HTTP 429 (rate limited): retry_after is authoritative, but still bounded so a persistent limiter can't hang shutdown. */
+const MAX_RATE_LIMIT_RETRIES = 5;
+/** HTTP 409 (another getUpdates consumer active): a few bounded retries then fatal, per the plan. */
+const MAX_CONFLICT_RETRIES = 3;
+/** 5xx and network/timeout errors: bounded exponential backoff, then rethrow to the poller's own retry loop. */
+const MAX_TRANSIENT_RETRIES = 5;
 
 export interface TelegramUser {
   id: number;
@@ -68,6 +78,21 @@ export interface TelegramClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** Carries the HTTP status and Telegram's own error fields so the retry policy can decide what to do without re-parsing the message string. */
+export class TelegramApiError extends Error {
+  readonly status: number;
+  readonly errorCode?: number;
+  readonly retryAfter?: number;
+
+  constructor(message: string, info: { status: number; errorCode?: number; retryAfter?: number }) {
+    super(message);
+    this.name = "TelegramApiError";
+    this.status = info.status;
+    this.errorCode = info.errorCode;
+    this.retryAfter = info.retryAfter;
+  }
+}
+
 function redact(value: string, token: string): string {
   return value.split(token).join(REDACTED_TOKEN);
 }
@@ -76,18 +101,41 @@ function buildUrl(token: string, method: string): string {
   return `${TELEGRAM_API_BASE}/bot${token}/${method}`;
 }
 
-/** Wraps any thrown value into an Error whose message never contains the raw token. */
-function toRedactedError(error: unknown, token: string, redactedUrl: string): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  return new Error(`Telegram request to ${redactedUrl} failed: ${redact(message, token)}`);
-}
-
 interface TelegramApiResponse<T> {
   ok: boolean;
   result: T;
   description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
 }
 
+function parseErrorBody(rawText: string): {
+  error_code?: number;
+  parameters?: { retry_after?: number };
+} {
+  try {
+    return JSON.parse(rawText) as { error_code?: number; parameters?: { retry_after?: number } };
+  } catch {
+    return {};
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Single attempt at one Telegram API call. Throws `TelegramApiError` for any
+ * API-level failure (HTTP not ok, or `ok: false` in the payload) carrying
+ * enough structure for `callWithRetry` to decide whether to retry, or a
+ * plain redacted `Error` for a network/timeout failure. Every message is
+ * redacted before it leaves this function on every path.
+ *
+ * `getUpdates` is a long-poll: Telegram holds the connection open for up to
+ * `params.timeout` seconds waiting for a message. The client-side abort
+ * timeout must exceed that, or this client aborts (and the caller retries)
+ * while Telegram is still legitimately waiting.
+ */
 async function callTelegramMethod<T>(
   fetchImpl: typeof fetch,
   token: string,
@@ -101,43 +149,105 @@ async function callTelegramMethod<T>(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Telegram request to ${redactedUrl} failed: ${redact(message, token)}`);
+    }
 
     if (!response.ok) {
       const rawText = await response.text().catch(() => "");
-      throw new Error(
+      const parsed = parseErrorBody(rawText);
+      throw new TelegramApiError(
         `Telegram API returned HTTP ${response.status} calling ${redactedUrl}: ${redact(rawText, token)}`,
+        {
+          status: response.status,
+          errorCode: parsed.error_code,
+          retryAfter: parsed.parameters?.retry_after,
+        },
       );
     }
 
     const payload = (await response.json()) as TelegramApiResponse<T>;
     if (!payload.ok) {
-      throw new Error(
-        `Telegram API rejected the call to ${redactedUrl}: ${payload.description ?? "unknown error"}`,
+      const description = redact(payload.description ?? "unknown error", token);
+      throw new TelegramApiError(
+        `Telegram API rejected the call to ${redactedUrl}: ${description}`,
+        {
+          status: response.status,
+          errorCode: payload.error_code,
+          retryAfter: payload.parameters?.retry_after,
+        },
       );
     }
     return payload.result;
-  } catch (error) {
-    throw toRedactedError(error, token, redactedUrl);
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * `getUpdates` is a long-poll: Telegram holds the connection open for up to
- * `params.timeout` seconds waiting for a message. The client-side abort
- * timeout must exceed that, or this client aborts (and the poller retries)
- * while Telegram is still legitimately waiting — the single most important
- * correctness detail here beyond the offset rule. `+ 10s` is a fixed margin,
- * not a percentage, so it stays meaningfully larger than the poll timeout at
- * any value.
+ * Wraps `callTelegramMethod` with the retry policy: 429 waits for
+ * `retry_after` (falling back to computed backoff if absent); 409 (another
+ * `getUpdates` consumer) gets a few bounded retries then rethrows, since
+ * that's a real conflict, not a transient blip; 5xx and network/timeout
+ * errors back off exponentially, bounded, then rethrow to the caller's own
+ * retry loop (the poller logs and retries on a fixed delay). Any other
+ * status (e.g. 400/401) is not retryable and rethrows immediately. Retrying
+ * the exact same `body` means a retried `getUpdates` call reuses the same
+ * offset automatically — it was never mutated here.
  */
+async function callWithRetry<T>(
+  fetchImpl: typeof fetch,
+  token: string,
+  method: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<T> {
+  let rateLimitAttempt = 0;
+  let conflictAttempt = 0;
+  let transientAttempt = 0;
+
+  while (true) {
+    try {
+      return await callTelegramMethod<T>(fetchImpl, token, method, body, timeoutMs);
+    } catch (error) {
+      if (error instanceof TelegramApiError) {
+        if (error.status === 429) {
+          rateLimitAttempt++;
+          if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
+          await delay(nextDelay(rateLimitAttempt, error.retryAfter));
+          continue;
+        }
+        if (error.status === 409) {
+          conflictAttempt++;
+          if (conflictAttempt > MAX_CONFLICT_RETRIES) throw error;
+          await delay(nextDelay(conflictAttempt));
+          continue;
+        }
+        if (error.status >= 500) {
+          transientAttempt++;
+          if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
+          await delay(nextDelay(transientAttempt));
+          continue;
+        }
+        throw error;
+      }
+
+      transientAttempt++;
+      if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
+      await delay(nextDelay(transientAttempt));
+    }
+  }
+}
+
 export function createTelegramClient(options: TelegramClientOptions): TelegramClient {
   const { token } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -145,7 +255,7 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
   return {
     async getUpdates(params) {
       const timeoutMs = params.timeout * 1000 + TIMEOUT_MARGIN_MS;
-      return callTelegramMethod<TelegramUpdate[]>(
+      return callWithRetry<TelegramUpdate[]>(
         fetchImpl,
         token,
         "getUpdates",
@@ -160,17 +270,22 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
     },
 
     async sendMessage(chatId, text) {
-      await callTelegramMethod<TelegramMessage>(
-        fetchImpl,
-        token,
-        "sendMessage",
-        { chat_id: chatId, text },
-        SEND_MESSAGE_TIMEOUT_MS,
-      );
+      // Chunked before sending so any long output (starting with /ping's
+      // text) is safe by construction, not by caller discipline. Parts are
+      // sent in order, awaited one at a time, to preserve message order.
+      for (const part of chunkText(text)) {
+        await callWithRetry<TelegramMessage>(
+          fetchImpl,
+          token,
+          "sendMessage",
+          { chat_id: chatId, text: part },
+          SEND_MESSAGE_TIMEOUT_MS,
+        );
+      }
     },
 
     async deleteWebhook() {
-      await callTelegramMethod<boolean>(
+      await callWithRetry<boolean>(
         fetchImpl,
         token,
         "deleteWebhook",

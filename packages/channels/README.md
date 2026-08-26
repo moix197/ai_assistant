@@ -1,6 +1,7 @@
 # @hermes/channels
 
-Chat channel adapters. Phase 2 ships one: Telegram, long-polled, echo-only.
+Chat channel adapters. Phase 2 ships one: Telegram, long-polled. Phase 4 adds
+message chunking, structured retry/backoff, and graceful drain.
 
 ## `Channel` port contract
 
@@ -17,15 +18,38 @@ implements:
 - `send(target, text)` — replies into `target` (the channel-specific chat
   id, e.g. `InboundMessage.chatId`).
 
-Business logic — allowlist enforcement, the private-chat-only guard, echoing
-— lives in `apps/hermes/src/handlers/echo.ts`, not in this package. This
-package's job stops at "reliably move messages in and out of Telegram."
+Business logic — the private-chat-only guard, command dispatch, echoing —
+lives in `apps/hermes/src/handlers/`, not in this package. Allowlist
+enforcement (`isAllowed`) lives here as a pure function, but is composed once
+around the dispatcher in `apps/hermes/src/boot.ts` (`withAllowlist`), not
+inside individual handlers. This package's job stops at "reliably move
+messages in and out of Telegram."
 
 ## Telegram adapter
 
 - `telegram/client.ts` — a raw-`fetch` wrapper around `getUpdates` and
   `sendMessage`. No telegraf/grammy: two endpoints don't justify a
-  mega-package.
+  mega-package. `sendMessage` chunks its text via `chunk.ts` before sending,
+  awaiting each part in order. Both `getUpdates` and `sendMessage` route
+  errors through the retry policy in `backoff.ts`: a `429` waits for
+  Telegram's `retry_after` (falling back to computed backoff if absent); a
+  `409` (another `getUpdates` consumer already running) gets a few bounded
+  retries then rethrows, since that's a real conflict, not a blip; `5xx` and
+  network/timeout errors back off exponentially, bounded, then rethrow to the
+  poller's own retry loop. Retries reuse the exact same request body, so a
+  retried `getUpdates` call keeps the same offset automatically.
+- `telegram/chunk.ts` — `chunkText(text, maxLen = 4096): string[]`, a pure
+  boundary chunker: splits at the last whitespace before `maxLen`, hard-cuts
+  only when no whitespace exists in range. Concatenating the returned parts
+  always reproduces the original text exactly. Deliberately **not**
+  markdown-entity-aware — nothing in this PRD sets `parse_mode` yet, so
+  entity-safe splitting has no caller; it arrives with a future
+  Markdown-formatted output layer.
+- `telegram/backoff.ts` — `nextDelay(attempt, retryAfterHeader?): number`,
+  pure and clock-independent (callers pass the attempt count directly).
+  Exponential growth from a fixed base, capped, with uniform jitter to avoid
+  synchronized retries; `retryAfterHeader` always overrides the computed
+  value when present.
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
   `allowed_updates=["message","edited_message"]`) plus
   `normalizeTelegramUpdate`, which converts a raw update into an
@@ -33,8 +57,14 @@ package's job stops at "reliably move messages in and out of Telegram."
   offset is loaded once at start via a `TelegramOffsetRepo` port (injected —
   `boot.ts` wires it to `@hermes/store`'s `getOffset`/`setOffset`, keeping
   this package decoupled from Postgres) and persisted after each update is
-  fully handled. Structured backoff on failure is Phase 4; a transient
-  `getUpdates` failure is logged and retried after a fixed short delay.
+  fully handled. `TelegramPollerOptions.retryDelayMs` overrides the fixed
+  delay used after a transient failure (tests inject a short value instead
+  of waiting out the real one). `createTelegramPoller` returns a
+  `TelegramPoller` — a `Channel` plus `stop(): Promise<void>`, which flips a
+  `stopping` flag read by the loop's condition (so no new `getUpdates` call
+  starts) and resolves once the loop has actually exited, in-flight handler
+  included. See `apps/hermes/src/boot.ts`'s shutdown sequence for how this is
+  bounded by a timeout.
 - `telegram/allowlist.ts` — `parseAllowlist(csv): Set<number>` and
   `isAllowed(id, set)`, both pure. An empty allowlist rejects everyone
   (fail closed).
@@ -68,6 +98,11 @@ that were never actually stuck, causing reconnect storms.
   `chatType !== "private"`, logged at warn, **even from an allowlisted
   sender** — replying into a group broadcasts the reply to everyone in it,
   which is never the intent for a personal assistant bot.
+- **Unknown sender**: `withAllowlist` (`apps/hermes/src/handlers/with-allowlist.ts`),
+  composed once around the command dispatcher in `boot.ts`, rejects any
+  sender not in the allowlist before any handler (`echo`, `/ping`, `/start`)
+  ever runs — a single gate instead of each handler re-implementing the
+  check.
 
 ### Offset persistence and the idempotency contract
 
@@ -103,16 +138,11 @@ lock section) — a second instance against the same database fails fast at
 boot with a readable error instead of a `getUpdates` 409 surfacing later
 mid-poll.
 
-### Deliberately deferred to Phase 4
+### Deliberately deferred
 
-- **Chunking**: nothing in this phase formats or generates output longer
-  than what a user types in (echo only), so there's no caller for a message
-  splitter yet. It arrives with `/ping`'s longer text output.
-- **Backoff**: this phase's failure handling is a single fixed retry delay.
-  Structured exponential backoff with `retry_after` handling only pays for
-  itself once the poller needs to survive sustained rate-limiting or
-  extended outages, which isn't exercised until later phases add more
-  frequent outbound traffic.
-
-Building either now would be machinery with no caller — see the project's
-"no speculative abstractions" principle.
+- **Markdown-entity-aware chunking**: `chunk.ts` splits on whitespace only.
+  Splitting without corrupting Markdown entities (bold/italic/code spans)
+  only matters once Markdown-formatted output exists (`parse_mode` in use),
+  which arrives with a future formatting/agent layer — building it now would
+  be machinery with no caller, per the project's "no speculative
+  abstractions" principle.

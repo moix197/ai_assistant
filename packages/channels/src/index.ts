@@ -7,8 +7,11 @@ export type {
   InboundMessageKind,
 } from "./channel";
 export { isAllowed, parseAllowlist } from "./telegram/allowlist";
+export { chunkText } from "./telegram/chunk";
+export { nextDelay } from "./telegram/backoff";
 export {
   createTelegramClient,
+  TelegramApiError,
   type GetUpdatesParams,
   type TelegramChat,
   type TelegramClient,
@@ -21,5 +24,6 @@ export {
   createTelegramPoller,
   normalizeTelegramUpdate,
   type TelegramOffsetRepo,
+  type TelegramPoller,
   type TelegramPollerOptions,
 } from "./telegram/poller";

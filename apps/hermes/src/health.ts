@@ -6,7 +6,8 @@ interface HealthStatus {
   db: "connected" | "disconnected";
 }
 
-async function checkDbConnectivity(pool: Pool): Promise<boolean> {
+/** Also used by `/ping` (see handlers/ping.ts) so DB-status logic isn't duplicated. */
+export async function checkDbConnectivity(pool: Pool): Promise<boolean> {
   try {
     await pool.query("SELECT 1");
     return true;
