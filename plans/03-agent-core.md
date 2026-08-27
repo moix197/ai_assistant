@@ -379,6 +379,171 @@ becomes possible once this phase ships.)
 
 ---
 
+### Phase 1.5: Repair Phase 1 consumer fallout, land typecheck green
+
+Phase 1's own File-changes table authorized three breaking signature changes —
+`CompletionRequest` gaining required `threadId`/`turnId`, `createCompletionHandler`'s
+deps swapping `llmProvider`+`model` for a single `agent`, and `toRow()`'s `turn`
+branch writing `total_cost_usd` while leaving `cost_usd` `NULL` — but never
+enumerated the consumer call sites those changes break. Phase 1 therefore
+lands with `pnpm -r typecheck` **red**. This phase's whole job is to repair
+that fallout and turn the branch green; it ships no new user-visible
+behavior of its own — Phase 1 already shipped the behavior (real multi-turn
+memory) this phase is defending. **Settled decision:** Phase 1 commits only
+the files in its own tables and lands transiently red; Phase 1.5 commits all
+ten consumer-fallout paths below plus the `Agent`-type move in one follow-up
+commit. Accepted cost: one transiently-red commit on the feature branch,
+never on `main`.
+
+**Risk:** low
+**Mode:** afk
+**Type:** mixed — test repair dominates by file count (10 of 12 rows are
+`*.test.ts`/fixture files with no behavior change), but the `Agent`-type
+relocation across the `packages/agent` → `apps/hermes` boundary is a package-
+boundary change, not test code, so `test` alone would undersell it.
+**Success criteria:** `pnpm -r typecheck` reports zero errors across all 8
+workspace projects (today red only in `build-llm-provider.test.ts`'s 5
+`CompletionRequest` literals); `pnpm -r test` and `pnpm test:db` stay green
+throughout. This phase deliberately has no QA-exercisable success criterion —
+per plan-sequential's phase-shape rule, this is the plan's one allowed "pure
+infrastructure prerequisite" exception, narrowly scoped to undoing a single
+phase's own File-changes omission rather than adding a new architectural
+layer. Phase 2's success criteria remain the next user-visible bar.
+**Commit message:** `fix: repair Phase 1 consumer fallout — CompletionRequest ids, agent-handler deps, Agent type export`
+
+**File changes:**
+| Action | File | What changes |
+|---|---|---|
+| modify | `apps/hermes/src/llm/__tests__/build-llm-provider.test.ts` | the shared `baseRequest(model)` helper (lines 60–67) has no explicit return-type annotation and is missing `threadId`/`turnId`; add `threadId: null, turnId: null` to its one return object. **Not 5 separate literals** — lines 80, 99, 125, 147, 166 are the 5 call sites (`await provider.complete(baseRequest(...))`) where TS2345 is *reported* because the inferred return type fails to satisfy `CompletionRequest`; fixing the one helper resolves all 5 — the only remaining typecheck failure |
+| modify | `apps/hermes/src/__tests__/dispatch-allowlist-gates-llm.test.ts` | fake provider → fake `Agent` for the new handler deps |
+| modify | `apps/hermes/src/__tests__/dispatch-stats-command.test.ts` | same handler-deps swap |
+| modify | `apps/hermes/src/handlers/__tests__/complete-dedupe.test.ts` | same handler-deps swap |
+| modify | `apps/hermes/src/handlers/__tests__/complete-dedupe-crash-window.test.ts` | same swap (`createCountingFakeProvider` → `createCountingFakeAgent`) |
+| modify | `packages/store/src/__tests__/telemetry-event-repo.test.ts` | `turn`-branch row-shape assertions inverted for `total_cost_usd`/`cost_usd` |
+| modify | `packages/llm/src/__tests__/live/cache-hit-tokens.live.test.ts` | Phase 1's glob `src/**/__tests__/*.test.ts` never reached `__tests__/live/` |
+| modify | `packages/llm/src/__tests__/live/fixtures/five-tool-prompt.ts` | a fixture, not a `*.test.ts` — outside that glob entirely |
+| modify | `apps/hermes/package.json` | `"@hermes/agent": "workspace:*"`, required for the authorized `build-agent.ts` to resolve |
+| modify | `pnpm-lock.yaml` | regenerated for that dep plus the new `packages/agent` importer |
+| modify | `packages/agent/src/index.ts` | `interface Agent { handleMessage(channel: string, chatId: string, text: string): Promise<string>; }` at lines 4–6 is declared but **not exported** today (only used as `createAgent`'s inferred return type). Add `export` so this becomes the canonical definition (decision 2) — in Phase 1's table, edited here |
+| modify | `apps/hermes/src/agent/build-agent.ts` | delete the duplicate `export interface Agent { ... }` at lines 23–25 (structurally identical to the one above); add `type Agent` to the existing `@hermes/agent` import on line 1, then `export type { Agent };` so the six existing `import type { Agent } from "../agent/build-agent"` call sites (below) keep resolving unchanged — decision 2 without touching any consumer — in Phase 1's table, edited here |
+
+**Steps:**
+
+- [ ] An implementation agent already made most of these edits, uncommitted —
+      treat every step below as verify/complete against the worktree's actual
+      state, not write-from-scratch
+- [ ] `build-llm-provider.test.ts`: open the shared `baseRequest(model)`
+      helper at lines 60–67 and add `threadId: null, turnId: null` to its
+      one returned object — **do not** go looking for 5 separate
+      `CompletionRequest` literals; lines 80, 99, 125, 147, 166 are just the
+      5 `await provider.complete(baseRequest(...))` call sites where TS2345
+      is reported, because `baseRequest` has no explicit return-type
+      annotation. This is the sole remaining `pnpm -r typecheck` failure;
+      confirm by rerunning typecheck after
+- [ ] Confirm the four `dispatch-*`/`complete-dedupe*` test files already
+      swapped their fake `llmProvider`+`model` deps for a fake `Agent`
+      matching `createCompletionHandler`'s new deps shape from Phase 1 —
+      check the fake's surface matches `Agent.handleMessage(channel, chatId,
+      text): Promise<string>`, not a stale `complete()`-shaped stub. (Verified
+      during plan review: `dispatch-stats-command.test.ts` and
+      `complete-dedupe-crash-window.test.ts` both already do this correctly —
+      spot-check the other two, `dispatch-allowlist-gates-llm.test.ts` and
+      `complete-dedupe.test.ts`, the same way.) If either isn't swapped,
+      apply the same pattern: replace the fake's `complete()` method with
+      `handleMessage()` returning `Promise<string>` directly (no
+      `toolCalls`/`usage`/`finishReason` envelope), and replace the
+      `llmProvider`+`model` fields passed into `createCompletionHandler`
+      with a single `agent` field
+- [ ] Confirm `telemetry-event-repo.test.ts`'s `turn`-branch assertions read
+      `total_cost_usd` set / `cost_usd` `NULL` (matching what Phase 1's
+      `toRow()` change actually writes), not the reverse. (Verified during
+      plan review: already correct in the worktree.)
+- [ ] `cache-hit-tokens.live.test.ts` and its `five-tool-prompt.ts` fixture:
+      **verify only, already done** — both already carry
+      `threadId: null, turnId: null` on their `CompletionRequest` builders
+      (confirmed during plan review). These live under `__tests__/live/`, a
+      directory Phase 1's stated glob (`src/**/__tests__/*.test.ts`) doesn't
+      reach, which is why they weren't covered by Phase 1's own table — but
+      the fix is already present in the worktree. If either has since
+      regressed (missing `threadId`/`turnId` on its request builder), add
+      `threadId: null, turnId: null` to match `build-llm-provider.test.ts`'s
+      fix above
+- [ ] Confirm `apps/hermes/package.json` carries `"@hermes/agent":
+      "workspace:*"` (confirmed during plan review) and `pnpm-lock.yaml` is
+      regenerated and consistent (`pnpm install` with no unexpected diff) —
+      required for `build-agent.ts`'s import to resolve at all
+- [ ] Move the `Agent` type (decision 2). Today: `packages/agent/src/index.ts`
+      declares `interface Agent { handleMessage(channel: string, chatId:
+      string, text: string): Promise<string>; }` at lines 4–6 but never
+      exports it; `apps/hermes/src/agent/build-agent.ts` separately declares
+      its own `export interface Agent { ... }` at lines 23–25 with the
+      identical shape. Fix: add `export` to the declaration in
+      `packages/agent/src/index.ts` (alongside Phase 1's other exports —
+      `createAgent`, `AgentDefinition`, `ToolSpec`, `ThreadRepo`, `Thread`,
+      `Message`); in `build-agent.ts`, delete the local `export interface
+      Agent { ... }` block, add `Agent` as a type import to the existing
+      `@hermes/agent` import on line 1, and add `export type { Agent };` —
+      this keeps `build-agent.ts` as the import path so **no consumer import
+      path changes**, only the type's canonical source does. Per CLAUDE.md's
+      "clear package boundaries," "reuse before reinvent," and "prefer
+      minimal changes": the type a package's own factory returns belongs in
+      that package's public surface, but every existing consumer already
+      imports it from `../agent/build-agent` (or `../../agent/build-agent`)
+      — re-exporting preserves that, rewriting 6 import paths would not be
+      minimal
+- [ ] **Six files import `Agent` from `build-agent.ts` today** (confirmed by
+      grep during plan review) — after the re-export above, all six must
+      still typecheck with zero import-path edits:
+      `apps/hermes/src/__tests__/dispatch-stats-command.test.ts`,
+      `apps/hermes/src/__tests__/dispatch-allowlist-gates-llm.test.ts`,
+      `apps/hermes/src/handlers/complete.ts` (production code, not a test),
+      `apps/hermes/src/handlers/__tests__/complete.test.ts`,
+      `apps/hermes/src/handlers/__tests__/complete-dedupe.test.ts`,
+      `apps/hermes/src/handlers/__tests__/complete-dedupe-crash-window.test.ts`.
+      If `pnpm -r typecheck` still fails on any of these after the re-export,
+      the re-export was done wrong (e.g. `export interface Agent` instead of
+      `export type { Agent }` pointing at the `@hermes/agent` import) — fix
+      the re-export, do not edit these six files' import paths
+- [ ] `pnpm -r typecheck` — must be fully green, all 8 projects; this is the
+      gate this phase exists to close
+- [ ] `pnpm -r test` — green
+- [ ] `pnpm test:db` — green
+
+**Tests:**
+
+No automated tests — justified because: this phase repairs existing tests
+broken by Phase 1's authorized signature changes and relocates a type
+export; the repaired assertions in the ten consumer files above are
+themselves the coverage (already-existing tests, exercising already-existing
+Phase 1 behavior, restored to compile and pass) — there is no new behavior
+here to add coverage for. The `Agent`-type relocation is a compile-time-only
+concern enforced entirely by `pnpm -r typecheck`'s import resolution; a
+runtime test can't meaningfully strengthen that guarantee (TS structural
+typing would pass a same-shaped local redeclaration too, so a runtime
+assertion would prove nothing the type checker doesn't already prove).
+
+**Verification:**
+
+- [ ] `pnpm -r typecheck` green — THE gate this phase exists to close (Phase
+      1 fails it; this phase's success is defined by turning it green)
+- [ ] `pnpm -r test` green
+- [ ] `pnpm test:db` green
+
+**Phase review:**
+
+- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [ ] Code-reviewer agent has verified this phase
+- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [ ] Tests for this phase written and passing (no-tests justification above accepted)
+- [ ] Documentation updated (see Documentation section) — none required this phase, no README content changes
+- [ ] Orchestrator (user) has verified and approved this phase
+- [ ] Changes committed: `fix: repair Phase 1 consumer fallout — CompletionRequest ids, agent-handler deps, Agent type export`
+- [ ] Phase marked complete
+
+---
+
 ### Phase 2: Tool registry, `get_current_time`, zod validation, retry, parallel execution
 
 **Risk:** medium
@@ -681,6 +846,7 @@ shipped) actually true.
 | Phase 1 | `threadId`/`turnId` stamped onto `llm.call`; `costUsd` on the result | `packages/llm/src/adapter/__tests__/openai-compatible*.test.ts` |
 | Phase 1 | `buildAgent`/`buildThreadRepo` wiring pin | `apps/hermes/src/agent/__tests__/build-agent.test.ts` |
 | Phase 1 | `replyWithCompletion` calls the agent, not the provider directly | `apps/hermes/src/handlers/__tests__/complete.test.ts` |
+| Phase 1.5 | none — repairs existing Phase 1 tests broken by its own authorized signature changes; no new behavior. `Agent`-type relocation is compile-time-only, enforced by `pnpm -r typecheck` | n/a |
 | Phase 2 | tool call execution, unknown-tool/invalid-args feedback, parallel execution (deadlock-detecting), max-iteration cap | `packages/agent/src/__tests__/loop.test.ts` |
 | Phase 2 | `get_current_time` handler | `apps/hermes/src/agent/tools/__tests__/get-current-time.test.ts` |
 | Phase 3 | approval gate integration into the loop: approve, deny, concurrent ungated execution, fail-fast construction | `packages/agent/src/__tests__/loop.test.ts` |
