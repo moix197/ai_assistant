@@ -927,9 +927,23 @@ which is `hil` regardless.
 | modify | `packages/llm/src/adapter/openai-compatible.ts` | accept an optional `signal: AbortSignal` in adapter options, pass it into the per-request `fetch`/`AbortController` composition (combine with the existing per-request timeout abort, not replace it); on abort, inspect **which** signal fired — the external shutdown `signal` throws `LlmAbortedError`, the adapter's own per-request timeout still throws `LlmTimeoutError` — so a crash between claim and complete (see Steps) is distinguishable in logs from an ordinary provider-side timeout |
 | modify | `packages/store/README.md` | document `llm_dedupe`'s three states and why the pending-state retry is an accepted, narrow residual risk, not a full solve — mirroring how `telegram_offset`'s at-least-once contract is documented today |
 | modify | `packages/channels/README.md` | document the new `updateId` field on `InboundMessage` and that it exists specifically so paid handlers can derive a dedupe key — echo/`/ping`/`/start` remain unaffected, still safe by inspection |
+| modify | `apps/hermes/package.json` | add a `test:db` script — this phase is the first to put `test:db` files under `apps/hermes`, and that package has none. Mirror `packages/store`'s exactly, including `--no-file-parallelism` and the guard that refuses to start when `TEST_DATABASE_URL` is unset. The root `test:db` is recursive (`pnpm -r --workspace-concurrency=1 run test:db`), so adding the script is sufficient — no root change. Serial is load-bearing, not tuning: these files share one database with the store's, and in parallel the `llm_usage`-touching files fail every run |
 
 **Steps:**
 
+- [ ] **Wire both mechanisms into the real paths, and pin each with a test
+      that fails if the wiring is dropped.** Phase 4 shipped a complete,
+      fully-tested budget ceiling that enforced nothing for one commit,
+      because the adapter it was built into was never handed the option in
+      `build-llm-provider.ts` — every test passed against a mechanism the
+      running bot did not use. The same trap is open twice here: dedupe is
+      worthless unless the *real* completion handler claims before calling,
+      and the `AbortSignal` is worthless unless the *real* shutdown sequence
+      aborts the controller. A green suite is not evidence either one is
+      connected; a test that would go red if the wiring vanished is. Note
+      also that `usageRepo` and `budget` are **required** adapter options as
+      of Phase 4 — any new `createOpenAiCompatibleAdapter` call site must
+      supply both
 - [ ] Migration `003_llm_dedupe.sql`
 - [ ] `claim`/`complete` in `llm-dedupe-repo.ts`: the `INSERT ... ON CONFLICT
       DO NOTHING RETURNING` pattern is what makes the uniqueness a Postgres
