@@ -21,6 +21,7 @@ import {
   setOffset,
   waitForDatabase,
 } from "@hermes/store";
+import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { createCompletionHandler } from "./handlers/complete";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
@@ -29,6 +30,7 @@ import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
 import { buildLlmProvider } from "./llm/build-llm-provider";
 import { buildProviderProfiles } from "./llm/build-provider-profiles";
+import { buildTelemetryRecorder } from "./telemetry/build-telemetry-recorder";
 
 /**
  * Bounded wait for in-flight work to drain before moving on to lock release.
@@ -45,6 +47,16 @@ const DRAIN_TIMEOUT_MS = 5_000;
  * steps (see above).
  */
 const HARD_EXIT_TIMEOUT_MS = 8_000;
+/**
+ * Bounds the shutdown-time telemetry flush (`telemetryRecorder.stop()`), run
+ * after `channel.stop()`'s drain and before `lock.release()`/`pool.end()`.
+ * Sized so a hung flush degrades to "lose the unflushed buffer" (the
+ * at-most-once tradeoff `packages/telemetry` already accepts) rather than
+ * starving the remaining shutdown steps of `HARD_EXIT_TIMEOUT_MS`'s budget —
+ * `channel.stop()`'s own drain can already consume up to `DRAIN_TIMEOUT_MS`
+ * (5s) of the 8s ceiling, so this gets a deliberately short 1s of its own.
+ */
+const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
 
 /**
  * Matches a command allowing Telegram's optional `@botusername` suffix
@@ -148,6 +160,17 @@ export interface ShutdownDeps {
    * instead of running out its full per-request timeout during shutdown.
    */
   controller: { abort(): void };
+  /**
+   * The telemetry recorder handle (Phase 2b), flushed after `channel.stop()`'s
+   * drain and before `lock.release()`/`pool.end()`. Required, not optional,
+   * for the same reason `controller` above is: an optional-with-a-silent-skip
+   * default would let `boot()`'s real registration drop this wire with
+   * nothing catching it — the exact "fully tested mechanism, never actually
+   * connected" trap `01-llm-port` was burned by twice (see
+   * `plans/02-telemetry.md`).
+   */
+  telemetryRecorder: { stop(): Promise<void> };
+  telemetryFlushTimeoutMs?: number;
 }
 
 /**
@@ -156,17 +179,25 @@ export interface ShutdownDeps {
  * promptly instead of running out its timeout; (1) `channel.stop()` flips
  * the poller's stopping flag so no new `getUpdates` call starts, then awaits
  * the in-flight handler — bounded here so a stuck drain doesn't block the
- * rest of shutdown forever; (2) release the advisory lock, only once no more
- * DB work from this instance is possible, so a restart-racing instance can't
- * acquire it mid-drain; (3) close the pool; (4) `process.exit(0)`. Each step
- * is a precondition for the next: releasing the lock before the drain
- * finishes would let a second instance start while we're still querying;
- * closing the pool before the drain finishes would crash an in-flight query.
+ * rest of shutdown forever; (2) flush telemetry (`telemetryRecorder.stop()`),
+ * bounded independently so a hung flush degrades to "lose the unflushed
+ * buffer" instead of stalling the rest of shutdown — run after the drain (so
+ * it can capture events from the in-flight work that just finished) and
+ * before the pool closes (so its own write has a live pool to go through);
+ * (3) release the advisory lock, only once no more DB work from this
+ * instance is possible, so a restart-racing instance can't acquire it
+ * mid-drain; (4) close the pool; (5) `process.exit(0)`. Each step is a
+ * precondition for the next: releasing the lock before the drain finishes
+ * would let a second instance start while we're still querying; closing the
+ * pool before the telemetry flush or the drain finishes would crash an
+ * in-flight query.
  */
 export async function shutdown(deps: ShutdownDeps): Promise<void> {
   const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
+  const telemetryFlushTimeoutMs = deps.telemetryFlushTimeoutMs ?? TELEMETRY_FLUSH_TIMEOUT_MS;
   deps.controller.abort();
   await withTimeout(deps.channel.stop(), drainTimeoutMs);
+  await withTimeout(deps.telemetryRecorder.stop(), telemetryFlushTimeoutMs);
   await deps.lock.release();
   await deps.pool.end();
   deps.logger.info("shutdown complete");
@@ -271,6 +302,8 @@ export interface MessageHandlerDeps {
   logger: Logger;
   /** The boot-lifetime abort signal, threaded through to the LLM adapter. */
   signal: AbortSignal;
+  /** Threaded through to the LLM adapter so every completion call emits an `llm.call` event. */
+  telemetryRecorder: TelemetryRecorderHandle;
 }
 
 /**
@@ -280,9 +313,16 @@ export interface MessageHandlerDeps {
  * wired — completionHandler is dispatchCommand's fallthrough now.
  */
 function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
-  const { channel, pool, config, logger, signal } = deps;
+  const { channel, pool, config, logger, signal, telemetryRecorder } = deps;
   const providerProfiles = buildProviderProfiles(config);
-  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger, config, signal);
+  const llmProvider = buildLlmProvider(
+    pool,
+    providerProfiles.primary,
+    logger,
+    config,
+    signal,
+    telemetryRecorder,
+  );
 
   return {
     pingHandler: createPingHandler(channel, pool),
@@ -342,6 +382,7 @@ export async function boot(): Promise<void> {
 
   serveHealth(pool, config.PORT, logger);
   const telegramChannel = createTelegramChannel(telegramClient, pool, logger);
+  const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
   // Boot-lifetime, not per-request: the poller is serial (never more than
   // one in-flight completion call), so one shared controller is sufficient.
@@ -355,6 +396,7 @@ export async function boot(): Promise<void> {
     config,
     logger,
     signal: shutdownController.signal,
+    telemetryRecorder,
   });
 
   registerShutdown({
@@ -363,5 +405,6 @@ export async function boot(): Promise<void> {
     pool,
     logger,
     controller: shutdownController,
+    telemetryRecorder,
   });
 }

@@ -1,4 +1,10 @@
-import { type Clock, type Logger, nextDelay, systemClock } from "@hermes/core";
+import {
+  type Clock,
+  type Logger,
+  type TelemetryRecorder,
+  nextDelay,
+  systemClock,
+} from "@hermes/core";
 import { type BudgetUsageRepo, assertBudgetNotExceeded } from "../budget/check-budget";
 import {
   LlmAbortedError,
@@ -69,6 +75,16 @@ export interface OpenAiCompatibleAdapterOptions {
    * and composed with, not a replacement for, the timeout mechanism below.
    */
   signal?: AbortSignal;
+  /**
+   * Emits an `llm.call` telemetry event per completed (or failed) call.
+   * Optional — `@hermes/llm` stays usable with no telemetry wired at all
+   * (see `@hermes/telemetry`'s README for the recorder contract this relies
+   * on: `record()` is synchronous, non-blocking, and never throws, so
+   * calling it here can never slow or fail a real completion). Never fires
+   * for a pre-flight `BudgetExceededError` rejection — no provider call was
+   * attempted, so there is nothing to attribute a duration or cost to.
+   */
+  recorder?: TelemetryRecorder;
 }
 
 interface OpenAiToolCall {
@@ -498,11 +514,15 @@ function deriveProviderLabel(baseUrl: string): string {
 }
 
 /**
- * Records one successful call's usage and cost. Called from the adapter's
- * success path only — a failed call has no billed tokens to record. Never
- * called from `parseCompletionResponse`/`callOnce`/`completeWithRetry`
- * directly: those run once per HTTP attempt, including retries, and usage
- * must be recorded exactly once per logical `complete()` call.
+ * Records one successful call's usage and cost, and returns the `entry` it
+ * built — reused by `complete()`'s telemetry emission below instead of
+ * re-deriving cost/tokens a second time (two independent derivations of the
+ * same cost number is exactly the drift risk `llm-cost-accounting.md` exists
+ * to prevent). Called from the adapter's success path only — a failed call
+ * has no billed tokens to record. Never called from
+ * `parseCompletionResponse`/`callOnce`/`completeWithRetry` directly: those
+ * run once per HTTP attempt, including retries, and usage must be recorded
+ * exactly once per logical `complete()` call.
  */
 async function recordCompletionUsage(
   usageRepo: LlmUsageRepo,
@@ -510,7 +530,7 @@ async function recordCompletionUsage(
   profile: ProviderProfile,
   request: CompletionRequest,
   result: CompletionResult,
-): Promise<void> {
+): Promise<LlmUsageEntry> {
   const costUsd = resolveCostUsd(request.model, result.usage, logger);
   const { missTokens, reasoningTokens } = deriveBilledTokens(result.usage);
   const entry: LlmUsageEntry = {
@@ -542,6 +562,7 @@ async function recordCompletionUsage(
       },
     );
   }
+  return entry;
 }
 
 /** OpenAI-compatible adapter over raw `fetch`. No SDK: two endpoints don't justify a mega-package. */
@@ -564,15 +585,48 @@ export function createOpenAiCompatibleAdapter(
       await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
 
       const body = buildRequestBody(request);
-      const result = await completeWithRetry(
-        fetchImpl,
-        url,
-        profile.apiKey,
-        body,
-        timeoutMs,
-        opts.signal,
-      );
-      await recordCompletionUsage(usageRepo, logger, profile, request, result);
+      // Timed from immediately after the budget check (nothing attempted
+      // yet) so `durationMs` reflects the provider call itself, not queueing
+      // behind the budget query.
+      const startedAt = Date.now();
+      let result: CompletionResult;
+      try {
+        result = await completeWithRetry(
+          fetchImpl,
+          url,
+          profile.apiKey,
+          body,
+          timeoutMs,
+          opts.signal,
+        );
+      } catch (error) {
+        opts.recorder?.record({
+          name: "llm.call",
+          threadId: null,
+          turnId: null,
+          model: request.model,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheHitTokens: 0,
+          durationMs: Date.now() - startedAt,
+          costUsd: 0,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+
+      const entry = await recordCompletionUsage(usageRepo, logger, profile, request, result);
+      opts.recorder?.record({
+        name: "llm.call",
+        threadId: null,
+        turnId: null,
+        model: entry.model,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        cacheHitTokens: entry.cacheHitTokens,
+        durationMs: Date.now() - startedAt,
+        costUsd: entry.costUsd,
+      });
       return result;
     },
   };

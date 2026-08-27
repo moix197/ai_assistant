@@ -133,6 +133,31 @@ records nothing, since no tokens were billed. The recorded `provider` label
 is the profile's `baseUrl` hostname (e.g. `api.deepseek.com`), derived
 rather than hardcoded so a new host needs no code change here.
 
+## Telemetry emission
+
+`createOpenAiCompatibleAdapter`'s `opts.recorder?: TelemetryRecorder` (from
+`@hermes/core`) is optional — this package stays usable with no telemetry
+wired at all, unlike `usageRepo`/`budget` above. When supplied, `complete()`
+emits exactly one `llm.call` event per call, timed from immediately after the
+budget check to when `completeWithRetry` settles:
+
+- **Success:** fired after `recordCompletionUsage`, reusing the
+  `LlmUsageEntry` it already built (`model`/`inputTokens`/`outputTokens`/
+  `cacheHitTokens`/`costUsd`) rather than re-deriving those numbers a second
+  time — one derivation, one source of truth. `error` is absent.
+- **Provider-call failure** (any error `completeWithRetry` throws — HTTP,
+  timeout, malformed response, abort): fired with all numeric usage fields
+  `0`, `costUsd: 0`, and `error` set to the failure's message, then the
+  original error is rethrown unchanged.
+- **Budget-ceiling rejection:** does **not** fire. `assertBudgetNotExceeded`
+  throws before any provider call is attempted, so there is no duration or
+  cost to attribute — a deliberate scope line, not an omission (see
+  `plans/02-telemetry.md`).
+
+`record()` itself is synchronous, non-blocking, and never throws (see
+`@hermes/telemetry`'s README) — wiring it in here can never slow down or fail
+a real completion, including after the recorder has been stopped.
+
 ## Budget ceiling
 
 `src/budget/resolve-budget-cap.ts` exports `resolveBudgetCapUsd(env)`, the

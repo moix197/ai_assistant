@@ -151,3 +151,25 @@ describe("buildLlmProvider — budget wiring", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("buildLlmProvider — telemetry wiring", () => {
+  // Pins the wiring this gap was reopened over (see plans/02-telemetry.md):
+  // the recorder is optional at the adapter level, which is exactly the
+  // shape that let `usageRepo`/`dedupeRepo` silently go unwired before.
+  // Deleting the one line in `build-llm-provider.ts` that passes `recorder`
+  // through must fail this test, not merely ship a feature no one notices
+  // missing.
+  it("passes a supplied recorder through to the constructed adapter's options", async () => {
+    stubSuccessfulFetch();
+    const pool = createMockPool();
+    const recorder = { record: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) };
+    const provider = buildLlmProvider(pool, PROFILE, createMockLogger(), ENV, undefined, recorder);
+
+    await provider.complete(baseRequest(PROFILE.model));
+
+    expect(recorder.record).toHaveBeenCalledTimes(1);
+    expect(recorder.record).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "llm.call", model: PROFILE.model }),
+    );
+  });
+});

@@ -11,6 +11,16 @@ function createMockLogger(): Logger {
   };
 }
 
+/**
+ * `telemetryRecorder` is required on `ShutdownDeps` (Phase 2b) — every
+ * pre-existing construction site here needs one, even though none of these
+ * tests are about telemetry itself. See `shutdown-abort.test.ts` for the
+ * tests that actually exercise this wire.
+ */
+function createNoopTelemetryRecorder(): { stop: ReturnType<typeof vi.fn> } {
+  return { stop: vi.fn().mockResolvedValue(undefined) };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -39,8 +49,17 @@ describe("shutdown", () => {
     };
     const logger = createMockLogger();
     const controller = { abort: vi.fn() };
+    const telemetryRecorder = createNoopTelemetryRecorder();
 
-    await shutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 1000 });
+    await shutdown({
+      channel,
+      lock,
+      pool,
+      logger,
+      controller,
+      telemetryRecorder,
+      drainTimeoutMs: 1000,
+    });
     callOrder.push("process.exit");
 
     expect(callOrder).toEqual(["channel.stop", "lock.release", "pool.end", "process.exit"]);
@@ -64,8 +83,17 @@ describe("shutdown", () => {
     };
     const logger = createMockLogger();
     const controller = { abort: vi.fn() };
+    const telemetryRecorder = createNoopTelemetryRecorder();
 
-    await shutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 20 });
+    await shutdown({
+      channel,
+      lock,
+      pool,
+      logger,
+      controller,
+      telemetryRecorder,
+      drainTimeoutMs: 20,
+    });
 
     expect(callOrder).toEqual(["lock.release", "pool.end"]);
   });
@@ -102,8 +130,17 @@ describe("registerShutdown", () => {
       const pool = { end: vi.fn().mockResolvedValue(undefined) };
       const logger = createMockLogger();
       const controller = { abort: vi.fn() };
+      const telemetryRecorder = createNoopTelemetryRecorder();
 
-      registerShutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 10 });
+      registerShutdown({
+        channel,
+        lock,
+        pool,
+        logger,
+        controller,
+        telemetryRecorder,
+        drainTimeoutMs: 10,
+      });
       process.emit("SIGTERM");
 
       await vi.runAllTimersAsync();
