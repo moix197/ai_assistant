@@ -982,31 +982,124 @@ already tracked in Phase 6.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–5 together
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db`
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db`
       (gated on `TEST_DATABASE_URL`) — `pnpm test:live` is intentionally not
       part of this plan's exit bar (see `.ai/decisions/ci-lane-policy.md`);
       confirm it is unaffected by this PRD's changes (nothing here modifies
       `packages/llm`'s live suite), but do not require it green as a
       condition of merging this PRD
-- [ ] No CLAUDE.md invariants violated
+- [x] No CLAUDE.md invariants violated
 - [ ] Feature tested manually: golden path (real LLM reply → `telemetry_events`
       row → `/stats` reflects it), plus edge cases (provider failure →
       `is_error = true` row; budget rejection → no event; unpriced model →
       boot refusal for both primary and fallback; `/stats` from a
       non-allowlisted sender → no reply; shutdown mid-buffer → flush proven,
       bounded)
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
+- [x] Overall success criteria met
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
 - [ ] **Human follow-up, out of scope as a code change:** enable GitHub branch
       protection on `main` requiring the new `ci` check to pass before merge.
       This is a repository settings action, not something this PRD can
       perform — recorded here per decision, not forgotten
 - [ ] All phase checkboxes above are ticked
+
+**Phase 6 execution record.**
+
+*Verified by the orchestrator, live against the running container:*
+
+- Golden path: a real DeepSeek reply wrote an `llm.call` row (`is_error=false`,
+  correct model, tokens, `duration_ms`), `/stats` rendered it, and the spend
+  reconciled exactly against `select sum(cost_usd) from llm_usage`
+  (0.000961 + 0.001397 = 0.002358).
+- Provider failure: a bad `LLM_PRIMARY_API_KEY` produced one row with
+  `is_error=true`, `cost_usd 0.000000`, all token fields `0`, the 401 text in
+  `fields`, and the original `LlmHttpError` rethrown.
+- Budget rejection: a cap below current spend produced `BudgetExceededError`
+  and **zero** new rows — the error-rate definition holds.
+- Unpriced model: garbage `LLM_PRIMARY_MODEL` and, separately, garbage
+  `LLM_FALLBACK_MODEL` each refused boot with exit 1 and a one-line message
+  naming the model, no stack trace.
+- Private-chat gate: a group-chat message was rejected
+  (`rejected: non-private chat`).
+- `/stats` from a non-allowlisted sender and the `/stats` render itself were
+  checked by the user on their own account.
+
+The provider-failure and budget-rejection checks were driven through
+`buildLlmProvider` + `buildTelemetryRecorder` against the live app database
+rather than through Telegram, because sending a message *to* the bot needs a
+real user account. Same wiring `boot()` uses; not the full Telegram path.
+
+*Cache-hit rate reads 0.0%, correctly.* The adapter parses both DeepSeek's
+`prompt_cache_hit_tokens` and the OpenAI/Gemini
+`usage.prompt_tokens_details.cached_tokens`, both unit-tested, and a recorded
+live fixture shows a real `896`-token hit. It reads zero here because the only
+shared prefix between requests is the ~9-token `SYSTEM_PROMPT_PLACEHOLDER` —
+far below DeepSeek's 64-token cache granularity — and no conversation history
+is sent until `packages/agent` (2c). The instrument is correct and precedes
+the thing it measures.
+
+**Two defects found by this phase's live verification, fixed here** (outside
+any phase's declared scope, hence recorded rather than ticked):
+
+- `ff8ca2f` — **the shutdown telemetry flush never ran.** `docker compose stop`
+  SIGKILLed the container at ~1.4s with no `shutdown complete`; a clean stop
+  took exactly 5004ms, precisely `DRAIN_TIMEOUT_MS`, meaning the drain timed
+  out every time even on an idle bot. Root cause: the boot-lifetime
+  `AbortController`'s signal was wired into the LLM adapter but never into the
+  Telegram poller or client — `GetUpdatesParams` had no `signal` field, so
+  `controller.abort()` had nothing to cut short the in-flight long poll. Since
+  the flush is sequenced after the drain, it never executed and buffered events
+  were lost on every stop. Fixed by plumbing the signal through
+  `packages/channels`, plus an explicit `stop_grace_period: 15s` in
+  `docker-compose.yml` (the app's own 8s `HARD_EXIT_TIMEOUT_MS` budget had been
+  assuming a grace period Docker was not actually giving it).
+- `a63f544` — review of that fix found two blockers: `AbortSignal.any` composed
+  a new signal per ~30s poll and Node 22 never releases dependents (~2.6 KB
+  retained each, roughly 210 MB/month), and an abort was logged as
+  `warn "getUpdates failed, retrying"` — reporting an intentional shutdown as a
+  transport failure, and spinning warn+delay forever if the signal ever aborted
+  without `stop()`. Fixed with explicit
+  `addEventListener`/`removeEventListener` and a clean abort exit. The
+  abort-aware `delay(ms, signal)` was relocated to `@hermes/core` so
+  `packages/channels` could reuse it without taking a wrong-direction
+  dependency on `packages/llm`.
+
+Shutdown now completes in ~6ms of process time (`stop` ~420-500ms wall,
+exit 0): `received shutdown signal, draining` → `poll aborted for shutdown` →
+`shutdown complete`.
+
+**Also closed here:** `b4ca9c2` — `pnpm test:db` needed a hand-created
+`hermes_test` database on every fresh worktree. Now auto-provisioned from the
+existing `db-env.ts` seam, gated behind `assertNotTheAppDatabase` so it can
+only ever create a `*_test` database. A compose init script was rejected
+because it fires only on first volume initialization, which would not help a
+reused named volume. Verified by dropping the database and re-running with zero
+manual steps. `8426650` — `boot()` had drifted to 37 non-blank lines against
+CLAUDE.md's ~30 guidance; brought back to 10 by pure extraction
+(`acquireInstanceLockOrExit`, `wireChannelAndShutdown`), with the shutdown
+tests as the unchanged safety net.
+
+**End-to-end review** (`08b40d1` closes it): verdict yellow, with every blocker
+in the knowledge base rather than the code — `.ai/architecture.md` and
+`index.md` still described telemetry as an unwired port, and
+`.ai/decisions/telemetry-event-schema.md` was cited by shipped artifacts but had
+never been written. All fixed by the `sync-knowledge` run, which also corrected
+drift it found across every package README and the root README. The review
+confirmed yes on each remaining Phase 6 criterion: `stats.ts` thin,
+`telemetry → core` only with no reversed import, one event per `complete()` on
+every path and zero on budget rejection, `record()` synchronous and
+non-throwing at every call site, cost-source split intact end to end, and the
+flush timeout real.
+
+**Blocked, cannot be done from here:** this repository has **no git remote**, so
+the two CI bullets (open a PR and watch Actions go green; confirm `test:live`
+appears nowhere in the log) and the branch-protection follow-up below all
+require a remote to be added and the branch pushed first.
 
 ## Documentation
 
