@@ -78,6 +78,22 @@ importers:
         specifier: ^8.11.10
         version: 8.23.1
 
+  packages/telemetry:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@hermes/store':
+        specifier: workspace:*
+        version: link:../store
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.23.1
+      pg:
+        specifier: ^8.13.1
+        version: 8.23.0
+
 packages:
 
   '@biomejs/biome@1.9.4':

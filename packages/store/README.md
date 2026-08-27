@@ -162,6 +162,35 @@ at-most-one-retry-on-crash behavior. This mirrors how `telegram_offset`'s
 at-least-once contract (above) is documented as an accepted gap rather than
 hidden.
 
+## Telemetry events
+
+`src/migrations/004_telemetry_events.sql` creates `telemetry_events`
+(`id bigserial pk, created_at timestamptz not null default now(), name text
+not null, thread_id text, turn_id text, tool_name text, duration_ms int,
+cost_usd numeric(12,6), is_error boolean not null default false, fields
+jsonb not null default '{}'::jsonb`), with indexes on `(created_at)`,
+`(name, created_at)`, and `(tool_name)`. One row per `@hermes/core`
+`TelemetryEvent` (`llm.call` / `tool.call` / `turn`).
+
+The columns every rollup query filters or aggregates on directly —
+`name`, `thread_id`, `turn_id`, `tool_name`, `duration_ms`, `cost_usd`,
+`is_error` — are real columns; everything event-specific (e.g. `llm.call`'s
+`model`/`inputTokens`/`outputTokens`/`cacheHitTokens`) lives in `fields`
+jsonb instead. This is the wide-table shape the schema is named for: it lets
+Postgres do the rollup math (Phase 3) as a plain aggregate query, not an
+application-side scan of a blob column.
+
+- `insertEvents(pool, events)` — one multi-row `INSERT` per call, never a
+  loop of single-row inserts. No-op (issues no query) on an empty array —
+  the common case for a periodic flush firing on an empty buffer, not the
+  exception. Called from `packages/telemetry`'s buffered recorder via the
+  `TelemetryEventRepo` port, the same injection shape `LlmUsageRepo` and
+  `BudgetUsageRepo` use.
+
+**No retention or pruning policy exists for this table.** It grows
+unbounded from this migration onward — an explicit, accepted open item, not
+solved here. See `.ai/decisions/telemetry-event-schema.md`.
+
 ## Testing
 
 `src/__tests__/migrate.test.ts` covers `sortMigrationFilenames` as a pure
@@ -206,3 +235,10 @@ after `complete()`, a further `claim` returns `completed` with the stored
 `resultText`; and a raw duplicate `INSERT` on the same `dedupe_key`
 (bypassing `claim`'s `ON CONFLICT`) is rejected by the primary-key constraint
 itself, proving the uniqueness is DB-enforced, not application-only.
+
+`src/__tests__/telemetry-event-repo.test.ts` is integration-only, gated the
+same way: the migration applies cleanly; `insertEvents` with a mixed batch
+(`llm.call` success, `llm.call` with `error`, and one of each other event
+kind) writes the right number of rows in one round trip, with
+`tool_name`/`cost_usd`/`is_error` populated correctly per kind and the rest
+recoverable from `fields`; an empty array performs no query.

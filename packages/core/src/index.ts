@@ -8,7 +8,13 @@ export {
   type LogLevel,
   type Logger,
 } from "./logger";
-export type { TelemetryEvent, TelemetryRecorder } from "./telemetry";
+export type {
+  LlmCallEvent,
+  TelemetryEvent,
+  TelemetryRecorder,
+  ToolCallEvent,
+  TurnEvent,
+} from "./telemetry";
 export { nextDelay } from "./backoff";
 export type {
   LlmUsageEntry,

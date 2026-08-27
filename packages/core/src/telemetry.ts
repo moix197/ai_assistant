@@ -1,13 +1,53 @@
-// Port only — no implementation ships in this phase. ROADMAP's boundary rule
-// requires this port to exist in `core` before Phase 2 wires a real recorder
-// through it, so callers depend on the port now rather than it being
-// retrofitted through half the tree later. Zero runtime footprint: nothing
-// calls this yet.
+// Typed discriminated union on `name`, replacing the original free-form
+// `{ name, fields? }` shape now that Phase 1 (plans/02-telemetry.md) ships a
+// real recorder to widen it for. `threadId`/`turnId` are nullable on every
+// event because `packages/agent` (2c) — the only future owner of real
+// thread/turn ids — doesn't exist yet; `packages/llm`'s adapter, the only
+// producer this PRD ships, always passes `null` for both.
 
-export interface TelemetryEvent {
-  name: string;
-  fields?: Record<string, unknown>;
+/** One completed (or failed) LLM provider call. The only event this PRD emits a real producer for. */
+export interface LlmCallEvent {
+  name: "llm.call";
+  threadId: string | null;
+  turnId: string | null;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  durationMs: number;
+  costUsd: number;
+  error?: string;
 }
+
+/**
+ * One tool invocation. Defined here so `packages/agent` (2c) has a typed
+ * contract to emit into — no producer ships in this PRD.
+ */
+export interface ToolCallEvent {
+  name: "tool.call";
+  threadId: string | null;
+  turnId: string | null;
+  tool: string;
+  durationMs: number;
+  approved: boolean;
+  error?: string;
+}
+
+/**
+ * One agentic-loop turn. Defined here for the same forward-looking reason as
+ * `ToolCallEvent` — no producer ships in this PRD.
+ */
+export interface TurnEvent {
+  name: "turn";
+  threadId: string | null;
+  turnId: string | null;
+  iterations: number;
+  totalCostUsd: number;
+  outcome: string;
+  durationMs: number;
+}
+
+export type TelemetryEvent = LlmCallEvent | ToolCallEvent | TurnEvent;
 
 export interface TelemetryRecorder {
   record(event: TelemetryEvent): void;
