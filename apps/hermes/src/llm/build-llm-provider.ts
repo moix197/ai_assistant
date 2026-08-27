@@ -19,17 +19,24 @@ import { type Pool, recordUsage, sumCostSince } from "@hermes/store";
  * omitting either here is a compile error, not a silent no-op. Extracted
  * from `boot()` so this wiring is testable without booting the whole
  * process, matching `build-provider-profiles.ts`'s shape.
+ *
+ * `signal` (Phase 5) is optional and passed straight through to the
+ * adapter's own optional `signal` option -- `boot.ts` supplies its
+ * boot-lifetime `AbortController`'s signal here; omitting it (as every test
+ * of this function does) leaves the adapter's per-request timeout as the
+ * only abort mechanism, unchanged from before this phase.
  */
 export function buildLlmProvider(
   pool: Pool,
   profile: ProviderProfile,
   logger: Logger,
   env: Env,
+  signal?: AbortSignal,
 ): LlmProvider {
   const usageRepo = { recordUsage: (entry: LlmUsageEntry) => recordUsage(pool, entry) };
   const budget = {
     usageRepo: { sumCostSince: (sinceUtc: Date) => sumCostSince(pool, sinceUtc) },
     capUsd: resolveBudgetCapUsd(env),
   };
-  return createOpenAiCompatibleAdapter(profile, { usageRepo, logger, budget });
+  return createOpenAiCompatibleAdapter(profile, { usageRepo, logger, budget, signal });
 }

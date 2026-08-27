@@ -8,6 +8,7 @@ export type {
 } from "./port";
 export {
   BudgetExceededError,
+  LlmAbortedError,
   LlmHttpError,
   LlmMalformedResponseError,
   LlmTimeoutError,
@@ -27,3 +28,4 @@ export {
   resolveCostUsd,
 } from "./pricing";
 export type { LlmUsageEntry, LlmUsageRepo } from "./usage/usage-repo-port";
+export type { LlmDedupeClaimResult, LlmDedupeRepo } from "./dedupe/dedupe-repo-port";

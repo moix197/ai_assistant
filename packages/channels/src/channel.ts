@@ -15,6 +15,14 @@ export interface InboundMessage {
   text: string;
   chatType: ChatType;
   kind: InboundMessageKind;
+  /**
+   * The platform's own update id (Telegram's `update_id`), optional so
+   * existing handlers/tests built before Phase 5 (echo, `/ping`, `/start`)
+   * are unaffected. Exists specifically so a paid handler can derive a
+   * dedupe key (`apps/hermes/src/handlers/complete.ts`) — see
+   * `packages/channels/README.md`.
+   */
+  updateId?: number;
 }
 
 export type InboundMessageHandler = (message: InboundMessage) => void | Promise<void>;

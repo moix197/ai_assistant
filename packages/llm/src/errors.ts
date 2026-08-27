@@ -16,6 +16,21 @@ export class LlmTimeoutError extends Error {
 }
 
 /**
+ * Thrown when the externally-supplied shutdown `signal` (Phase 5's
+ * boot-lifetime `AbortController`, not the adapter's own per-request
+ * timeout controller) fires mid-call. Kept a distinct class from
+ * `LlmTimeoutError` so a caller — and log-based diagnosis — can tell
+ * "the process was asked to shut down mid-call" from "the adapter itself
+ * gave up waiting on the provider".
+ */
+export class LlmAbortedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmAbortedError";
+  }
+}
+
+/**
  * Carries the HTTP status of a non-ok response from the provider, plus the
  * server's `Retry-After` header (seconds) when a 429 response sends one —
  * an authoritative signal that wins over computed backoff, mirroring

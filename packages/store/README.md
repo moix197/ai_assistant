@@ -101,6 +101,67 @@ against a ceiling denominated in dollars. Widening the column would trade a
 migration for precision nothing currently needs; revisit it if per-token or
 sub-cent accounting ever becomes the point.
 
+## LLM dedupe
+
+`src/migrations/003_llm_dedupe.sql` creates `llm_dedupe` (`dedupe_key text
+primary key, status text not null default 'pending', result_text text,
+created_at timestamptz not null default now(), completed_at timestamptz`).
+One row per dedupe key the completion handler has claimed
+(`apps/hermes/src/handlers/complete.ts`), keyed on `telegram:<update_id>` —
+see `packages/channels/README.md`'s `InboundMessage.updateId`.
+
+- `claim(pool, dedupeKey)` — `INSERT ... ON CONFLICT (dedupe_key) DO NOTHING
+  RETURNING`. The primary key on `dedupe_key` is what makes the uniqueness a
+  Postgres guarantee, not an application check-then-insert race: two
+  concurrent claims for the same key can only ever have one INSERT winner.
+  Three possible results:
+  - the INSERT wins -> `{status: "claimed"}` (first call for this key)
+  - the row is `completed` -> `{status: "completed", resultText}`, the
+    stored reply from the original call — the handler replies with this
+    directly and never calls the provider again
+  - the row is still `pending` -> `{status: "claimed"}` **again** — see
+    "Claim-to-complete crash window" below
+- `complete(pool, dedupeKey, resultText)` — marks the row `completed` and
+  stores `resultText`, called by the handler strictly *after* the reply is
+  sent, never before.
+
+### Claim-to-complete crash window — an accepted, fail-open residual risk
+
+There is a real window between `claim()` returning `{status: "claimed"}` and
+the later `complete()` call landing: a crash anywhere in that window
+(mid-provider-call, mid-reply-send, or between reply-send and the
+`complete()` write) leaves the row `pending`. On restart, Telegram redelivers
+the same `update_id`, `claim()` sees `pending`, and returns
+`{status: "claimed"}` again — **the retry proceeds and may issue a second
+real paid call.**
+
+This is deliberately **fail-open (retry), not fail-closed (permanently
+block)**: a chat assistant that permanently wedges a user's message because
+of a bounded, rare crash-timing race is a worse outcome than a bounded, rare,
+low-dollar double-charge (single-shot completion, capped by
+`MAX_TOKENS_PER_TURN` and the monthly budget ceiling either way) — a dropped
+message has no recovery path from the user's side, while a duplicate reply
+is at worst annoying and self-evidently visible.
+
+This is **narrower and fundamentally different** from the exact-duplicate-
+delivery case (an identical `update_id` redelivered *after* `complete()` has
+already landed), which the `UNIQUE`/primary-key constraint on `dedupe_key`
+closes **deterministically** — that case can never produce a second provider
+call, proved by `apps/hermes/src/handlers/__tests__/complete-dedupe.test.ts`.
+The crash-window case is proved *not to permanently block* (not proved to
+fully prevent a duplicate call) by
+`apps/hermes/src/handlers/__tests__/complete-dedupe-crash-window.test.ts`.
+
+What would close this gap later, as a forward-looking non-task, not built
+here: a finer-grained schema — e.g. an `attempt` counter or a richer status
+enum (`pending` -> `provider_called` -> `completed`) — letting a resumed
+process distinguish "claimed but the provider was never called" from "the
+provider call was actually issued and may have succeeded" before deciding to
+retry, enabling true exactly-once completion detection instead of today's
+at-most-one-retry-on-crash behavior. This mirrors how `telegram_offset`'s
+at-least-once contract (above) is documented as an accepted gap rather than
+hidden.
+
 ## Testing
 
 `src/__tests__/migrate.test.ts` covers `sortMigrationFilenames` as a pure
@@ -137,3 +198,11 @@ way: the migration applies cleanly, a recorded row round-trips with
 `cache_hit_tokens` distinct from `input_tokens`, and `sumCostSince` sums
 correctly across multiple rows and excludes rows recorded before the given
 time.
+
+`src/__tests__/llm-dedupe-repo.test.ts` is integration-only, gated the same
+way: a first `claim` returns `claimed`; a second `claim` on the same
+still-`pending` key also returns `claimed` (the documented retry case);
+after `complete()`, a further `claim` returns `completed` with the stored
+`resultText`; and a raw duplicate `INSERT` on the same `dedupe_key`
+(bypassing `claim`'s `ON CONFLICT`) is rejected by the primary-key constraint
+itself, proving the uniqueness is DB-enforced, not application-only.

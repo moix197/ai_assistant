@@ -13,8 +13,18 @@ implements:
   to bother formatting Markdown).
 - `subscribe(handler)` — registers the single `InboundMessageHandler`
   invoked for every inbound message, already normalized into `InboundMessage
-  { channelUserId, chatId, text, chatType, kind }`. Handlers never see raw
-  Telegram (or any other platform's) wire format.
+  { channelUserId, chatId, text, chatType, kind, updateId? }`. Handlers never
+  see raw Telegram (or any other platform's) wire format.
+  `updateId` (optional — Phase 5) carries the platform's own update id
+  (Telegram's `update_id`); it exists specifically so a handler with an
+  external, paid side effect can derive a stable dedupe key
+  (`apps/hermes/src/handlers/complete.ts` derives
+  `telegram:<updateId>` and claims it via `@hermes/store`'s `llm_dedupe`
+  table before calling the LLM provider — see
+  `packages/store/README.md`). It's optional so it has no effect on handlers
+  built before this phase: echo/`/ping`/`/start` simply ignore the field,
+  still safe by inspection (see "Guards" below) since none of them has an
+  external side effect requiring a dedupe key.
 - `send(target, text)` — replies into `target` (the channel-specific chat
   id, e.g. `InboundMessage.chatId`).
 
@@ -56,7 +66,8 @@ messages in and out of Telegram."
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
   `allowed_updates=["message","edited_message"]`) plus
   `normalizeTelegramUpdate`, which converts a raw update into an
-  `InboundMessage` or returns `null` when it can't (see guards below). The
+  `InboundMessage` or returns `null` when it can't (see guards below),
+  populating `updateId` from the raw update's own `update_id`. The
   offset is loaded once at start via a `TelegramOffsetRepo` port (injected —
   `boot.ts` wires it to `@hermes/store`'s `getOffset`/`setOffset`, keeping
   this package decoupled from Postgres) and persisted after each update is
@@ -132,6 +143,13 @@ no dedupe key here. **Any future handler with an external side effect**
 (e.g. a later `log_trade`-style handler) **must add its own idempotency key**
 per the project's at-least-once-delivery invariant — this phase solves
 replay-safety only for echo, not generally.
+
+The completion handler (`apps/hermes/src/handlers/complete.ts`, added
+02-llm-port) is the first handler with such a side effect — a real, paid LLM
+call — and it closes exactly this gap using `InboundMessage.updateId`: see
+the field's own doc comment on `channel.ts` and `packages/store/README.md`'s
+`llm_dedupe` section for the deterministic exact-duplicate proof and the
+narrower, accepted claim-to-complete crash-window risk.
 
 ### Single-instance constraint
 

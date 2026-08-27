@@ -59,6 +59,7 @@ export function normalizeTelegramUpdate(
     text: message.text ?? "",
     chatType: toChatType(message.chat.type),
     kind,
+    updateId: update.update_id,
   };
 }
 

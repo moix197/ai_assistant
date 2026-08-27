@@ -1,6 +1,11 @@
 import { type Clock, type Logger, nextDelay, systemClock } from "@hermes/core";
 import { type BudgetUsageRepo, assertBudgetNotExceeded } from "../budget/check-budget";
-import { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "../errors";
+import {
+  LlmAbortedError,
+  LlmHttpError,
+  LlmMalformedResponseError,
+  LlmTimeoutError,
+} from "../errors";
 import type {
   CompletionRequest,
   CompletionResult,
@@ -56,6 +61,14 @@ export interface OpenAiCompatibleAdapterOptions {
    * of relying on a default (see `check-budget.ts` for the check itself).
    */
   budget: { usageRepo: BudgetUsageRepo; capUsd: number; clock?: Clock };
+  /**
+   * Externally-supplied shutdown signal (Phase 5) — distinct from this
+   * adapter's own per-request timeout controller. Optional: the poller is
+   * serial (never more than one in-flight completion call), so a single
+   * boot-lifetime controller from `apps/hermes/src/boot.ts` is sufficient
+   * and composed with, not a replacement for, the timeout mechanism below.
+   */
+  signal?: AbortSignal;
 }
 
 interface OpenAiToolCall {
@@ -219,8 +232,37 @@ function parseCompletionResponse(raw: unknown): CompletionResult {
 }
 
 /**
- * Single attempt at one completion call. Throws `LlmTimeoutError` when this
- * function's own `AbortController` fires, `LlmHttpError` (carrying
+ * Classifies an abort into the right typed error. The externally-supplied
+ * shutdown `signal` firing is checked first — it's the more specific,
+ * deliberate cause ("shutdown asked us to stop") — falling back to the
+ * adapter's own per-request timeout otherwise. Composition (not
+ * replacement, see `composeSignal`) is what makes both causes distinguishable
+ * from the same combined `AbortSignal` at this single point.
+ */
+function classifyAbort(externalSignal: AbortSignal | undefined, timeoutMs: number): Error {
+  if (externalSignal?.aborted) {
+    return new LlmAbortedError("LLM request aborted by external shutdown signal");
+  }
+  return new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
+}
+
+/**
+ * Combines this call's own per-request timeout signal with the adapter's
+ * optional externally-supplied shutdown `signal`, so either can abort the
+ * underlying `fetch` — composition, not replacement, of the timeout
+ * mechanism.
+ */
+function composeSignal(
+  timeoutSignal: AbortSignal,
+  externalSignal: AbortSignal | undefined,
+): AbortSignal {
+  return externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
+}
+
+/**
+ * Single attempt at one completion call. Throws `LlmAbortedError` when the
+ * externally-supplied shutdown `signal` fires, `LlmTimeoutError` when this
+ * function's own per-request timeout fires instead, `LlmHttpError` (carrying
  * `status`) for a non-ok HTTP response, or `LlmMalformedResponseError` for
  * a non-JSON or structurally incomplete HTTP-200 body. Every thrown message
  * is redacted before it leaves this function on every path.
@@ -231,17 +273,25 @@ async function callOnce(
   apiKey: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  externalSignal: AbortSignal | undefined,
 ): Promise<CompletionResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signal = composeSignal(timeoutController.signal, externalSignal);
 
   try {
-    const response = await requestOnce(fetchImpl, url, apiKey, body, controller.signal, timeoutMs);
+    const response = await requestOnce(
+      fetchImpl,
+      url,
+      apiKey,
+      body,
+      signal,
+      timeoutMs,
+      externalSignal,
+    );
     if (!response.ok) {
       const rawText = await response.text().catch(() => {
-        if (controller.signal.aborted) {
-          throw new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
-        }
+        if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
         return "";
       });
       const retryAfter = parseRetryAfterSeconds(response.headers.get("retry-after"));
@@ -256,9 +306,7 @@ async function callOnce(
     try {
       payload = await response.json();
     } catch {
-      if (controller.signal.aborted) {
-        throw new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
-      }
+      if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
       throw new LlmMalformedResponseError("LLM response body is not valid JSON");
     }
 
@@ -275,6 +323,7 @@ async function requestOnce(
   body: Record<string, unknown>,
   signal: AbortSignal,
   timeoutMs: number,
+  externalSignal: AbortSignal | undefined,
 ): Promise<Response> {
   try {
     return await fetchImpl(url, {
@@ -288,7 +337,7 @@ async function requestOnce(
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new LlmTimeoutError(`LLM request timed out after ${timeoutMs}ms`);
+      throw classifyAbort(externalSignal, timeoutMs);
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(redact(`LLM request failed: ${message}`, apiKey));
@@ -301,7 +350,8 @@ async function requestOnce(
  * shared `nextDelay` (falling back to computed backoff), 5xx and
  * network/timeout errors back off exponentially and bounded, any other
  * non-ok status or a malformed body is not retried. Retries resend the
- * identical request body.
+ * identical request body. A shutdown-triggered `LlmAbortedError` is never
+ * retried either — retrying would defeat the point of a prompt shutdown.
  */
 async function completeWithRetry(
   fetchImpl: typeof fetch,
@@ -309,14 +359,16 @@ async function completeWithRetry(
   apiKey: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  externalSignal: AbortSignal | undefined,
 ): Promise<CompletionResult> {
   let rateLimitAttempt = 0;
   let transientAttempt = 0;
 
   while (true) {
     try {
-      return await callOnce(fetchImpl, url, apiKey, body, timeoutMs);
+      return await callOnce(fetchImpl, url, apiKey, body, timeoutMs, externalSignal);
     } catch (error) {
+      if (error instanceof LlmAbortedError) throw error;
       if (error instanceof LlmMalformedResponseError) throw error;
 
       if (error instanceof LlmHttpError) {
@@ -423,7 +475,14 @@ export function createOpenAiCompatibleAdapter(
       await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
 
       const body = buildRequestBody(request);
-      const result = await completeWithRetry(fetchImpl, url, profile.apiKey, body, timeoutMs);
+      const result = await completeWithRetry(
+        fetchImpl,
+        url,
+        profile.apiKey,
+        body,
+        timeoutMs,
+        opts.signal,
+      );
       await recordCompletionUsage(usageRepo, logger, profile, request, result);
       return result;
     },

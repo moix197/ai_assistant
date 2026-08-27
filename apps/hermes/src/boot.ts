@@ -9,6 +9,8 @@ import { type Logger, createLogger } from "@hermes/core";
 import {
   INSTANCE_LOCK_KEY,
   acquireInstanceLock,
+  claim as claimDedupe,
+  complete as completeDedupe,
   createPool,
   getDefaultMigrationsDir,
   getOffset,
@@ -115,10 +117,21 @@ export interface ShutdownDeps {
   pool: { end(): Promise<void> };
   logger: Logger;
   drainTimeoutMs?: number;
+  /**
+   * The boot-lifetime `AbortController` (Phase 5) whose signal is threaded
+   * into the LLM adapter. Optional so callers built before this phase are
+   * unaffected when omitted; `boot()`'s real registration always supplies
+   * one. Aborting it here, before `channel.stop()`'s drain wait, is what
+   * makes an in-flight completion call's `fetch` reject promptly instead of
+   * running out its full per-request timeout during shutdown.
+   */
+  controller?: { abort(): void };
 }
 
 /**
- * The ordered, load-bearing shutdown sequence: (1) `channel.stop()` flips
+ * The ordered, load-bearing shutdown sequence: (0) abort the boot-lifetime
+ * `AbortController`, so any in-flight LLM completion call's `fetch` rejects
+ * promptly instead of running out its timeout; (1) `channel.stop()` flips
  * the poller's stopping flag so no new `getUpdates` call starts, then awaits
  * the in-flight handler — bounded here so a stuck drain doesn't block the
  * rest of shutdown forever; (2) release the advisory lock, only once no more
@@ -130,6 +143,7 @@ export interface ShutdownDeps {
  */
 export async function shutdown(deps: ShutdownDeps): Promise<void> {
   const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
+  deps.controller?.abort();
   await withTimeout(deps.channel.stop(), drainTimeoutMs);
   await deps.lock.release();
   await deps.pool.end();
@@ -243,13 +257,30 @@ export async function boot(): Promise<void> {
   const pingHandler = createPingHandler(telegramChannel, pool);
   const startHandler = createStartHandler(telegramChannel, pool);
 
+  // Boot-lifetime, not per-request: the poller is serial (never more than
+  // one in-flight completion call), so one shared controller is sufficient.
+  // Aborted as the first step of shutdown() (see below), before the drain
+  // wait on channel.stop().
+  const shutdownController = new AbortController();
+
   const providerProfiles = buildProviderProfiles(config);
-  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger, config);
+  const llmProvider = buildLlmProvider(
+    pool,
+    providerProfiles.primary,
+    logger,
+    config,
+    shutdownController.signal,
+  );
   const completionHandler = createCompletionHandler({
     channel: telegramChannel,
     llmProvider,
     model: providerProfiles.primary.model,
     logger,
+    dedupeRepo: {
+      claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
+      complete: (dedupeKey: string, resultText: string) =>
+        completeDedupe(pool, dedupeKey, resultText),
+    },
   });
 
   const dispatchCommand = createDispatchCommand({ pingHandler, startHandler, completionHandler });
@@ -265,5 +296,11 @@ export async function boot(): Promise<void> {
     withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger),
   );
 
-  registerShutdown({ channel: telegramChannel, lock: instanceLock, pool, logger });
+  registerShutdown({
+    channel: telegramChannel,
+    lock: instanceLock,
+    pool,
+    logger,
+    controller: shutdownController,
+  });
 }
