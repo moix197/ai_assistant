@@ -69,8 +69,11 @@ Strictly downward; no package imports one above it.
   - The row's shape, `LlmUsageEntry`, lives in `@hermes/core` and is
     re-exported by both `llm` and `store`, so neither side can drift a field
     apart without a type error.
-- **`packages/telemetry` depends on `packages/core` only** — never
-  `@hermes/store`, the same boundary `llm` holds and for the same reason. It
+- **`packages/telemetry` depends on `packages/core` only at runtime** — never
+  `@hermes/store` in shipped code, the same boundary `llm` holds and for the
+  same reason. (`@hermes/store` is a devDependency solely for the DB
+  integration test, which exercises the injected repo ports against a real
+  database.) It
   takes two injected ports: `TelemetryEventRepo` (`{ insertEvents }`) for the
   write side and `StatsRepo`
   (`{ sumCostSince, getLlmCallStatsSince, getTopToolsSince }`) for `/stats`'

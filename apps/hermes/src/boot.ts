@@ -429,14 +429,42 @@ async function acquireInstanceLockOrExit(
 }
 
 /**
- * Wires the boot-lifetime abort controller, the Telegram channel, the
- * telemetry recorder, the gated message-handler subscription, and shutdown
- * registration — the steps that only run once the instance lock is held and
- * the health server is serving. Order preserved exactly as it was inline in
- * `boot()`: controller -> channel -> telemetry recorder -> dispatch
- * subscription -> shutdown registration.
+ * Builds the telemetry recorder and subscribes the gated message-handler
+ * dispatch to the channel, in that order. Split out of the boot-wiring
+ * orchestrator below so each of its steps reads independently; returns the
+ * telemetry recorder so the caller can thread it into `registerShutdown`.
  */
-function wireChannelAndShutdown(
+function buildTelemetryRecorderAndSubscribeHandlers(
+  channel: TelegramPoller,
+  pool: Pool,
+  config: Env,
+  logger: Logger,
+  signal: AbortSignal,
+): TelemetryRecorderHandle {
+  const telemetryRecorder = buildTelemetryRecorder(pool, logger);
+
+  subscribeGatedDispatch({
+    channel,
+    pool,
+    config,
+    logger,
+    signal,
+    telemetryRecorder,
+  });
+
+  return telemetryRecorder;
+}
+
+/**
+ * Wires the boot-lifetime abort controller, the Telegram channel, the
+ * telemetry recorder plus gated message-handler subscription (delegated to
+ * `buildTelemetryRecorderAndSubscribeHandlers`), and shutdown registration —
+ * the steps that only run once the instance lock is held and the health
+ * server is serving. Order preserved exactly as it was inline in `boot()`:
+ * controller -> channel -> telemetry recorder -> dispatch subscription ->
+ * shutdown registration.
+ */
+function wireRuntimeAndShutdown(
   telegramClient: TelegramClient,
   pool: Pool,
   config: Env,
@@ -456,16 +484,14 @@ function wireChannelAndShutdown(
     logger,
     shutdownController.signal,
   );
-  const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
-  subscribeGatedDispatch({
-    channel: telegramChannel,
+  const telemetryRecorder = buildTelemetryRecorderAndSubscribeHandlers(
+    telegramChannel,
     pool,
     config,
     logger,
-    signal: shutdownController.signal,
-    telemetryRecorder,
-  });
+    shutdownController.signal,
+  );
 
   registerShutdown({
     channel: telegramChannel,
@@ -503,5 +529,5 @@ export async function boot(): Promise<void> {
 
   serveHealth(pool, config.PORT, logger);
 
-  wireChannelAndShutdown(telegramClient, pool, config, logger, instanceLock);
+  wireRuntimeAndShutdown(telegramClient, pool, config, logger, instanceLock);
 }

@@ -45,6 +45,14 @@ function loadRepoEnvFileWhenDatabaseUrlIsMissing(): void {
 loadRepoEnvFileWhenDatabaseUrlIsMissing();
 
 /**
+ * Extracts the database name from a Postgres connection URL. Centralized so
+ * every call site agrees on how the name is parsed out of the URL's path.
+ */
+function getTestDatabaseName(url: string): string {
+  return new URL(url).pathname.replace(/^\//, "");
+}
+
+/**
  * Refuses a URL that names the app's own database. These suites seed and
  * truncate `llm_usage`, and a row they leave behind is spend the budget
  * ceiling reads as real: a stray run against the app database permanently
@@ -68,7 +76,7 @@ function assertNotTheAppDatabase(url: string): void {
         "ceiling counts as real spend. Point it at a scratch database.",
     );
   }
-  const databaseName = url.split("/").pop()?.split("?")[0] ?? "";
+  const databaseName = getTestDatabaseName(url);
   if (!databaseName.endsWith("_test")) {
     throw new Error(
       `TEST_DATABASE_URL names database "${databaseName}", which does not end in "_test". Refusing to run: these tests truncate llm_usage and their fixture rows are counted as real spend by the budget ceiling.`,
@@ -77,11 +85,29 @@ function assertNotTheAppDatabase(url: string): void {
 }
 
 /**
- * Postgres's code for "database already exists" — raised if a concurrent
- * `CREATE DATABASE` won the race against this one. Treated as success: the
- * goal is the database existing, not this call being the one that made it.
+ * Postgres codes for "database already exists" — raised if a concurrent
+ * `CREATE DATABASE` won the race against this one: `42P04` is the dedicated
+ * duplicate_database code, and `23505` (unique_violation) is what a
+ * concurrent creator can raise instead when it collides on the system
+ * catalog under relaxed concurrency. Both are treated as success: the goal
+ * is the database existing, not this call being the one that made it.
  */
-const DUPLICATE_DATABASE_ERROR_CODE = "42P04";
+const DUPLICATE_DATABASE_ERROR_CODES = new Set(["42P04", "23505"]);
+
+/**
+ * Guards the identifier interpolated into `CREATE DATABASE "<name>"`.
+ * Redundant with `assertNotTheAppDatabase`'s `_test` suffix check, but that
+ * check exists to stop the wrong database from being touched, not to make
+ * the interpolation itself safe — this makes the quoting deliberate rather
+ * than incidentally safe because `URL` happens to percent-encode a stray `"`.
+ */
+function assertSafeDatabaseIdentifier(databaseName: string): void {
+  if (!/^[a-z0-9_]+_test$/i.test(databaseName)) {
+    throw new Error(
+      `Refusing to interpolate database name "${databaseName}" into SQL: it must match /^[a-z0-9_]+_test$/i.`,
+    );
+  }
+}
 
 /**
  * Creates the scratch database named by `url` when it does not already
@@ -97,31 +123,33 @@ const DUPLICATE_DATABASE_ERROR_CODE = "42P04";
  * already present and does nothing.
  */
 async function ensureTestDatabaseExists(url: string): Promise<void> {
-  const target = new URL(url);
-  const databaseName = target.pathname.replace(/^\//, "");
+  const databaseName = getTestDatabaseName(url);
+  assertSafeDatabaseIdentifier(databaseName);
   const maintenanceUrl = new URL(url);
   maintenanceUrl.pathname = "/postgres";
 
   const client = new Client({ connectionString: maintenanceUrl.toString() });
   try {
-    await client.connect();
-  } catch (error) {
-    throw new Error(
-      `Could not reach Postgres at ${maintenanceUrl.host} to provision scratch database "${databaseName}": ${(error as Error).message}. Start the compose stack (docker compose up -d postgres) and retry.`,
-    );
-  }
-  try {
-    const { rowCount } = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [
-      databaseName,
-    ]);
-    if (rowCount === 0) {
-      await client.query(`CREATE DATABASE "${databaseName}"`);
-    }
-  } catch (error) {
-    if ((error as { code?: string }).code !== DUPLICATE_DATABASE_ERROR_CODE) {
+    try {
+      await client.connect();
+    } catch (error) {
       throw new Error(
-        `Could not provision scratch database "${databaseName}": ${(error as Error).message}`,
+        `Could not reach Postgres at ${maintenanceUrl.host} to provision scratch database "${databaseName}": ${(error as Error).message}. Start the compose stack (docker compose up -d postgres) and retry.`,
       );
+    }
+    try {
+      const { rowCount } = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+        databaseName,
+      ]);
+      if (!rowCount) {
+        await client.query(`CREATE DATABASE "${databaseName}"`);
+      }
+    } catch (error) {
+      if (!DUPLICATE_DATABASE_ERROR_CODES.has((error as { code?: string }).code ?? "")) {
+        throw new Error(
+          `Could not provision scratch database "${databaseName}": ${(error as Error).message}`,
+        );
+      }
     }
   } finally {
     await client.end();
