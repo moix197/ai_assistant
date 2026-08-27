@@ -8,6 +8,8 @@ interface TelemetryEventRow {
   toolName: string | null;
   durationMs: number | null;
   costUsd: number | null;
+  /** A `turn` row's total cost across its `llm.call`s. Null on every other event kind. See `cost_usd` above. */
+  totalCostUsd: number | null;
   isError: boolean;
   fields: Record<string, unknown>;
 }
@@ -28,6 +30,7 @@ function toRow(event: TelemetryEvent): TelemetryEventRow {
         name: event.name,
         toolName: null,
         costUsd: event.costUsd,
+        totalCostUsd: null,
         isError: event.error !== undefined,
         fields: {
           model: event.model,
@@ -43,6 +46,7 @@ function toRow(event: TelemetryEvent): TelemetryEventRow {
         name: event.name,
         toolName: event.tool,
         costUsd: null,
+        totalCostUsd: null,
         isError: event.error !== undefined,
         fields: {
           approved: event.approved,
@@ -50,18 +54,23 @@ function toRow(event: TelemetryEvent): TelemetryEventRow {
         },
       };
     case "turn":
+      // `cost_usd` stays NULL here — it means exactly one thing everywhere
+      // else in this table: the cost of a single `llm.call`. A turn's total
+      // goes in its own column instead (03-agent-core settled decision 1),
+      // closing the double-count `02-telemetry` deferred.
       return {
         ...base,
         name: event.name,
         toolName: null,
-        costUsd: event.totalCostUsd,
+        costUsd: null,
+        totalCostUsd: event.totalCostUsd,
         isError: false,
         fields: { iterations: event.iterations, outcome: event.outcome },
       };
   }
 }
 
-const COLUMNS_PER_ROW = 8;
+const COLUMNS_PER_ROW = 9;
 
 function buildPlaceholderGroup(rowIndex: number): string {
   const start = rowIndex * COLUMNS_PER_ROW + 1;
@@ -77,6 +86,7 @@ function flattenRowValues(row: TelemetryEventRow): unknown[] {
     row.toolName,
     row.durationMs,
     row.costUsd,
+    row.totalCostUsd,
     row.isError,
     JSON.stringify(row.fields),
   ];
@@ -97,7 +107,7 @@ export async function insertEvents(pool: Pool, events: TelemetryEvent[]): Promis
   const params = rows.flatMap(flattenRowValues);
 
   await pool.query(
-    `INSERT INTO telemetry_events (name, thread_id, turn_id, tool_name, duration_ms, cost_usd, is_error, fields)
+    `INSERT INTO telemetry_events (name, thread_id, turn_id, tool_name, duration_ms, cost_usd, total_cost_usd, is_error, fields)
      VALUES ${valuesSql}`,
     params,
   );

@@ -34,6 +34,14 @@ export interface ToolCallEvent {
 }
 
 /**
+ * A turn's terminal state. Narrowed from `string` (03-agent-core Phase 1,
+ * settled decision 13) now that `packages/agent`'s loop is the event's real
+ * producer. Deliberately excludes approval denial and a tool-validation
+ * failure — neither ends a turn, so neither is an outcome.
+ */
+export type TurnOutcome = "completed" | "max_iterations" | "aborted" | "error";
+
+/**
  * One agentic-loop turn. Defined here for the same forward-looking reason as
  * `ToolCallEvent` — no producer ships in this PRD.
  */
@@ -43,7 +51,7 @@ export interface TurnEvent {
   turnId: string | null;
   iterations: number;
   totalCostUsd: number;
-  outcome: string;
+  outcome: TurnOutcome;
   durationMs: number;
 }
 

@@ -1,7 +1,8 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import { BudgetExceededError, LlmHttpError, type LlmProvider, LlmTimeoutError } from "@hermes/llm";
+import { BudgetExceededError, LlmHttpError, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
+import type { Agent } from "../../agent/build-agent";
 import { type LlmDedupeRepo, createCompletionHandler } from "../complete";
 
 const ALLOWED_ID = 111;
@@ -21,6 +22,10 @@ function createMockChannel(): Channel {
     subscribe: vi.fn(),
     send: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function createMockAgent(): Agent & { handleMessage: ReturnType<typeof vi.fn> } {
+  return { handleMessage: vi.fn().mockResolvedValue("a real agent reply") };
 }
 
 // `dedupeRepo` is a mandatory handler option (Phase 5 gap fix — see
@@ -48,69 +53,51 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
 }
 
 describe("createCompletionHandler", () => {
-  it("replies with result.text on the happy path", async () => {
+  it("replies with the agent's reply text on the happy path", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const llmProvider: LlmProvider = {
-      complete: vi.fn().mockResolvedValue({
-        text: "a real llm reply",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
-        finishReason: "stop",
-      }),
-    };
+    const agent = createMockAgent();
+    agent.handleMessage.mockResolvedValue("a real agent reply");
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
 
     await handler(inboundMessage());
 
-    expect(channel.send).toHaveBeenCalledWith("555", "a real llm reply");
+    expect(channel.send).toHaveBeenCalledWith("555", "a real agent reply");
   });
 
-  it("passes the message text as the single user message, with model and maxTokens set", async () => {
+  it("calls agent.handleMessage with the telegram channel identifier, the chatId, and the message text", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const complete = vi.fn().mockResolvedValue({
-      text: "ok",
-      toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
+    const agent = createMockAgent();
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
 
-    await handler(inboundMessage({ text: "what is the capital of France?" }));
+    await handler(inboundMessage({ chatId: "555", text: "what is the capital of France?" }));
 
-    expect(complete).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: "some-model",
-        messages: [{ role: "user", content: "what is the capital of France?" }],
-        tools: undefined,
-      }),
+    expect(agent.handleMessage).toHaveBeenCalledWith(
+      "telegram",
+      "555",
+      "what is the capital of France?",
     );
   });
 
-  it("replies with a generic message, not a thrown error, when the provider throws LlmHttpError", async () => {
+  it("replies with a generic message, not a thrown error, when the agent throws LlmHttpError", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const llmProvider: LlmProvider = {
-      complete: vi.fn().mockRejectedValue(new LlmHttpError("HTTP 500", 500)),
-    };
+    const agent = createMockAgent();
+    agent.handleMessage.mockRejectedValue(new LlmHttpError("HTTP 500", 500));
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -124,16 +111,14 @@ describe("createCompletionHandler", () => {
     expect(replyText).not.toContain("HTTP 500");
   });
 
-  it("replies with a generic message, not a thrown error, when the provider throws LlmTimeoutError", async () => {
+  it("replies with a generic message, not a thrown error, when the agent throws LlmTimeoutError", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const llmProvider: LlmProvider = {
-      complete: vi.fn().mockRejectedValue(new LlmTimeoutError("timed out")),
-    };
+    const agent = createMockAgent();
+    agent.handleMessage.mockRejectedValue(new LlmTimeoutError("timed out"));
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -142,16 +127,14 @@ describe("createCompletionHandler", () => {
     expect(channel.send).toHaveBeenCalledTimes(1);
   });
 
-  it("replies with the specific out-of-budget message, not the generic fallback, when the provider throws BudgetExceededError", async () => {
+  it("replies with the specific out-of-budget message, not the generic fallback, when the agent throws BudgetExceededError", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const llmProvider: LlmProvider = {
-      complete: vi.fn().mockRejectedValue(new BudgetExceededError(5, 5.5)),
-    };
+    const agent = createMockAgent();
+    agent.handleMessage.mockRejectedValue(new BudgetExceededError(5, 5.5));
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -169,21 +152,20 @@ describe("createCompletionHandler", () => {
     );
   });
 
-  it("ignores an edited message, no provider call", async () => {
+  it("ignores an edited message, no agent call", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
-    const llmProvider: LlmProvider = { complete: vi.fn() };
+    const agent = createMockAgent();
     const handler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
 
     await handler(inboundMessage({ kind: "edited_message" }));
 
-    expect(llmProvider.complete).not.toHaveBeenCalled();
+    expect(agent.handleMessage).not.toHaveBeenCalled();
     expect(channel.send).not.toHaveBeenCalled();
   });
 });

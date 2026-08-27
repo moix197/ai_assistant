@@ -209,6 +209,14 @@ function parseToolCallArguments(raw: string): Record<string, unknown> {
   }
 }
 
+/**
+ * What `parseCompletionResponse`/`callOnce`/`completeWithRetry` actually
+ * produce: everything `CompletionResult` carries except `costUsd`, which
+ * isn't knowable until `recordCompletionUsage` resolves pricing afterward.
+ * `complete()` merges that in once before returning the real `CompletionResult`.
+ */
+type ParsedCompletion = Omit<CompletionResult, "costUsd">;
+
 const KNOWN_FINISH_REASONS: readonly FinishReason[] = [
   "stop",
   "tool_calls",
@@ -242,7 +250,7 @@ function parseCacheHitTokens(usage: OpenAiChatCompletionResponse["usage"]): numb
  * `LlmMalformedResponseError` rather than defaulting — a defaulted zero
  * `usage` would silently record zero cost for a real, billed call.
  */
-function parseCompletionResponse(raw: unknown): CompletionResult {
+function parseCompletionResponse(raw: unknown): ParsedCompletion {
   const payload = raw as OpenAiChatCompletionResponse;
   const choice = payload.choices?.[0];
 
@@ -328,7 +336,7 @@ async function callOnce(
   body: Record<string, unknown>,
   timeoutMs: number,
   externalSignal: AbortSignal | undefined,
-): Promise<CompletionResult> {
+): Promise<ParsedCompletion> {
   const timeoutController = new AbortController();
   const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
   const signal = composeSignal(timeoutController.signal, externalSignal);
@@ -437,7 +445,7 @@ async function completeWithRetry(
   body: Record<string, unknown>,
   timeoutMs: number,
   externalSignal: AbortSignal | undefined,
-): Promise<CompletionResult> {
+): Promise<ParsedCompletion> {
   let rateLimitAttempt = 0;
   let transientAttempt = 0;
 
@@ -512,7 +520,7 @@ async function recordCompletionUsage(
   logger: Logger,
   profile: ProviderProfile,
   request: CompletionRequest,
-  result: CompletionResult,
+  result: ParsedCompletion,
 ): Promise<LlmUsageEntry> {
   const costUsd = resolveCostUsd(request.model, result.usage);
   const { missTokens, reasoningTokens } = deriveBilledTokens(result.usage);
@@ -556,7 +564,7 @@ async function recordCompletionUsage(
  * `UnpricedModelError`): those tokens were genuinely billed even though the
  * cost could not be resolved, so they're worth surfacing even as `costUsd: 0`.
  */
-function errorEventTokens(result: CompletionResult | undefined): {
+function errorEventTokens(result: ParsedCompletion | undefined): {
   inputTokens: number;
   outputTokens: number;
   cacheHitTokens: number;
@@ -620,7 +628,7 @@ export function createOpenAiCompatibleAdapter(
       // error's duration is a diagnostic, not the latency number `/stats`
       // reports. See `packages/llm/README.md`.
       const startedAt = Date.now();
-      let result: CompletionResult | undefined;
+      let result: ParsedCompletion | undefined;
       try {
         result = await completeWithRetry(
           fetchImpl,
@@ -634,8 +642,8 @@ export function createOpenAiCompatibleAdapter(
         const entry = await recordCompletionUsage(usageRepo, logger, profile, request, result);
         safeRecord(opts.recorder, logger, {
           name: "llm.call",
-          threadId: null,
-          turnId: null,
+          threadId: request.threadId,
+          turnId: request.turnId,
           model: entry.model,
           inputTokens: entry.inputTokens,
           outputTokens: entry.outputTokens,
@@ -643,13 +651,13 @@ export function createOpenAiCompatibleAdapter(
           durationMs,
           costUsd: entry.costUsd,
         });
-        return result;
+        return { ...result, costUsd: entry.costUsd };
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         safeRecord(opts.recorder, logger, {
           name: "llm.call",
-          threadId: null,
-          turnId: null,
+          threadId: request.threadId,
+          turnId: request.turnId,
           model: request.model,
           ...errorEventTokens(result),
           durationMs,

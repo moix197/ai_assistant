@@ -30,6 +30,8 @@ function baseRequest() {
     messages: [{ role: "user" as const, content: "hi" }],
     tools: undefined,
     maxTokens: 100,
+    threadId: null,
+    turnId: null,
   };
 }
 

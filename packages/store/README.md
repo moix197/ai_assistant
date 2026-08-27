@@ -58,9 +58,10 @@ the lock implicitly regardless — Postgres releases session-level locks when
 their connection closes, crash or not.
 
 `src/migrations/` holds, in apply order, `001_telegram_offset.sql`,
-`002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`. A new
-migration is numbered one past whatever is actually highest in the directory —
-re-list it rather than trusting an assumed number.
+`002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`,
+`005_telemetry_event_total_cost.sql`, `006_threads.sql`. A new migration is
+numbered one past whatever is actually highest in the directory — re-list it
+rather than trusting an assumed number.
 
 ## LLM usage accounting
 
@@ -204,15 +205,48 @@ application-side scan of a blob column.
   (not an error, not `null`) today, since no producer exists until
   `packages/agent` (2c); it needs no change here when one lands.
 
-`cost_usd` is shared by `llm.call` (one call's cost) and `turn`
-(`totalCostUsd`, the sum over a turn's calls). Every query above filters on
-`name` first, which is what keeps that safe — a `SUM(cost_usd)` across all
-event kinds would double-count once a `turn` producer exists. See the decision
-doc's open items.
+`src/migrations/005_telemetry_event_total_cost.sql` adds `total_cost_usd
+numeric(12,6)` (03-agent-core Phase 1, settled decision 1). A `turn` row
+writes its total there and leaves `cost_usd` NULL; `llm.call`/`tool.call`
+rows are unaffected and leave `total_cost_usd` NULL. This is the fix for the
+double-count `02-telemetry` deferred: `cost_usd` now means exactly one thing
+everywhere in this table — the cost of a single `llm.call` — so a plain
+`SUM(cost_usd)` across all event kinds can never double-count a turn's calls
+against the turn's own total.
 
 **No retention or pruning policy exists for this table.** It grows
 unbounded from this migration onward — an explicit, accepted open item, not
 solved here. See `.ai/decisions/telemetry-event-schema.md`.
+
+## Threads
+
+`src/migrations/006_threads.sql` creates `threads` (`id uuid pk default
+gen_random_uuid(), channel text not null, chat_id text not null, messages
+jsonb not null default '[]'::jsonb, created_at timestamptz not null default
+now(), updated_at timestamptz not null default now(), unique (channel,
+chat_id)`), plus an explicitly named index on `(channel, chat_id)` — the
+unique constraint already covers the lookup, but naming it matches
+`telemetry_events`' explicit-index convention. One row per `(channel,
+chat_id)`: the full, untrimmed conversation history a chat has with the bot,
+restart-safe. `packages/agent`'s chars/4 trim (03-agent-core) only ever
+affects what is sent to the model on a given call, never what is stored here.
+No size cap or archival policy yet — the same unbounded-growth posture as
+`telemetry_events` above, an explicit open item.
+
+- `getOrCreateThread(pool, channel, chatId)` — `INSERT ... ON CONFLICT
+  (channel, chat_id) DO NOTHING RETURNING *`, then a `SELECT` on conflict —
+  the same shape `llm-dedupe-repo.ts`'s `claim` uses, the only existing
+  upsert idiom in this package. Returns `{ id, channel, chatId, messages }`;
+  a fresh thread starts with `messages: []`.
+- `appendMessages(pool, threadId, newMessages)` — `UPDATE threads SET
+  messages = messages || $2::jsonb, updated_at = now() WHERE id = $1`,
+  appending rather than replacing so a concurrent read never sees a partial
+  write.
+- `packages/agent` depends on these through its own injected `ThreadRepo`
+  port, never on `@hermes/store` directly — the same boundary rule
+  `packages/llm` already follows for `LlmUsageRepo`/`BudgetUsageRepo`.
+  `apps/hermes/src/store/build-thread-repo.ts` wires this module into that
+  port.
 
 ## Testing
 
@@ -276,6 +310,13 @@ honors its `limit`, and returns `[]` when no `tool.call` rows exist.
 gated the same way: it pins `sumCostSince`'s UTC calendar-month window against
 rows placed either side of the boundary — the arithmetic the budget ceiling
 and `/stats` both depend on.
+
+`src/__tests__/thread-repo.test.ts` is integration-only, gated the same way:
+`getOrCreateThread` is idempotent for the same `(channel, chatId)` (a second
+call returns the same row, never a duplicate) and different `chatId`s under
+the same channel get distinct threads; a fresh thread starts with `messages:
+[]`; `appendMessages` appends across two calls without clobbering earlier
+entries and bumps `updated_at`.
 
 The guard and URL resolution in `src/__tests__/db-env.ts` are published to
 other packages through this package's `./testing` subpath export, so

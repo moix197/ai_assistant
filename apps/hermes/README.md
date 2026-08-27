@@ -46,7 +46,9 @@ in the entry point itself.
    `/start`, and `/stats` to their handlers — `/stats` matched before the
    fallthrough, same as the other two, so an unmatched command can never
    trigger a paid completion call — and everything else to the completion
-   handler (`src/handlers/complete.ts`).
+   handler (`src/handlers/complete.ts`), which now runs every message
+   through the `packages/agent` (03-agent-core) loop instead of calling the
+   LLM provider directly — see "Completion path" below.
 10. `buildTelemetryRecorder(pool, logger)` — built after the pool because it
     writes through it, and handed to exactly two places: the handler wiring
     (which passes it into the LLM adapter as `opts.recorder`, so `llm.call`
@@ -72,12 +74,33 @@ extracted into its own small module and unit-tested there:
   `getLlmCallStatsSince` and `getTopToolsSince` to the `StatsRepo` port. The
   same `sumCostSince` function goes into both this port and the budget one,
   which is what makes the cost-source split hold in practice.
+- `src/store/build-thread-repo.ts` — binds `@hermes/store`'s
+  `getOrCreateThread`/`appendMessages` to `@hermes/agent`'s injected
+  `ThreadRepo` port (03-agent-core).
+- `src/agent/build-agent.ts` — the only place allowed to import both
+  `@hermes/agent` and construct the one hardcoded `AgentDefinition` (the D4
+  multi-agent seam, reserved not built): `model` from the active provider
+  profile, `systemPrompt` a fixed placeholder, `tools: []` this phase,
+  `channels: ["telegram"]` — reusing the exact `"telegram"` string
+  `complete.ts`'s dedupe key already spells out, not a new constant.
+
+## Completion path
+
+`src/handlers/complete.ts`'s completion handler no longer calls
+`llmProvider.complete()` directly. It claims `telegram:<updateId>` in
+`llm_dedupe`, then calls the injected `Agent.handleMessage(channel, chatId,
+text)` (built by `src/agent/build-agent.ts`, wrapping `packages/agent`'s
+bounded turn loop), replies with its text, then marks the dedupe key
+completed — the same load-bearing claim → reply → complete ordering this
+handler has always used, unchanged. History now persists per `(channel,
+chat_id)` in Postgres (`packages/store`'s `threads` table) and survives a
+restart; this phase's turn has no tools yet (Phase 2).
 
 ## Handlers
 
 - `complete.ts` — the dispatcher's fallthrough and the only handler that
   spends money. Claims `telegram:<updateId>` in `llm_dedupe` before the
-  provider call and marks it completed after the reply lands.
+  agent turn and marks it completed after the reply lands.
 - `echo.ts` — echoes back the message text. **No longer wired**; kept in the
   tree as a documented reference/fallback after `complete.ts` took its place
   as the fallthrough.

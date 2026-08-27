@@ -4,6 +4,7 @@ export { getOffset, setOffset } from "./telegram-offset-repo";
 export { recordUsage, sumCostSince, type LlmUsageEntry } from "./llm-usage-repo";
 export { claim, complete, type LlmDedupeClaimResult } from "./llm-dedupe-repo";
 export { insertEvents } from "./telemetry-event-repo";
+export { appendMessages, getOrCreateThread, type Thread } from "./thread-repo";
 export {
   getLlmCallStatsSince,
   getTopToolsSince,

@@ -1,7 +1,8 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import { BudgetExceededError, type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
+import { BudgetExceededError } from "@hermes/llm";
 import type { LlmDedupeClaimResult } from "@hermes/store";
+import { CHANNEL_TELEGRAM, type Agent } from "../agent/build-agent";
 
 /**
  * Dedupe repo port, declared here rather than in `@hermes/llm`: dedupe is an
@@ -16,13 +17,6 @@ export interface LlmDedupeRepo {
   claim(dedupeKey: string): Promise<LlmDedupeClaimResult>;
   complete(dedupeKey: string, resultText: string): Promise<void>;
 }
-
-/**
- * Fixed placeholder — no persona/tool instructions beyond this string.
- * Anything richer belongs to `packages/agent` (2c), not this phase's
- * single-shot proof of life.
- */
-const SYSTEM_PROMPT_PLACEHOLDER = "You are Hermes, a helpful assistant.";
 
 /** Never leaks a stack trace or provider error detail into chat. */
 const GENERIC_FAILURE_REPLY =
@@ -39,9 +33,8 @@ const OUT_OF_BUDGET_REPLY =
 
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
-  llmProvider: LlmProvider;
-  /** The model to request — the active provider profile's `model` (see `build-provider-profiles.ts`). */
-  model: string;
+  /** The agent loop (`packages/agent`, 2c) — replaces the single, stateless `llmProvider.complete()` call this phase used to make directly. */
+  agent: Agent;
   logger: Logger;
   /**
    * Required, not optional: an optional-with-a-silent-no-dedupe default is
@@ -58,7 +51,7 @@ export interface CreateCompletionHandlerOptions {
 
 /** `telegram:<update_id>` — stable across the exact-duplicate redelivery `dedupeRepo` exists to catch. */
 function deriveDedupeKey(message: InboundMessage): string {
-  return `telegram:${message.updateId}`;
+  return `${CHANNEL_TELEGRAM}:${message.updateId}`;
 }
 
 /**
@@ -87,7 +80,7 @@ async function recordDedupeCompletion(
 
 /**
  * The unclaimed path, in the load-bearing order documented on
- * `createCompletionHandler`: one provider call, then the reply, then the
+ * `createCompletionHandler`: one agent turn, then the reply, then the
  * dedupe completion — never the completion first.
  */
 async function replyWithCompletion(
@@ -95,16 +88,10 @@ async function replyWithCompletion(
   message: InboundMessage,
   dedupeKey: string,
 ): Promise<void> {
-  const result = await options.llmProvider.complete({
-    model: options.model,
-    system: SYSTEM_PROMPT_PLACEHOLDER,
-    messages: [{ role: "user", content: message.text }],
-    tools: undefined,
-    maxTokens: MAX_TOKENS_PER_TURN,
-  });
-  await options.channel.send(message.chatId, result.text);
+  const resultText = await options.agent.handleMessage(CHANNEL_TELEGRAM, message.chatId, message.text);
+  await options.channel.send(message.chatId, resultText);
 
-  await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, result.text);
+  await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, resultText);
 }
 
 /**
@@ -138,20 +125,20 @@ async function replyWithFailureNotice(
 }
 
 /**
- * `createCompletionHandler({ channel, llmProvider, model, logger, dedupeRepo })`
- * → `(message) => Promise<void>`: one `complete()` call per Telegram
- * message, reply with `result.text`. No tool loop, no approval gate, no
- * persistence beyond dedupe — that's `packages/agent` (2c)'s bounded
- * agentic loop, not this phase's. A thrown provider error is caught and
+ * `createCompletionHandler({ channel, agent, logger, dedupeRepo })` →
+ * `(message) => Promise<void>`: one `agent.handleMessage()` turn per
+ * Telegram message, reply with its text. The agent loop
+ * (`packages/agent`, 2c) owns multi-turn history, the tool loop (Phase 2),
+ * and the approval gate (Phase 3) — this handler stays thin: claim, call,
+ * reply, complete. A thrown error from the agent turn is caught and
  * replaced with a generic readable reply instead of crashing the handler.
  *
  * Ordering, load-bearing: `claim()` -> (if already `completed`) reply from
- * the stored text, skip the provider call entirely -> otherwise call the
- * provider -> reply -> `complete()`. `complete()` runs strictly after the
- * reply is sent: recording completion first would mark a call "done" the
- * user never actually received. See packages/store/README.md for the
- * claim-to-complete crash window this ordering accepts as a narrow,
- * fail-open residual risk.
+ * the stored text, skip the agent turn entirely -> otherwise run the turn ->
+ * reply -> `complete()`. `complete()` runs strictly after the reply is
+ * sent: recording completion first would mark a call "done" the user never
+ * actually received. See packages/store/README.md for the claim-to-complete
+ * crash window this ordering accepts as a narrow, fail-open residual risk.
  */
 export function createCompletionHandler(
   options: CreateCompletionHandlerOptions,

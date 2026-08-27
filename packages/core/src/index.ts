@@ -14,6 +14,7 @@ export type {
   TelemetryRecorder,
   ToolCallEvent,
   TurnEvent,
+  TurnOutcome,
 } from "./telemetry";
 export { nextDelay } from "./backoff";
 export { delay } from "./delay";

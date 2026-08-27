@@ -24,6 +24,7 @@ import {
   waitForDatabase,
 } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
+import { buildAgent } from "./agent/build-agent";
 import { createCompletionHandler } from "./handlers/complete";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
@@ -369,6 +370,13 @@ function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
     signal,
     telemetryRecorder,
   );
+  const agent = buildAgent(
+    pool,
+    llmProvider,
+    providerProfiles.primary.model,
+    telemetryRecorder,
+    signal,
+  );
 
   return {
     pingHandler: createPingHandler(channel, pool),
@@ -381,8 +389,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
     ),
     completionHandler: createCompletionHandler({
       channel,
-      llmProvider,
-      model: providerProfiles.primary.model,
+      agent,
       logger,
       dedupeRepo: {
         claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),

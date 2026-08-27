@@ -47,6 +47,7 @@ function completionResult(
     toolCalls,
     usage: { promptTokens: 900, completionTokens: 40, totalTokens: 940, cacheHitTokens: 0 },
     finishReason,
+    costUsd: 0,
   };
 }
 

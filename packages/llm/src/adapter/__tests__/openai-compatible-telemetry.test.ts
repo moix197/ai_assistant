@@ -52,6 +52,8 @@ function baseRequest() {
     messages: [{ role: "user" as const, content: "hi" }],
     tools: undefined,
     maxTokens: 100,
+    threadId: "thread-1",
+    turnId: "turn-1",
   };
 }
 
@@ -90,14 +92,14 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
       recorder,
     });
 
-    await adapter.complete(baseRequest());
+    const result = await adapter.complete(baseRequest());
 
     expect(recorder.record).toHaveBeenCalledTimes(1);
     const event = recordedEvent(recorder);
     expect(event).toMatchObject({
       name: "llm.call",
-      threadId: null,
-      turnId: null,
+      threadId: "thread-1",
+      turnId: "turn-1",
       model: "deepseek-v4-flash",
       inputTokens: 70, // 100 prompt - 30 cache hit
       outputTokens: 20,
@@ -106,6 +108,9 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
     expect(event).not.toHaveProperty("error");
     expect((event as { costUsd: number }).costUsd).toBeGreaterThan(0);
     expect((event as { durationMs: number }).durationMs).toBeGreaterThan(0);
+    // The result's own costUsd (03-agent-core Phase 1) must match the
+    // emitted event's — one derivation, reused, never re-derived.
+    expect(result.costUsd).toBe((event as { costUsd: number }).costUsd);
   });
 
   it("emits exactly one llm.call event with error set and all numeric usage fields 0 on a provider HTTP failure, then still rethrows", async () => {
@@ -124,8 +129,8 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
     const event = recordedEvent(recorder);
     expect(event).toMatchObject({
       name: "llm.call",
-      threadId: null,
-      turnId: null,
+      threadId: "thread-1",
+      turnId: "turn-1",
       model: PROFILE.model,
       inputTokens: 0,
       outputTokens: 0,
@@ -189,8 +194,8 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
     const event = recordedEvent(recorder);
     expect(event).toMatchObject({
       name: "llm.call",
-      threadId: null,
-      turnId: null,
+      threadId: "thread-1",
+      turnId: "turn-1",
       model: "some-retired-model",
       inputTokens: 100,
       outputTokens: 20,

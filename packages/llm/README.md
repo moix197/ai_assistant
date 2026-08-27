@@ -16,10 +16,19 @@ mega-package.
   itself — `apps/hermes/src/llm/build-provider-profiles.ts` is the one place
   that maps `Env`'s flat `LLM_PRIMARY_*`/`LLM_FALLBACK_*` fields into it.
 - `LlmProvider.complete(request: CompletionRequest): Promise<CompletionResult>`
-  — `CompletionRequest = { model, system, messages, tools, maxTokens }`,
-  `CompletionResult = { text, toolCalls, usage, finishReason }`. `Message`,
-  `ToolCall`, and `Usage` come from `@hermes/core` — no vendor-shaped type
-  ever escapes this package.
+  — `CompletionRequest = { model, system, messages, tools, maxTokens,
+  threadId, turnId }`, `CompletionResult = { text, toolCalls, usage,
+  finishReason, costUsd }`. `Message`, `ToolCall`, and `Usage` come from
+  `@hermes/core` — no vendor-shaped type ever escapes this package.
+  `threadId`/`turnId` (`string | null`, 03-agent-core Phase 1) are
+  **required**, not optional-with-a-`null`-default: `packages/agent`'s loop
+  always has real ids to pass, and an optional field is exactly the shape
+  that has twice let a real construction site silently never fill one in
+  (see the boot `AbortSignal` for the same reasoning). Every caller —
+  `packages/agent`'s loop included — passes `null` explicitly when there is
+  genuinely no thread/turn context yet, never omits the field. `costUsd` on
+  the result reuses the exact number `recordCompletionUsage` resolves and
+  records — never re-derived a second time by a caller.
 - `ToolDefinition` (a tool's name/description/JSON-schema parameters) is
   wire-format-complete in this phase — the adapter serializes `tools` and
   can parse `tool_calls` back out of a response — but has no real caller
@@ -154,7 +163,10 @@ rather than hardcoded so a new host needs no code change here.
 `createOpenAiCompatibleAdapter`'s `opts.recorder?: TelemetryRecorder` (from
 `@hermes/core`) is optional — this package stays usable with no telemetry
 wired at all, unlike `usageRepo`/`budget` above. When supplied, `complete()`
-emits exactly one `llm.call` event per call. `durationMs` starts immediately
+emits exactly one `llm.call` event per call, stamped with the request's own
+`threadId`/`turnId` (03-agent-core Phase 1) instead of the hardcoded `null`s
+every event carried before `packages/agent` existed to supply real ones —
+both the success and the error emission branches. `durationMs` starts immediately
 after the budget check (nothing has been attempted yet); on the success path
 it stops the moment `completeWithRetry` settles, so the `llm_usage` write that
 follows is excluded from the latency number. On the failure path it is taken in

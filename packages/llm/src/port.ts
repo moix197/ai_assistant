@@ -28,6 +28,18 @@ export interface CompletionRequest {
   messages: Message[];
   tools: ToolDefinition[] | undefined;
   maxTokens: number;
+  /**
+   * The calling `packages/agent` turn's thread/turn ids, stamped onto the
+   * emitted `llm.call` event instead of the hardcoded `null`s every call
+   * carried before `packages/agent` (2c) existed. Required, not
+   * optional-with-a-`null`-default — the same reason the boot `AbortSignal`
+   * is required on `packages/agent`'s loop: this codebase has twice shipped
+   * an optional field the real construction site silently never filled in.
+   * `null` is still a valid, real value (e.g. no thread/turn context yet),
+   * just never an accidental omission.
+   */
+  threadId: string | null;
+  turnId: string | null;
 }
 
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter";
@@ -37,6 +49,8 @@ export interface CompletionResult {
   toolCalls: ToolCall[];
   usage: Usage;
   finishReason: FinishReason;
+  /** The same cost `recordCompletionUsage` resolves and records — one derivation, reused, never re-derived by a caller. */
+  costUsd: number;
 }
 
 /** Provider-neutral port every adapter (OpenAI-compatible today) implements. */

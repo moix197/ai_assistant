@@ -13,7 +13,8 @@
       "@hermes/store": ["packages/store/src/index.ts"],
       "@hermes/channels": ["packages/channels/src/index.ts"],
       "@hermes/llm": ["packages/llm/src/index.ts"],
-      "@hermes/telemetry": ["packages/telemetry/src/index.ts"]
+      "@hermes/telemetry": ["packages/telemetry/src/index.ts"],
+      "@hermes/agent": ["packages/agent/src/index.ts"]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,
