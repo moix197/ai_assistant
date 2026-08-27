@@ -8,15 +8,9 @@ import { withAllowlist } from "../handlers/with-allowlist";
 import { withPrivateChat } from "../handlers/with-private-chat";
 
 const ALLOWED_ID = 111;
-const DISALLOWED_ID = 999;
 
 function createMockLogger(): Logger {
-  return {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
 function createMockChannel(): Channel {
@@ -27,9 +21,6 @@ function createMockChannel(): Channel {
   };
 }
 
-// `dedupeRepo` is a mandatory handler option (Phase 5 gap fix — see
-// complete.ts). This file exercises allowlist gating, unrelated to dedupe,
-// so a permissive fake that always reports "claimed" stands in.
 function createPermissiveDedupeRepo(): LlmDedupeRepo {
   return {
     claim: vi.fn().mockResolvedValue({ status: "claimed" }),
@@ -39,9 +30,9 @@ function createPermissiveDedupeRepo(): LlmDedupeRepo {
 
 function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
-    channelUserId: String(DISALLOWED_ID),
+    channelUserId: String(ALLOWED_ID),
     chatId: "555",
-    text: "hello",
+    text: "/stats",
     chatType: "private",
     kind: "message",
     updateId: 1,
@@ -49,8 +40,8 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
   };
 }
 
-describe("allowlist gates the paid completion handler (invariant #1, paid-call-specific)", () => {
-  it("drops a message from an unallowlisted sender before the LLM provider is ever called", async () => {
+describe("/stats is routed before the paid fallthrough (routing regression)", () => {
+  it("invokes the stats path and never the LLM provider's complete()", async () => {
     const logger = createMockLogger();
     const channel = createMockChannel();
     const complete = vi.fn().mockResolvedValue({
@@ -67,11 +58,12 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
+    const statsHandler = vi.fn().mockResolvedValue(undefined);
 
     const dispatchCommand = createDispatchCommand({
       pingHandler: vi.fn(),
       startHandler: vi.fn(),
-      statsHandler: vi.fn(),
+      statsHandler,
       completionHandler,
     });
 
@@ -80,45 +72,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
 
     await handler(inboundMessage());
 
+    expect(statsHandler).toHaveBeenCalledTimes(1);
     expect(complete).toHaveBeenCalledTimes(0);
-    expect(channel.send).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      "rejected: unknown user",
-      expect.objectContaining({ channelUserId: DISALLOWED_ID }),
-    );
-  });
-
-  it("reaches the LLM provider for an allowlisted sender in a private chat", async () => {
-    const logger = createMockLogger();
-    const channel = createMockChannel();
-    const complete = vi.fn().mockResolvedValue({
-      text: "a real reply",
-      toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
-    const completionHandler = createCompletionHandler({
-      channel,
-      llmProvider,
-      model: "some-model",
-      logger,
-      dedupeRepo: createPermissiveDedupeRepo(),
-    });
-
-    const dispatchCommand = createDispatchCommand({
-      pingHandler: vi.fn(),
-      startHandler: vi.fn(),
-      statsHandler: vi.fn(),
-      completionHandler,
-    });
-
-    const allowlist = new Set([ALLOWED_ID]);
-    const handler = withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger);
-
-    await handler(inboundMessage({ channelUserId: String(ALLOWED_ID) }));
-
-    expect(complete).toHaveBeenCalledTimes(1);
-    expect(channel.send).toHaveBeenCalledWith("555", "a real reply");
   });
 });

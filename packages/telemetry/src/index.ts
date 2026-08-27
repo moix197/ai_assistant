@@ -5,3 +5,5 @@ export {
   createBufferedTelemetryRecorder,
   type TelemetryRecorderHandle,
 } from "./recorder";
+export type { StatsRepo } from "./stats-repo-port";
+export { computeStats, formatStatsMessage, type Stats } from "./stats";

@@ -7,7 +7,8 @@ import {
   parseAllowlist,
 } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
-import { type Logger, createLogger } from "@hermes/core";
+import { type Logger, createLogger, systemClock } from "@hermes/core";
+import { resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
   type Pool,
@@ -25,11 +26,13 @@ import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { createCompletionHandler } from "./handlers/complete";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
+import { createStatsHandler } from "./handlers/stats";
 import { withAllowlist } from "./handlers/with-allowlist";
 import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
 import { buildLlmProvider } from "./llm/build-llm-provider";
 import { buildProviderProfiles } from "./llm/build-provider-profiles";
+import { buildStatsRepo } from "./telemetry/build-stats-repo";
 import { buildTelemetryRecorder } from "./telemetry/build-telemetry-recorder";
 
 /**
@@ -71,6 +74,7 @@ export function matchesCommand(text: string, command: string): boolean {
 export interface DispatchCommandDeps {
   pingHandler: (message: InboundMessage) => Promise<void>;
   startHandler: (message: InboundMessage) => Promise<void>;
+  statsHandler: (message: InboundMessage) => Promise<void>;
   completionHandler: (message: InboundMessage) => Promise<void>;
 }
 
@@ -78,10 +82,13 @@ export interface DispatchCommandDeps {
  * Command dispatch, extracted to a factory (rather than left inline in
  * `boot()`) so it can be composed under `withAllowlist(withPrivateChat(...))`
  * in a test the same way `boot()` composes it for real — see
- * `__tests__/dispatch-allowlist-gates-llm.test.ts`. `/ping` and `/start`
- * short-circuit; anything else falls through to `completionHandler`, which
- * replaced `echoHandler` here — `echo.ts` stays in the tree as a documented
- * reference/fallback but is no longer wired.
+ * `__tests__/dispatch-allowlist-gates-llm.test.ts`. `/ping`, `/start`, and
+ * `/stats` short-circuit; anything else falls through to `completionHandler`,
+ * which replaced `echoHandler` here — `echo.ts` stays in the tree as a
+ * documented reference/fallback but is no longer wired. `/stats` is matched
+ * **before** the fallthrough for the same reason `/ping`/`/start` are: an
+ * unmatched command falling through would otherwise trigger a real paid
+ * completion call (see `__tests__/dispatch-stats-command.test.ts`).
  */
 export function createDispatchCommand(
   deps: DispatchCommandDeps,
@@ -89,6 +96,7 @@ export function createDispatchCommand(
   return function dispatchCommand(message: InboundMessage): Promise<void> {
     if (matchesCommand(message.text, "/ping")) return deps.pingHandler(message);
     if (matchesCommand(message.text, "/start")) return deps.startHandler(message);
+    if (matchesCommand(message.text, "/stats")) return deps.statsHandler(message);
     return deps.completionHandler(message);
   };
 }
@@ -307,7 +315,7 @@ export interface MessageHandlerDeps {
 }
 
 /**
- * The three handlers `dispatchCommand` routes between, each wired to real
+ * The four handlers `dispatchCommand` routes between, each wired to real
  * infrastructure. echoHandler stays available (createEchoHandler,
  * "./handlers/echo") as a documented reference/fallback but is no longer
  * wired — completionHandler is dispatchCommand's fallthrough now.
@@ -327,6 +335,12 @@ function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
   return {
     pingHandler: createPingHandler(channel, pool),
     startHandler: createStartHandler(channel, pool),
+    statsHandler: createStatsHandler(
+      channel,
+      buildStatsRepo(pool),
+      systemClock,
+      resolveBudgetCapUsd(config),
+    ),
     completionHandler: createCompletionHandler({
       channel,
       llmProvider,

@@ -33,9 +33,11 @@ in the entry point itself.
    (`src/handlers/with-allowlist.ts`) around `withPrivateChat`
    (`src/handlers/with-private-chat.ts`) — the single allowlist and
    non-private-chat gates for every handler, composed once rather than
-   duplicated per handler. The dispatcher (`src/boot.ts`) routes `/ping` and
-   `/start` to their handlers and everything else to `echo`
-   (`src/handlers/echo.ts`), which ignores edited messages.
+   duplicated per handler. The dispatcher (`src/boot.ts`) routes `/ping`,
+   `/start`, and `/stats` to their handlers — `/stats` matched before the
+   fallthrough, same as the other two, so an unmatched command can never
+   trigger a paid completion call — and everything else to the completion
+   handler (`src/handlers/complete.ts`).
 9. `registerShutdown()` — registers the SIGTERM/SIGINT handler (see below).
 
 ## Handlers
@@ -45,6 +47,18 @@ in the entry point itself.
   `health.ts`'s `checkDbConnectivity` rather than duplicating the check.
 - `start.ts` — `/start` confirms allowlist membership (implicit — reaching
   the handler already proves it) and DB connectivity, via the same check.
+- `stats.ts` — `/stats` replies with spend today/this month vs. the
+  configured cap, calls, total input/output tokens, cache-hit rate, error
+  rate, and a top-tools-this-month list (`"no tool calls recorded yet"` until
+  `packages/agent`, 2c, produces `tool.call` events). Thin wiring only: the
+  math is `@hermes/telemetry`'s `computeStats`, the rendering its
+  `formatStatsMessage`. Spend/cap figures come from `@hermes/store`'s
+  `sumCostSince` against `llm_usage` — the same function the budget ceiling
+  reads — while calls/tokens/rates/top-tools come from `telemetry_events`
+  instead, so `/stats` can never disagree with the ceiling it reports
+  against. "Error rate" means precisely the share of `llm.call` events with
+  `is_error = true`; a budget-ceiling rejection never produces an `llm.call`
+  event, so it is excluded by construction, not by a filter.
 - `with-allowlist.ts` — `withAllowlist(handler, allowlist, logger)`, composed
   once in `boot.ts` around the dispatcher rather than inlined in each
   handler.
