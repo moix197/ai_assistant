@@ -702,7 +702,7 @@ as before. This closes the blind spot `01-llm-port`'s
 
 **Steps:**
 
-- [ ] **Re-check for tests/fixtures that rely on the old `$0`-and-warn
+- [x] **Re-check for tests/fixtures that rely on the old `$0`-and-warn
       behavior or use an unpriced model id, at execution time — do not trust
       this plan's own audit as still current.** This plan's authoring pass
       found no such dependency: every `packages/llm` adapter test uses
@@ -712,34 +712,34 @@ as before. This closes the blind spot `01-llm-port`'s
       construct a real adapter). Re-run
       `grep -rn "some-retired-model\|resolveCostUsd" packages/ apps/` before
       making the change, since the codebase will have moved since this audit
-- [ ] `UnpricedModelError`: same shallow shape as the package's other typed
+- [x] `UnpricedModelError`: same shallow shape as the package's other typed
       errors (`LlmHttpError`, `BudgetExceededError`) — a `name`, a message,
       and the one carried field (`model`) callers might want programmatically
-- [ ] `assertModelsPriced`: pure, synchronous, no I/O — fully unit-testable
+- [x] `assertModelsPriced`: pure, synchronous, no I/O — fully unit-testable
       in `packages/llm` without any boot seam. This is deliberate: `01-llm-port`
       Phase 3's own execution notes record that `boot()` "offered no testable
       seam," so this phase puts all the real logic somewhere that does have
       one, and keeps `boot.ts`'s own addition to a single, obviously-correct
       call — no new `boot.ts`-level test is added for this reason, matching
       that precedent rather than fighting it
-- [ ] Call `assertModelsPriced` as early as possible in `boot()` — before
+- [x] Call `assertModelsPriced` as early as possible in `boot()` — before
       `createMigratedPool`, before any network or DB I/O — so a misconfigured
       model fails in well under a second, not after a DB connection attempt
       that might itself be slow or hanging
-- [ ] Pass **both** `profiles.primary.model` and (when present)
+- [x] Pass **both** `profiles.primary.model` and (when present)
       `profiles.fallback?.model` to `assertModelsPriced` in the same call —
       confirm the test for this exercises the fallback-only-unpriced case
       specifically (primary priced, fallback not), not just an unpriced
       primary, since that's the easier case to get right by accident and the
       one most likely to be silently skipped
-- [ ] Confirm `resolveCostUsd`'s new throw path is still exercised **inside**
+- [x] Confirm `resolveCostUsd`'s new throw path is still exercised **inside**
       `recordCompletionUsage`'s scope in the adapter, i.e. it still propagates
       out of `complete()` and is caught by the completion handler's existing
       generic-failure branch (not a new branch) — the reply becomes the
       generic "couldn't process that message" text, same as any other
       provider error, not a special-cased message. This is the accepted,
       named cost of the belt-and-braces guard (see `Dependencies & Risks`)
-- [ ] Both `.ai/decisions/` amendments are edits to the **existing** files —
+- [x] Both `.ai/decisions/` amendments are edits to the **existing** files —
       do not create new decision docs for this phase, the update belongs
       exactly where the original claim lives, per `.ai/`'s decision-oriented,
       no-restating-code convention
@@ -753,8 +753,8 @@ as before. This closes the blind spot `01-llm-port`'s
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
 - [ ] Manual: set `LLM_PRIMARY_MODEL` to a garbage string (e.g.
       `not-a-real-model`), restart the container →
       `docker compose logs hermes` shows a readable error naming
@@ -766,7 +766,7 @@ as before. This closes the blind spot `01-llm-port`'s
       the fallback path is actually checked, not just the primary
 - [ ] Manual: restore both to real, priced models, restart → boots and
       answers exactly as before this phase
-- [ ] `.ai/decisions/llm-cost-accounting.md` and
+- [x] `.ai/decisions/llm-cost-accounting.md` and
       `.ai/decisions/monthly-budget-ceiling.md` read correctly against the
       new behavior — no stale "never throws" or "resolves to `$0`" language
       left uncorrected anywhere in either file
@@ -776,13 +776,42 @@ as before. This closes the blind spot `01-llm-port`'s
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `fix: refuse to boot with an unpriced model, throw instead of $0 on drift`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `fix: refuse to boot with an unpriced model, throw instead of $0 on drift`
+- [x] Phase marked complete
+
+**Stale-audit correction, found during implementation:** this phase's own
+"re-check for tests/fixtures that rely on the old `$0`-and-warn behavior" step
+turned up three call sites the plan's written audit had missed —
+`openai-compatible.test.ts`, `build-llm-provider.test.ts` and
+`cache-hit-tokens.live.test.ts` all used unpriced model ids (or passed the now
+dropped `logger` argument) for reasons unrelated to pricing behavior. All three
+were fixed as fixtures; code review separately confirmed none of the edits
+weakened an assertion — `build-llm-provider.test.ts` in particular re-pins
+real-logger injection through the insert-failure path at equal strength.
+
+**Post-review fixes** (commit `1d794d1`, on top of `1aca675`; the review came
+back green with no blocking findings): the substantive one is that an
+`UnpricedModelError` thrown during post-completion usage accounting emitted *no*
+`llm.call` event, so pricing drift — the very thing this phase adds a throw to
+catch — would have been invisible in `/stats`. `recordCompletionUsage` now sits
+inside the same try/catch as `completeWithRetry`, and the error emission reports
+zeroed tokens when the HTTP call never returned or the real billed tokens when
+the call succeeded and only accounting failed; still exactly one event per
+`complete()`, still zero on a budget rejection, and no pre-existing Phase 2 test
+needed changing. Also: `assertModelsPriced` now uses the same truthy lookup as
+`resolveCostUsd`, so boot validation and runtime resolution cannot disagree; a
+stale `pricing.ts` comment and an over-claiming line in
+`.ai/decisions/monthly-budget-ceiling.md` were corrected.
+
+**Deferred to Final Verification (Phase 6):** the three Manual bullets above
+(garbage `LLM_PRIMARY_MODEL` → boot refuses; garbage `LLM_FALLBACK_MODEL` → boot
+still refuses and names the fallback; both restored → boots and answers) need a
+running container.
 
 ---
 
