@@ -1116,7 +1116,7 @@ as these checkbox updates.
 - [x] Code-reviewer agent reviews the entire change end-to-end
 - [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
 - [ ] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated on `TEST_DATABASE_URL`), `pnpm test:live` (gated on real credentials — confirm the default `pnpm test` and CI both genuinely exclude it)
-- [ ] No CLAUDE.md invariants violated
+- [x] No CLAUDE.md invariants violated
 - [ ] Feature tested manually: golden path (real LLM reply, env-swap changes
       provider) + edge cases (budget breach, duplicate update from an
       allowlisted sender, unknown sender costs nothing, mid-flight SIGTERM)
@@ -1169,12 +1169,29 @@ as these checkbox updates.
   the Gemini fallback unrecoverable under throttling; and the section 8 check
   scored any non-truncation throw as a hard failure, so a quota event was
   indistinguishable from a model-quality failure.
-- **`No CLAUDE.md invariants violated` is deliberately unticked.** The review
+- **`No CLAUDE.md invariants violated` — resolved in `47de917`.** The review had
   flagged `apps/hermes/src/boot.ts` (~110 lines) and
   `apps/hermes/src/handlers/complete.ts` (~44 lines) as over the ~30-line
-  guidance. Not addressed in this PRD; carry to a follow-up rather than
-  claiming compliance.
-- **Test lanes.** `pnpm test` (52 llm / 39 hermes / 21 store / core / config /
+  guidance. Both were split into named steps by pure extraction, with boot and
+  shutdown ordering byte-unchanged (`controller.abort()` still strictly before
+  `channel.stop()` -> `lock.release()` -> `pool.end()`). `handleCompletion` is
+  now 28 lines. `boot()` is 40, ~9 of them comments or blanks: the remainder is
+  one line per documented boot step, and splitting the linear sequence further
+  would hide the load-bearing order rather than clarify it. Recorded as a
+  deliberate judgment call, not an oversight.
+- **Two further review nits fixed in `2576601`.** The retry sleep ignored
+  `externalSignal`, so honoring a provider's 429 hint raised the worst-case
+  post-SIGTERM wait to the 30s cap while the in-flight call never surfaced
+  `LlmAbortedError`. `delay()` now races the timer against the abort signal
+  (both paths clean up, no listener leak per retry attempt), and
+  `completeWithRetry` checks `externalSignal?.aborted` before any `instanceof`
+  branch. Separately `packages/store`'s `files` array now includes
+  `src/__tests__`, so it agrees with the `./testing` export subpath.
+- **Deliberately NOT changed: `pricing.ts`'s unknown-model -> $0.** The review
+  suggested failing boot instead. That behavior is a recorded decision in
+  `.ai/decisions/llm-cost-accounting.md` ("unknown model -> warn + $0, never a
+  throw"); reversing it belongs in its own change, not a pre-merge nit sweep.
+- **Test lanes.** `pnpm test` (58 llm / 39 hermes / 21 store / core / config /
   channels - all green), `pnpm test:db` green, `pnpm typecheck` and
   `biome check` clean. The default `pnpm test` genuinely excludes the live lane
   (verified: the llm package collects 9 files, no `*.live.test.ts`). The
