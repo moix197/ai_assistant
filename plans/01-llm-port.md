@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-26
 **Branch:** `feat/01-llm-port`
-**Status:** Phase 3 complete — Phase 4 next
+**Status:** Phases 1–5 complete — Phase 6 (Final Verification, hil) next
 
 ## Context
 
