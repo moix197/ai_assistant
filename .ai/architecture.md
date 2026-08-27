@@ -163,3 +163,23 @@ Both orders are load-bearing; each step is a precondition for the next.
 - The hard-exit timer is deliberately *not* cleared in a `finally`: a rejected
   shutdown (`release()`/`pool.end()` throwing because the DB is already down) is
   the exact case the guard exists for, so it must survive the failure path.
+
+## Verifying a change against the running bot
+
+Two traps make a manual check silently prove nothing. Both were hit during
+01-llm-port Phase 4.
+
+- **`.env` is per-directory and gitignored.** A worktree gets its own `.env`
+  that does not track the repo root's, and `docker compose` interpolates the
+  one in the directory it runs from. Editing the wrong copy changes nothing
+  the bot reads, with no warning either way.
+- **`docker compose restart` re-reads neither `.env` nor rebuilt code.** The
+  `hermes` service is `build: .`, so a restart replays the existing image with
+  its already-resolved environment. `docker compose up -d --build` is the only
+  command that makes a manual verification of new behavior meaningful — a
+  container built before the feature existed will happily reproduce the old
+  behavior and read as a failed change.
+
+Verifying spend behavior additionally means querying `llm_usage` in the *app*
+database, which is the same table the DB test lane must never touch — see
+[test-database-isolation](decisions/test-database-isolation.md).

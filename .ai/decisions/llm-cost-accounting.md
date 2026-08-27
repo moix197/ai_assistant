@@ -72,3 +72,10 @@ one has a failure mode that is silent rather than loud.
   [monthly-budget-ceiling](monthly-budget-ceiling.md).
 - New fields belong on `LlmUsageEntry` in `@hermes/core`, which both `llm` and
   `store` re-export, so the two sides cannot drift a field apart silently.
+- `created_at` is stamped by Postgres `now()`, so it is on a different clock
+  from any caller. A `sumCostSince` bound taken from a local `new Date()` can
+  therefore land *after* a row the caller just wrote (~1 run in 20 in the repo
+  suite before it was fixed). Harmless for the month ceiling — its boundary is
+  days away from any row — but a query with a bound seconds wide (a `/stats`
+  "last N minutes", a just-wrote-then-read assertion) must take slack or inject
+  the timestamps rather than assume the two clocks agree.

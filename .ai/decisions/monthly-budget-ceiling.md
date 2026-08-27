@@ -69,6 +69,12 @@ non-obvious about it follows from that being true:
   floors sub-$5e-7 calls to zero. See
   [llm-cost-accounting](llm-cost-accounting.md) — cheap under-pricing
   is the ceiling's blind spot, which is why `MODEL_PRICING` biases high.
+- The inverse is just as real and was observed: anything that *adds* rows
+  tightens the ceiling in real dollars, and a test fixture is the way that
+  happens. `llm_usage` is a financial ledger, not a scratch table — writing to
+  it outside the adapter's success path moves the operator's actual spending
+  authority, silently. See
+  [test-database-isolation](test-database-isolation.md).
 - Every cap read goes through `resolveBudgetCapUsd`; no call site reads the
   env value directly.
 - A new adapter construction site must wire both required options against the
