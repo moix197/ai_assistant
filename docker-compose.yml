@@ -43,8 +43,11 @@ services:
       LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-}
       LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
-      # Not read until Phase 4, passed through here so operators don't
-      # discover a missing var mid-Phase-4.
+      # Monthly spend ceiling in USD, enforced before every provider call.
+      # The `:-` passthrough turns an unset host var into "", which the
+      # config schema coerces to 0 and rejects as non-positive — so a
+      # deployment that forgets this fails boot naming the key rather than
+      # running with no ceiling.
       LLM_MONTHLY_BUDGET_USD: ${LLM_MONTHLY_BUDGET_USD:-}
     ports:
       - "3000:3000"
