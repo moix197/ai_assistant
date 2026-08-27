@@ -37,13 +37,6 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    env:
-      # `DATABASE_URL` is deliberately not set anywhere in this job: nothing in
-      # `pnpm test` / `pnpm test:db` boots the app (`loadConfig()` is never
-      # called by the suites), and leaving it unset keeps it from colliding with
-      # the scratch URL below.
-      TEST_DATABASE_URL: postgres://hermes:hermes@127.0.0.1:5432/hermes_ci_test
-
     steps:
       - uses: actions/checkout@v4
 
@@ -71,4 +64,16 @@ jobs:
 
       - run: pnpm test
 
+      # `TEST_DATABASE_URL` is scoped to this step, never the job: the DB
+      # suites are `describe.skipIf(!testDatabaseUrl)` inside files the unit
+      # lane also collects, so a job-level value would make `pnpm test`
+      # (`pnpm -r test`, workspace concurrency > 1) run every package's DB
+      # suite in parallel against this one database — the exact race
+      # `test:db`'s `--workspace-concurrency=1` exists to prevent.
+      # `DATABASE_URL` is deliberately not set anywhere in this job: nothing in
+      # `pnpm test` / `pnpm test:db` boots the app (`loadConfig()` is never
+      # called by the suites), and leaving it unset keeps it from colliding
+      # with the scratch URL below.
       - run: pnpm test:db
+        env:
+          TEST_DATABASE_URL: postgres://hermes:hermes@127.0.0.1:5432/hermes_ci_test

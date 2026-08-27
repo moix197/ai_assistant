@@ -21,14 +21,26 @@ the exclusion instead of asserting it.
   of this PRD rested on a human running scripts locally. `test` and `test:db`
   are both hermetic — no credentials, no network to a paid provider — so they
   can be trusted to run unattended.
+- **The primary defense against a billed CI run is that CI holds no
+  credentials.** This workflow sets no `LLM_*` variable and reads no repository
+  secret, and `.env` is not in the checkout — so `missingLiveEnvKeys` comes back
+  non-empty and every live suite *skips itself* even if something did invoke it.
+  A defense that depends on a flag staying correct is weaker than one that
+  depends on a secret never existing; the exclusion below is defense in depth on
+  top of this, not the thing standing between the repo and a bill.
 - **The exclusion is one flag, and a flag is exactly the kind of thing that
   silently rots.** `packages/llm`'s `test` script excludes `**/*.live.test.ts`.
   Nothing checked that flag except a human reading it, which `01-llm-port`
-  Phase 6 itself flagged as unverifiable by inspection. The new test reads the
+  Phase 6 itself flagged as unverifiable by inspection. The guard test reads the
   glob back out of `package.json` at run time and asserts (a) live files exist
   to exclude, (b) the glob matches all of them, (c) the set the unit lane would
-  run contains none of them. Narrow the flag, mistype it, or delete it and the
-  test goes red in the same lane CI runs.
+  run contains none of them, (d) every `*.test.ts` under the directory
+  `test:live` points `--dir` at is excluded too — the paid lane is a directory,
+  so `live/foo.test.ts` is billed without ever carrying the suffix. It walks
+  from the workspace root, so all four checks cover every package, not just
+  `packages/llm`. Narrow the flag, mistype it, delete it, or drop a plain
+  `*.test.ts` into the live directory and the test goes red in the same lane CI
+  runs.
 - **CI satisfies the DB guard as written rather than carving itself out.** The
   service container's `POSTGRES_DB` is `hermes_ci_test`, so
   `assertNotTheAppDatabase`'s `_test`-suffix check passes with no CI-only
@@ -36,6 +48,14 @@ the exclusion instead of asserting it.
   [test-database-isolation](test-database-isolation.md). `DATABASE_URL` is not
   set anywhere in the job, so the guard's other check cannot be tripped by a
   collision and nothing in the suites can reach an app database.
+- **`TEST_DATABASE_URL` is scoped to the `test:db` step, not the job.** The DB
+  suites are `describe.skipIf(!testDatabaseUrl)` inside files the unit lane also
+  collects. A job-level value would therefore un-skip them under `pnpm test`
+  (`pnpm -r test`, workspace concurrency > 1) and run every package's DB suite
+  in parallel against the one service container — the exact race `test:db`'s
+  `--workspace-concurrency=1` exists to prevent, plus concurrent
+  `runMigrations`. Step-level `env:` keeps the two lanes as separate as they are
+  locally.
 
 **Accepted residual risk:**
 
@@ -69,14 +89,16 @@ the exclusion instead of asserting it.
   imports resolve through each package's `main` → `dist`, so in a fresh
   checkout the suites cannot even collect until the workspace is built. This is
   not a packaging step that could be dropped for speed.
-- **A new live test must end in `.live.test.ts` and live under
-  `packages/llm/src`.** The exclusion glob and the test that proves it both key
-  off that suffix; a live suite named anything else runs in CI and bills for
-  it.
-- **A live suite in another package would not be covered.** The guard test
-  walks `packages/llm/src` only, because that is the only package with a live
-  lane today. Whoever adds a second one owns extending both the glob and the
-  guard.
+- **A new live test must end in `.live.test.ts` or sit under the directory
+  `test:live` points `--dir` at.** Both are enforced: the suffix by the
+  exclusion glob, the directory by the guard's fourth check. A live suite that
+  is neither runs in CI — though with no `LLM_*` keys there it would skip, not
+  bill.
+- **A package that gains a live suite must also gain the `--exclude` flag.**
+  The guard walks the whole workspace and resolves each live file against *its
+  own* package's `test` script, so a live file in a package whose `test` script
+  passes no `--exclude` fails the guard by name. Nothing about a second live
+  lane needs the guard itself edited.
 - **Branch protection is a repository setting, not a file here.** Requiring the
   `ci` check to pass before merge has to be enabled in GitHub's settings by a
   human; the workflow alone only reports, it does not block.
