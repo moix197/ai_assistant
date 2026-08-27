@@ -57,3 +57,18 @@ curl -i localhost:3000/health
   itself unless both `LLM_*` profiles are set.
 - `pnpm lint` — Biome check across the repo
 - `pnpm dev` — run `apps/hermes` natively with `tsx watch`
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request against `main`:
+`pnpm typecheck`, `pnpm lint`, `pnpm build`, `pnpm test`, then `pnpm test:db`
+against a `postgres:16` service container (`TEST_DATABASE_URL` points at a
+`hermes_ci_test` database, so the `test:db` guard passes as written). The build
+step is not optional — the suites resolve cross-package imports through each
+package's `dist`.
+
+`pnpm test:live` is deliberately **never** run in CI: it makes real billed
+provider calls and has been seen failing on free-tier quota. Run it by hand
+periodically — a live-provider regression is caught nowhere else.
+`packages/llm/src/__tests__/live-lane-excluded.test.ts` proves the exclusion
+still holds. See `.ai/decisions/ci-lane-policy.md`.

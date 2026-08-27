@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # `pnpm test:live` is never invoked by this workflow, on purpose. It calls
+  # real provider APIs with real billed tokens, and the free tier it runs
+  # against has already been observed hard-failing on quota (7 of 10 Gemini
+  # trials returned HTTP 429 during 01-llm-port Phase 6) — running it per push
+  # would make CI both costly and flaky on a dimension this project does not
+  # control. See `.ai/decisions/ci-lane-policy.md`. Run it by hand instead:
+  # `pnpm test:live` locally, with the `LLM_*` profiles set. The lanes below
+  # (`test`, `test:db`) are hermetic; `packages/llm/src/__tests__/live-lane-excluded.test.ts`
+  # is what proves the live files really are excluded from `pnpm test`.
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hermes
+          POSTGRES_PASSWORD: hermes
+          # Ends in `_test` so `db-env.ts`'s `assertNotTheAppDatabase` guard is
+          # satisfied as written — CI meets the same bar every local `test:db`
+          # run meets, rather than the guard being carved out for CI.
+          POSTGRES_DB: hermes_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hermes -d hermes_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # `DATABASE_URL` is deliberately not set anywhere in this job: nothing in
+      # `pnpm test` / `pnpm test:db` boots the app (`loadConfig()` is never
+      # called by the suites), and leaving it unset keeps it from colliding with
+      # the scratch URL below.
+      TEST_DATABASE_URL: postgres://hermes:hermes@127.0.0.1:5432/hermes_ci_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `version:` input — the pnpm version comes from `packageManager` in
+      # the root `package.json`, so CI cannot drift from local.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # `--frozen-lockfile` so a lockfile drift fails loudly here instead of
+      # silently resolving a different dependency tree than what is committed.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      # Required before the test lanes, not a packaging step: cross-package
+      # value imports (e.g. `apps/hermes` importing `@hermes/telemetry`)
+      # resolve through each package's `main` → `dist`, so the suites cannot
+      # even collect in a fresh checkout until the workspace is built.
+      - run: pnpm build
+
+      - run: pnpm test
+
+      - run: pnpm test:db
