@@ -25,14 +25,20 @@ one has a failure mode that is silent rather than loud.
   off-peak discount that the flat table shape deliberately does not model.
   Pricing high can only over-report spend — the safe direction for a budget
   ceiling.
-- **An unknown model id warns and costs `0`; it never throws.** A live call must
-  not die because a pricing key is stale. But `0` for a genuinely billed call is
-  invisible in the data, so the `warn` is the only signal that exists — and the
-  drift it guards against is real, not hypothetical: `deepseek-chat` was retired
-  by DeepSeek while still configured as `LLM_PRIMARY_MODEL`. Hence
-  `packages/llm/src/__tests__/pricing.test.ts` validates `MODEL_PRICING`'s keys
-  against the configured `LLM_*_MODEL` env vars when they are set; literal-key
-  assertions alone could not have caught that retirement.
+- **An unknown model id throws `UnpricedModelError`; it no longer warns and
+  costs `0`.** (Reversed by `02-telemetry` Phase 4 — see the entry it
+  supersedes in Rejected below.) `0` for a genuinely billed call was invisible
+  in the data — the drift it guards against is real, not hypothetical:
+  `deepseek-chat` was retired by DeepSeek while still configured as
+  `LLM_PRIMARY_MODEL`. The reversal is safe now because a new boot-time guard,
+  `assertModelsPriced` (`apps/hermes/src/boot.ts`, called immediately after
+  config loads), refuses to boot at all with an unpriced
+  `LLM_PRIMARY_MODEL`/`LLM_FALLBACK_MODEL` — making `resolveCostUsd`'s throw a
+  rare backstop (an id arriving by a route boot validation didn't cover)
+  instead of a routine live-call hazard. `packages/llm/src/__tests__/pricing.test.ts`
+  still validates `MODEL_PRICING`'s keys against the configured `LLM_*_MODEL`
+  env vars when they are set; literal-key assertions alone could not have
+  caught that retirement.
 - **A `recordUsage` failure logs at `error` and continues.** By the time it runs,
   the provider call has succeeded and the tokens are already billed. Letting the
   insert's rejection propagate would cost the operator the *reply* on top of the
@@ -48,8 +54,17 @@ one has a failure mode that is silent rather than loud.
   unverifiable offline.
 - *Time-of-day / off-peak pricing* — a second axis on a table that exists to be
   auditable at a glance, in exchange for an error that already biases safe.
-- *Throwing on an unknown model, or on a failed usage insert* — both trade a
-  bookkeeping problem for a user-visible outage.
+- *Throwing on a failed usage insert* — trades a bookkeeping problem for a
+  user-visible outage; the call already succeeded and was billed by that
+  point, so the reply must not be discarded over a persistence failure.
+- ~~*Throwing on an unknown model*~~ — **reversed by `02-telemetry` Phase 4.**
+  Originally rejected as trading a bookkeeping problem for a user-visible
+  outage, but that reasoning held only in the absence of boot-time
+  validation. With `assertModelsPriced` refusing to boot on an unpriced
+  `LLM_PRIMARY_MODEL`/`LLM_FALLBACK_MODEL`, throwing (`UnpricedModelError`)
+  is now the safer default: it stops an unpriced model from ever quietly
+  disabling the budget ceiling, and the live-call throw path it opens is a
+  rare backstop, not the routine case.
 - *`packages/llm` importing `@hermes/store`* — would put Postgres behind the
   provider port. The injected repo mirrors `channels`' `TelegramOffsetRepo`.
 
@@ -65,8 +80,10 @@ one has a failure mode that is silent rather than loud.
 - `usageRepo` is a **required** adapter option (as is `budget`) — it used to
   default to a no-op, which let a wiring path disable cost recording with
   nothing failing. `logger` still defaults to a no-op, so forgetting it costs
-  only the unknown-model warn. That wiring lives in one tested place
-  (`build-llm-provider.ts`); keep it there.
+  only the usage-recording-failure and telemetry-drop warnings (the
+  unknown-model case no longer warns — it throws, unconditionally on
+  `logger`). That wiring lives in one tested place (`build-llm-provider.ts`);
+  keep it there.
 - These rows are what the monthly ceiling reads. Under-pricing a call does not
   just misreport — it raises the real spend the cap permits; see
   [monthly-budget-ceiling](monthly-budget-ceiling.md).

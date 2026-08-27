@@ -65,11 +65,17 @@ non-obvious about it follows from that being true:
 **Constraints it creates:**
 
 - The check reads only what `recordUsage` wrote, so anything that suppresses a
-  write loosens the ceiling by the same amount: an unpriced model resolves to
-  `$0`, a dropped insert logs and continues, and `cost_usd numeric(12,6)`
-  floors sub-$5e-7 calls to zero. See
-  [llm-cost-accounting](llm-cost-accounting.md) — cheap under-pricing
-  is the ceiling's blind spot, which is why `MODEL_PRICING` biases high.
+  write loosens the ceiling by the same amount: a dropped insert logs and
+  continues, and `cost_usd numeric(12,6)` floors sub-$5e-7 calls to zero. An
+  unpriced model is **no longer** this kind of blind spot (`02-telemetry`
+  Phase 4): it now either fails boot outright (`assertModelsPriced`) or
+  throws mid-call (`UnpricedModelError`, discarding that one call's answer,
+  never silently recording `$0` for it). The ceiling's remaining blind spot
+  is narrower: a **mispriced-but-recognized** model — a stale number in
+  `MODEL_PRICING` for an id that still resolves — still under- or
+  over-reports, which boot validation cannot catch. See
+  [llm-cost-accounting](llm-cost-accounting.md); `MODEL_PRICING` biases high
+  for exactly this residual case.
 - The inverse is just as real and was observed: anything that *adds* rows
   tightens the ceiling in real dollars, and a test fixture is the way that
   happens. `llm_usage` is a financial ledger, not a scratch table — writing to

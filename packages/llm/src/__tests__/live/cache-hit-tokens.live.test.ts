@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { createLogger } from "@hermes/core";
 import { describe, expect, it } from "vitest";
 import { createOpenAiCompatibleAdapter } from "../../adapter/openai-compatible";
 import type { CompletionRequest, ToolDefinition } from "../../port";
@@ -99,7 +98,6 @@ describe.skipIf(!liveProfiles)("invariant #6 — DeepSeek prefix cache-hit token
       // Safe: describe.skipIf above guarantees the profiles resolved.
       const profiles = liveProfiles as LiveProfiles;
       const profile = profiles.primary;
-      const logger = createLogger({ level: "warn" });
       // `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap
       // fix); this live check pays real provider cost by design and isn't
       // exercising usage accounting or the budget ceiling, so a permissive
@@ -116,8 +114,8 @@ describe.skipIf(!liveProfiles)("invariant #6 — DeepSeek prefix cache-hit token
         buildRequest(profile.model, "Reply with the word: two."),
       );
 
-      const firstCostUsd = resolveCostUsd(profile.model, first.usage, logger);
-      const secondCostUsd = resolveCostUsd(profile.model, second.usage, logger);
+      const firstCostUsd = resolveCostUsd(profile.model, first.usage);
+      const secondCostUsd = resolveCostUsd(profile.model, second.usage);
 
       console.log("first call usage:", first.usage, "cost usd:", firstCostUsd);
       console.log("second call usage:", second.usage, "cost usd:", secondCostUsd);

@@ -7,10 +7,14 @@ import {
   createOpenAiCompatibleAdapter,
 } from "../openai-compatible";
 
+// Model must be a real `MODEL_PRICING` entry: these tests exercise unrelated
+// request/response behavior, but every successful `complete()` now resolves
+// cost unconditionally (Phase 4: `resolveCostUsd` throws `UnpricedModelError`
+// on an unpriced id instead of warning and returning $0).
 const PROFILE: ProviderProfile = {
   baseUrl: "https://provider.example/v1",
   apiKey: "sk-super-secret-key",
-  model: "some-model",
+  model: "deepseek-v4-flash",
 };
 
 // `usageRepo`/`budget` are mandatory adapter options (Phase 4 gap fix: an

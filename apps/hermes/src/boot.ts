@@ -8,7 +8,7 @@ import {
 } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { type Logger, createLogger, systemClock } from "@hermes/core";
-import { resolveBudgetCapUsd } from "@hermes/llm";
+import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
   type Pool,
@@ -106,6 +106,30 @@ function loadConfigOrExit(): Env {
     return loadConfig();
   } catch (error) {
     if (error instanceof ConfigError) {
+      console.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fails boot outright, before any DB or network I/O, when `LLM_PRIMARY_MODEL`
+ * or a configured `LLM_FALLBACK_MODEL` has no `MODEL_PRICING` entry — the
+ * primary defense against `resolveCostUsd`'s live-call throw (see
+ * `.ai/decisions/llm-cost-accounting.md`). Same handling as `ConfigError`
+ * above: a readable message, non-zero exit, no stack trace.
+ */
+function assertModelsPricedOrExit(config: Env): void {
+  const profiles = buildProviderProfiles(config);
+  try {
+    assertModelsPriced(
+      [profiles.primary.model, profiles.fallback?.model].filter(
+        (model): model is string => model !== undefined,
+      ),
+    );
+  } catch (error) {
+    if (error instanceof UnpricedModelError) {
       console.error(error.message);
       process.exit(1);
     }
@@ -372,15 +396,19 @@ function subscribeGatedDispatch(deps: MessageHandlerDeps): void {
 
 /**
  * Thin entry point, in load-bearing order (see
- * `.ai/architecture.md#boot-and-shutdown-order`): config -> logger -> pool
- * (waited + migrated) -> webhook cleared -> advisory lock -> health server ->
- * poller -> handlers -> shutdown registration. The lock is taken before the
- * health server starts and before the poller exists, so an instance that
- * loses the race never briefly reports healthy and never races Telegram's
+ * `.ai/architecture.md#boot-and-shutdown-order`): config -> models-priced
+ * check -> logger -> pool (waited + migrated) -> webhook cleared -> advisory
+ * lock -> health server -> poller -> handlers -> shutdown registration. The
+ * models-priced check runs before any DB or network I/O so a misconfigured
+ * `LLM_PRIMARY_MODEL`/`LLM_FALLBACK_MODEL` fails fast rather than after a
+ * slow or hanging connection attempt. The lock is taken before the health
+ * server starts and before the poller exists, so an instance that loses the
+ * race never briefly reports healthy and never races Telegram's
  * one-getUpdates-consumer-per-token rule.
  */
 export async function boot(): Promise<void> {
   const config = loadConfigOrExit();
+  assertModelsPricedOrExit(config);
   const logger = createLogger({ level: config.LOG_LEVEL, fields: { service: "hermes" } });
   logger.info("booting", { config: toRedactedLog(config) });
 

@@ -91,23 +91,21 @@ describe("buildLlmProvider — boot wiring", () => {
   it("wires the app's real logger through, not the adapter's no-op default", async () => {
     stubSuccessfulFetch();
     const pool = createMockPool();
+    // First query is the budget check (rows: []), second is the usage INSERT.
+    pool.query.mockResolvedValueOnce({ rows: [] }).mockRejectedValueOnce(new Error("db down"));
     const logger = createMockLogger();
-    const provider = buildLlmProvider(
-      pool,
-      { ...PROFILE, model: "some-retired-model" },
-      logger,
-      ENV,
-    );
+    const provider = buildLlmProvider(pool, PROFILE, logger, ENV);
 
-    await provider.complete(baseRequest("some-retired-model"));
+    await provider.complete(baseRequest(PROFILE.model));
 
-    // resolveCostUsd's unknown-model warn only reaches a logger that was
-    // actually passed through — the adapter's default is a no-op, so this
+    // recordCompletionUsage's insert-failure log only reaches a logger that
+    // was actually passed through — the adapter's default is a no-op, so this
     // assertion fails silently (0 calls) if boot.ts stopped injecting the
-    // real logger.
-    expect(logger.warn).toHaveBeenCalledWith(
+    // real logger. (Previously pinned via resolveCostUsd's unknown-model
+    // warn, removed by Phase 4's throw-instead-of-$0 reversal.)
+    expect(logger.error).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ model: "some-retired-model" }),
+      expect.objectContaining({ model: PROFILE.model, error: "db down" }),
     );
   });
 });

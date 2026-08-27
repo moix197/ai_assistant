@@ -1,5 +1,6 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UnpricedModelError } from "../../errors";
 import type { ProviderProfile } from "../../port";
 import type { LlmUsageEntry, LlmUsageRepo } from "../../usage/usage-repo-port";
 import {
@@ -183,6 +184,29 @@ describe("createOpenAiCompatibleAdapter — usage recording", () => {
     });
 
     await expect(adapter.complete(baseRequest())).rejects.toThrow();
+    expect(usageRepo.recordUsage).not.toHaveBeenCalled();
+  });
+
+  // Pins Phase 4's reversal at the adapter boundary, not just in
+  // pricing.test.ts: a successful response using a model absent from
+  // MODEL_PRICING must reject complete() with UnpricedModelError rather than
+  // resolving with a $0-costed usage row.
+  it("rejects with UnpricedModelError, never recording a $0-costed row, when the model has no MODEL_PRICING entry", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [{ message: { content: "hi there" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }),
+    );
+    const usageRepo = createMockUsageRepo();
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...PROFILE, model: "some-retired-model" },
+      { fetchImpl, usageRepo, logger: createMockLogger(), budget: PERMISSIVE_BUDGET },
+    );
+
+    await expect(
+      adapter.complete({ ...baseRequest(), model: "some-retired-model" }),
+    ).rejects.toBeInstanceOf(UnpricedModelError);
     expect(usageRepo.recordUsage).not.toHaveBeenCalled();
   });
 });

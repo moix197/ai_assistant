@@ -12,6 +12,7 @@ export {
   LlmHttpError,
   LlmMalformedResponseError,
   LlmTimeoutError,
+  UnpricedModelError,
 } from "./errors";
 export {
   createOpenAiCompatibleAdapter,
@@ -24,6 +25,7 @@ export {
   type BilledTokens,
   MODEL_PRICING,
   type ModelPricing,
+  assertModelsPriced,
   deriveBilledTokens,
   resolveCostUsd,
 } from "./pricing";

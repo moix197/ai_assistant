@@ -13,8 +13,9 @@ import type { TelemetryRecorderHandle } from "@hermes/telemetry";
  * Wires the OpenAI-compatible adapter to real infrastructure: usage rows
  * persisted through `@hermes/store`'s `recordUsage` against the live pool,
  * the app's real logger — not the adapter's no-op `logger` default, which
- * would otherwise silently disable the unknown-model warn — and the monthly
- * budget ceiling (Phase 4), backed by the same pool via `sumCostSince` and
+ * would otherwise silently disable the usage-recording-failure and
+ * telemetry-drop warnings — and the monthly budget ceiling (Phase 4), backed
+ * by the same pool via `sumCostSince` and
  * `resolveBudgetCapUsd(env)`. `usageRepo` and `budget` are both mandatory on
  * the adapter now specifically so this is the one place that can wire them;
  * omitting either here is a compile error, not a silent no-op. Extracted

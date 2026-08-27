@@ -90,3 +90,20 @@ export class BudgetExceededError extends Error {
     this.spentUsd = spentUsd;
   }
 }
+
+/**
+ * Thrown by `resolveCostUsd` (see `pricing.ts`) when `model` has no
+ * `MODEL_PRICING` entry, and by `assertModelsPriced` at boot for the same
+ * reason. Boot-time validation (`apps/hermes/src/boot.ts`) is the primary
+ * defense — this is meant to be a rare backstop, not a routine live-call
+ * outcome; see `.ai/decisions/llm-cost-accounting.md`.
+ */
+export class UnpricedModelError extends Error {
+  readonly model: string;
+
+  constructor(model: string) {
+    super(`no MODEL_PRICING entry for "${model}"`);
+    this.name = "UnpricedModelError";
+    this.model = model;
+  }
+}

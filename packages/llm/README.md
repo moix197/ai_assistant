@@ -77,10 +77,11 @@ Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 ## Errors
 
 `src/errors.ts`: `LlmTimeoutError`, `LlmHttpError` (`status`, `retryAfter`),
-`LlmMalformedResponseError` — typed subclasses, no `Result<T,E>` in this
-package (this package throws, per project convention). `LlmTimeoutError` is
-distinct from `LlmAbortedError` (Phase 5): "the adapter itself gave up
-waiting" vs. "the process was asked to shut down mid-call".
+`LlmMalformedResponseError`, `UnpricedModelError` (`model`) — typed
+subclasses, no `Result<T,E>` in this package (this package throws, per
+project convention). `LlmTimeoutError` is distinct from `LlmAbortedError`
+(Phase 5): "the adapter itself gave up waiting" vs. "the process was asked
+to shut down mid-call".
 
 ## Usage accounting
 
@@ -96,12 +97,23 @@ Errors above).
 `src/pricing.ts` exports `MODEL_PRICING` (per-model
 `{ inputPerMillionUsd, outputPerMillionUsd, cacheHitDiscount }`, verified
 against each provider's own pricing page — see the file-level comment for
-the "as of" date and sources) and `resolveCostUsd(model, usage, logger)`. An
-unknown model id logs a `warn` via the injected logger and returns `0`
-rather than throwing — silent, uncounted `$0` on a real, billed call is the
-failure mode this guards against, so the `warn` is what keeps a stale or
-mistyped `MODEL_PRICING` key loud instead of quietly disabling Phase 4's
-budget ceiling for that model.
+the "as of" date and sources) and `resolveCostUsd(model, usage)`. An unknown
+model id throws `UnpricedModelError(model)` rather than returning `0` —
+silent, uncounted `$0` on a real, billed call was the failure mode this
+guards against, and a thrown error is louder than a log line that can go
+unread. This is a deliberate reversal (`02-telemetry` Phase 4) of the
+original "warn and cost `$0`" behavior; see
+`.ai/decisions/llm-cost-accounting.md`.
+
+`src/pricing.ts` also exports `assertModelsPriced(models: readonly
+string[])` — pure and synchronous, throws `UnpricedModelError` naming the
+first unpriced id it finds. `apps/hermes/src/boot.ts` calls it immediately
+after config loads, before any DB or network I/O, against both
+`LLM_PRIMARY_MODEL` and (when set) `LLM_FALLBACK_MODEL`, so a misconfigured
+model refuses to boot instead of ever reaching `resolveCostUsd`'s throw on a
+live, already-paid-for call. That throw is the deliberate backstop for a
+model id that reaches `resolveCostUsd` by some route boot validation didn't
+cover — not the routine case.
 
 The provider's own `total_tokens` is authoritative: `resolveCostUsd` never
 derives spend by summing `promptTokens + completionTokens` alone.
@@ -119,9 +131,10 @@ a direct `@hermes/store` dependency, mirroring `packages/channels`'
 `recordUsage(pool, entry)`.
 
 `createOpenAiCompatibleAdapter`'s `opts.usageRepo` is mandatory (`opts.logger`
-stays optional, defaulting to a no-op — its only job is a diagnostic warn, so
-omitting it can't silently disable spend tracking or the budget ceiling
-below). `usageRepo` used to default to a no-op the same way, which meant a
+stays optional, defaulting to a no-op — its only job is diagnostic warnings
+(a dropped usage insert, a telemetry recorder that threw), so omitting it
+can't silently disable spend tracking or the budget ceiling below).
+`usageRepo` used to default to a no-op the same way, which meant a
 construction site could forget to wire it and cost recording would simply,
 silently stop happening — exactly the failure mode Phase 4's budget ceiling
 depends on not existing, since the ceiling reads its "spend so far" from the

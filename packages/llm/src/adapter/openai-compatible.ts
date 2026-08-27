@@ -32,7 +32,7 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 /** 5xx and network/timeout errors: bounded exponential backoff, then rethrow. */
 const MAX_TRANSIENT_RETRIES = 5;
 
-/** Used when the caller supplies no `logger` — `resolveCostUsd`'s unknown-model warn has somewhere safe to go. */
+/** Used when the caller supplies no `logger` — the usage-recording-failure and telemetry-drop warnings have somewhere safe to go. */
 const NOOP_LOGGER: Logger = {
   debug: () => {},
   info: () => {},
@@ -54,7 +54,7 @@ export interface OpenAiCompatibleAdapterOptions {
    * instead of a silent no-op.
    */
   usageRepo: LlmUsageRepo;
-  /** Receives `resolveCostUsd`'s unknown-model warning. Default: a no-op logger. */
+  /** Receives usage-recording-failure and telemetry-drop warnings. Default: a no-op logger. */
   logger?: Logger;
   /**
    * Monthly budget ceiling (Phase 4). `usageRepo` and `capUsd` travel
@@ -524,6 +524,12 @@ function deriveProviderLabel(baseUrl: string): string {
  * `parseCompletionResponse`/`callOnce`/`completeWithRetry` directly: those
  * run once per HTTP attempt, including retries, and usage must be recorded
  * exactly once per logical `complete()` call.
+ *
+ * Can reject with `UnpricedModelError` (via `resolveCostUsd`) for a model
+ * absent from `MODEL_PRICING` — deliberately uncaught here, so it propagates
+ * out of `complete()` and discards an already-paid-for reply rather than
+ * silently recording `$0` for it. Boot-time `assertModelsPriced` is meant to
+ * keep this path rare; see `.ai/decisions/llm-cost-accounting.md`.
  */
 async function recordCompletionUsage(
   usageRepo: LlmUsageRepo,
@@ -532,7 +538,7 @@ async function recordCompletionUsage(
   request: CompletionRequest,
   result: CompletionResult,
 ): Promise<LlmUsageEntry> {
-  const costUsd = resolveCostUsd(request.model, result.usage, logger);
+  const costUsd = resolveCostUsd(request.model, result.usage);
   const { missTokens, reasoningTokens } = deriveBilledTokens(result.usage);
   const entry: LlmUsageEntry = {
     provider: deriveProviderLabel(profile.baseUrl),

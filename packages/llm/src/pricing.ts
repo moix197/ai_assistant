@@ -16,7 +16,8 @@
  * path and reports $0 for real, billed calls (see its own doc comment).
  */
 
-import type { Logger, Usage } from "@hermes/core";
+import type { Usage } from "@hermes/core";
+import { UnpricedModelError } from "./errors";
 
 export interface ModelPricing {
   inputPerMillionUsd: number;
@@ -76,23 +77,23 @@ export function deriveBilledTokens(usage: Usage): BilledTokens {
 }
 
 /**
- * Resolves the USD cost of one completion call. An unknown model id logs a
- * `warn` via the injected `logger` and returns `0` rather than throwing — a
- * stale or mistyped `MODEL_PRICING` key must not crash a live call, but
- * silently reporting `0` cost for a real, billed call with no signal
- * anywhere would quietly disable the Phase 4 budget ceiling for that model.
- * The `warn` is what keeps that failure mode loud.
+ * Resolves the USD cost of one completion call. An unknown model id throws
+ * `UnpricedModelError` rather than reporting `$0` — silently reporting `0`
+ * cost for a real, billed call would quietly disable the budget ceiling for
+ * that model with no signal anywhere. Boot-time `assertModelsPriced` (below)
+ * is the primary defense against ever reaching this path on a live call;
+ * this throw is the backstop for an id that arrives by a route boot
+ * validation didn't cover. See `.ai/decisions/llm-cost-accounting.md`.
  *
  * `total_tokens` is treated as authoritative: `gemini-3.6-flash` has been
  * observed live returning `prompt_tokens: 10, completion_tokens: 0,
  * total_tokens: 27` — 17 billed reasoning tokens visible in neither counter.
  * That remainder is priced at the output rate here, never dropped.
  */
-export function resolveCostUsd(model: string, usage: Usage, logger: Logger): number {
+export function resolveCostUsd(model: string, usage: Usage): number {
   const pricing = MODEL_PRICING[model];
   if (!pricing) {
-    logger.warn("unknown model id, cannot price usage — reporting $0 cost", { model });
-    return 0;
+    throw new UnpricedModelError(model);
   }
 
   const { missTokens, reasoningTokens } = deriveBilledTokens(usage);
@@ -101,4 +102,19 @@ export function resolveCostUsd(model: string, usage: Usage, logger: Logger): num
   const outputCost = (usage.completionTokens + reasoningTokens) * pricing.outputPerMillionUsd;
 
   return (inputCost + cacheHitCost + outputCost) / 1_000_000;
+}
+
+/**
+ * Boot-time guard: throws `UnpricedModelError` naming the **first** unpriced
+ * model found in `models`, so a misconfigured `LLM_PRIMARY_MODEL` or
+ * `LLM_FALLBACK_MODEL` fails the process at boot instead of reaching
+ * `resolveCostUsd`'s throw on a live, already-paid-for call. Pure and
+ * synchronous — no I/O, no boot seam required to unit-test it.
+ */
+export function assertModelsPriced(models: readonly string[]): void {
+  for (const model of models) {
+    if (!(model in MODEL_PRICING)) {
+      throw new UnpricedModelError(model);
+    }
+  }
 }
