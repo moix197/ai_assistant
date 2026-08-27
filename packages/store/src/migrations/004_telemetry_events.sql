@@ -30,5 +30,7 @@ CREATE INDEX telemetry_events_created_at_idx ON telemetry_events (created_at);
 -- cache-hit rate — all filtered on name = 'llm.call' first).
 CREATE INDEX telemetry_events_name_created_at_idx ON telemetry_events (name, created_at);
 
--- Supports getTopToolsSince's GROUP BY tool_name over tool.call rows.
-CREATE INDEX telemetry_events_tool_name_idx ON telemetry_events (tool_name);
+-- Supports getTopToolsSince's GROUP BY tool_name over tool.call rows. Partial
+-- because tool_name is null for every non-tool.call row (llm.call, turn).
+CREATE INDEX telemetry_events_tool_name_idx ON telemetry_events (tool_name)
+  WHERE tool_name IS NOT NULL;

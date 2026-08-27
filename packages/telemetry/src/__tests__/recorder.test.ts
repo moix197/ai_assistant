@@ -108,6 +108,31 @@ describe("createBufferedTelemetryRecorder", () => {
     expect(repo.insertEvents).toHaveBeenCalledWith(events.slice(0, 3));
   });
 
+  it("under the default config, a slow flush lets the buffer grow to maxBufferSize instead of spawning concurrent flushes", () => {
+    const logger = createMockLogger();
+    // Never resolves — simulates a slow repo still mid-flush for the whole burst.
+    const repo: TelemetryEventRepo = { insertEvents: vi.fn(() => new Promise<void>(() => {})) };
+    const recorder = createBufferedTelemetryRecorder(repo, { logger });
+
+    for (let i = 0; i < 10_000; i++) {
+      recorder.record(llmCallEvent({ model: `m${i}` }));
+    }
+
+    // flushThreshold (50) trips the first flush, which never resolves. With
+    // single-flight in place, every later threshold crossing is a no-op —
+    // only that one insertEvents call ever happens, and the buffer (not a
+    // pile of concurrent flushes) absorbs the rest of the burst up to
+    // maxBufferSize (500).
+    expect(repo.insertEvents).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(repo.insertEvents).mock.calls[0]?.[0]).toHaveLength(50);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ reason: "buffer full" }),
+    );
+    // 50 drained into the in-flight batch + 500 held in the buffer = 550 kept; the rest dropped.
+    expect(logger.warn).toHaveBeenCalledTimes(10_000 - 550);
+  });
+
   it("logs an error and discards the batch when insertEvents rejects, without wedging later flushes", async () => {
     const logger = createMockLogger();
     const repo: TelemetryEventRepo & { insertEvents: ReturnType<typeof vi.fn> } = {

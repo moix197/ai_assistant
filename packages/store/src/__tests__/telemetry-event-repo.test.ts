@@ -67,7 +67,12 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
       },
     ];
 
+    const querySpy = vi.spyOn(pool, "query");
+
     await insertEvents(pool, events);
+
+    // Proves one multi-row INSERT, never a loop of single-row inserts.
+    expect(querySpy).toHaveBeenCalledTimes(1);
 
     const result = await pool.query<{
       name: string;

@@ -56,6 +56,7 @@ export function createBufferedTelemetryRecorder(
 
   let buffer: TelemetryEvent[] = [];
   let stopped = false;
+  let flushing: Promise<void> | null = null;
 
   function drainBuffer(): TelemetryEvent[] {
     const batch = buffer;
@@ -64,14 +65,12 @@ export function createBufferedTelemetryRecorder(
   }
 
   /**
-   * Flushes whatever is currently buffered, draining it synchronously
-   * before the `await` so a concurrent trigger (threshold + timer firing
-   * close together) can never send the same events twice. A rejected
-   * `repo.insertEvents` is logged at `error` and the batch is discarded —
-   * no requeue, no retry — leaving the recorder able to flush normally on
-   * the next trigger.
+   * Drains the buffer and sends it, unconditionally — callers are
+   * responsible for single-flighting. A rejected `repo.insertEvents` is
+   * logged at `error` and the batch is discarded — no requeue, no retry —
+   * leaving the recorder able to flush normally on the next trigger.
    */
-  async function flush(): Promise<void> {
+  async function performFlush(): Promise<void> {
     const batch = drainBuffer();
     try {
       await repo.insertEvents(batch);
@@ -83,34 +82,51 @@ export function createBufferedTelemetryRecorder(
     }
   }
 
-  function dropEvent(event: TelemetryEvent, reason: string): void {
+  /**
+   * Single-flights `performFlush`: if a flush is already in progress, this
+   * is a no-op — the buffer keeps accumulating (up to `maxBufferSize`)
+   * instead of spawning a second concurrent `insertEvents` call. This is
+   * what makes `maxBufferSize` the real backpressure valve when
+   * `flushThreshold` is reached repeatedly while Postgres is slow.
+   */
+  function triggerFlush(): void {
+    if (flushing) return;
+    flushing = performFlush().finally(() => {
+      flushing = null;
+    });
+  }
+
+  function logDroppedEvent(event: TelemetryEvent, reason: string): void {
     logger.warn("telemetry event dropped", { name: event.name, reason });
   }
 
   const interval = setInterval(() => {
-    void flush();
+    triggerFlush();
   }, flushIntervalMs);
+  interval.unref?.();
 
   return {
     record(event: TelemetryEvent): void {
       if (stopped) {
-        dropEvent(event, "recorder stopped");
+        logDroppedEvent(event, "recorder stopped");
         return;
       }
       if (buffer.length >= maxBufferSize) {
-        dropEvent(event, "buffer full");
+        logDroppedEvent(event, "buffer full");
         return;
       }
       buffer.push(event);
       if (buffer.length >= flushThreshold) {
-        void flush();
+        triggerFlush();
       }
     },
 
     async stop(): Promise<void> {
+      if (stopped) return;
       stopped = true;
       clearInterval(interval);
-      await flush();
+      if (flushing) await flushing;
+      await performFlush();
     },
   };
 }

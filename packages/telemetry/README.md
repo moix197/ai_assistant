@@ -33,6 +33,13 @@ observability nicety into a new way to fail a user's message.
   whatever is buffered on every tick, even when nothing has accumulated —
   `@hermes/store`'s `insertEvents` is the layer that no-ops on an empty
   batch, not this package.
+- **Flushes are single-flighted.** Only one `insertEvents` call is ever in
+  flight at a time. If `flushThreshold` is reached (or the timer ticks)
+  while a flush is still pending — e.g. Postgres is slow — that trigger is
+  a no-op: the buffer keeps accumulating instead of a second concurrent
+  flush starting. This is what makes `maxBufferSize` the real backpressure
+  valve rather than an unreachable upper bound under the default config
+  (`flushThreshold` 50 well below `maxBufferSize` 500).
 - **Buffer overflow:** once the buffer holds `maxBufferSize` events (default
   `500` — a **count**, not a byte size), the newest incoming event is
   dropped and `logger.warn` fires. The buffer never grows past this bound.
@@ -57,19 +64,24 @@ observability nicety into a new way to fail a user's message.
 
 ## `stop()` / drain semantics
 
-`stop()` clears the interval, then awaits **one** final flush of whatever
-remains buffered. It has **no internal timeout** — it awaits
-`repo.insertEvents` for as long as that takes. Bounding how long a caller
-waits on `stop()` (e.g. a process shutdown sequence) is the caller's job;
-`packages/telemetry` has no concept of a process-wide shutdown budget. See
-`apps/hermes/src/boot.ts` (Phase 2) for the time-boxed call site.
+`stop()` clears the interval, then — after awaiting any flush already in
+flight — awaits **one** final flush of whatever remains buffered. It has
+**no internal timeout** — it awaits `repo.insertEvents` for as long as that
+takes. Bounding how long a caller waits on `stop()` (e.g. a process
+shutdown sequence) is the caller's job; `packages/telemetry` has no concept
+of a process-wide shutdown budget. See `apps/hermes/src/boot.ts` (Phase 2)
+for the time-boxed call site. `stop()` is idempotent: calling it again
+after it has already resolved (or while the first call is still in
+flight) is a no-op that resolves without a second flush.
 
 ## Testing
 
 `src/__tests__/recorder.test.ts` (always runs, no DB) covers every behavior
 above against a mock `TelemetryEventRepo` and fake timers: synchronous
 non-awaiting `record()`, threshold-triggered flush, independent periodic
-flush, overflow drop-and-warn under a burst larger than `maxBufferSize`, a
+flush, overflow drop-and-warn under a burst larger than `maxBufferSize`,
+single-flighting a slow flush under the *default* config so `maxBufferSize`
+(not a pile of concurrent `insertEvents` calls) absorbs the burst, a
 rejected flush logged at `error` without wedging the recorder (a second,
 later flush still succeeds), post-`stop()` drops, and `stop()`'s
 drain-then-stop-interval behavior.
