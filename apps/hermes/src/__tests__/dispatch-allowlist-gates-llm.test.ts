@@ -1,7 +1,7 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import type { LlmProvider } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
+import type { Agent } from "../agent/build-agent";
 import { createDispatchCommand } from "../boot";
 import { type LlmDedupeRepo, createCompletionHandler } from "../handlers/complete";
 import { withAllowlist } from "../handlers/with-allowlist";
@@ -50,20 +50,14 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
 }
 
 describe("allowlist gates the paid completion handler (invariant #1, paid-call-specific)", () => {
-  it("drops a message from an unallowlisted sender before the LLM provider is ever called", async () => {
+  it("drops a message from an unallowlisted sender before the agent is ever called", async () => {
     const logger = createMockLogger();
     const channel = createMockChannel();
-    const complete = vi.fn().mockResolvedValue({
-      text: "should never be reached",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
+    const handleMessage = vi.fn().mockResolvedValue("should never be reached");
+    const agent: Agent = { handleMessage };
     const completionHandler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -80,7 +74,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
 
     await handler(inboundMessage());
 
-    expect(complete).toHaveBeenCalledTimes(0);
+    expect(handleMessage).toHaveBeenCalledTimes(0);
     expect(channel.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
       "rejected: unknown user",
@@ -88,20 +82,14 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
     );
   });
 
-  it("reaches the LLM provider for an allowlisted sender in a private chat", async () => {
+  it("reaches the agent for an allowlisted sender in a private chat", async () => {
     const logger = createMockLogger();
     const channel = createMockChannel();
-    const complete = vi.fn().mockResolvedValue({
-      text: "a real reply",
-      toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
+    const handleMessage = vi.fn().mockResolvedValue("a real reply");
+    const agent: Agent = { handleMessage };
     const completionHandler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -118,7 +106,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
 
     await handler(inboundMessage({ channelUserId: String(ALLOWED_ID) }));
 
-    expect(complete).toHaveBeenCalledTimes(1);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
     expect(channel.send).toHaveBeenCalledWith("555", "a real reply");
   });
 });

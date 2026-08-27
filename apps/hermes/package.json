@@ -12,6 +12,7 @@
     "test:db": "node -e \"try{process.loadEnvFile('../../.env')}catch{};if(!(process.env.TEST_DATABASE_URL||'').trim()){console.error('TEST_DATABASE_URL is unset - pnpm test:db needs a scratch database. See packages/store/README.md');process.exit(1)}\" && vitest run --no-file-parallelism"
   },
   "dependencies": {
+    "@hermes/agent": "workspace:*",
     "@hermes/channels": "workspace:*",
     "@hermes/config": "workspace:*",
     "@hermes/core": "workspace:*",

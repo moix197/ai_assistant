@@ -1,6 +1,5 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import type { LlmProvider } from "@hermes/llm";
 import {
   type Pool,
   claim as claimDedupe,
@@ -12,6 +11,7 @@ import {
 } from "@hermes/store";
 import { testDatabaseUrl } from "@hermes/store/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Agent } from "../../agent/build-agent";
 import { createCompletionHandler } from "../complete";
 
 const ALLOWED_ID = 111;
@@ -44,30 +44,25 @@ function inboundMessage(updateId: number): InboundMessage {
 }
 
 /**
- * Stands in for the real OpenAI-compatible adapter without any live
- * network call: counts invocations and, on each one, records a real
- * `llm_usage` row against the scratch DB — mirroring what the real adapter's
- * success path does — so this suite can assert "one provider call, one
- * usage row" against real persisted state, not just a call-count spy.
+ * Stands in for the agent loop without any live network call: counts
+ * invocations and, on each one, records a real `llm_usage` row against the
+ * scratch DB — mirroring what a real turn's success path does — so this
+ * suite can assert "one agent call, one usage row" against real persisted
+ * state, not just a call-count spy.
  */
-function createRecordingFakeProvider(pool: Pool, calls: { count: number }): LlmProvider {
+function createRecordingFakeAgent(pool: Pool, calls: { count: number }): Agent {
   return {
-    async complete(request) {
+    async handleMessage() {
       calls.count++;
       await recordUsage(pool, {
         provider: "fake-provider",
-        model: request.model,
+        model: "some-model",
         inputTokens: 10,
         outputTokens: 5,
         cacheHitTokens: 0,
         costUsd: 0.0001,
       });
-      return {
-        text: `reply #${calls.count}`,
-        toolCalls: [],
-        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, cacheHitTokens: 0 },
-        finishReason: "stop",
-      };
+      return `reply #${calls.count}`;
     },
   };
 }
@@ -94,7 +89,7 @@ describe.skipIf(!testDatabaseUrl)(
       const channel = createRecordingChannel();
       const logger = createMockLogger();
       const calls = { count: 0 };
-      const llmProvider = createRecordingFakeProvider(pool, calls);
+      const agent = createRecordingFakeAgent(pool, calls);
       const dedupeRepo = {
         claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
         complete: (dedupeKey: string, resultText: string) =>
@@ -102,8 +97,7 @@ describe.skipIf(!testDatabaseUrl)(
       };
       const handler = createCompletionHandler({
         channel,
-        llmProvider,
-        model: "some-model",
+        agent,
         logger,
         dedupeRepo,
       });

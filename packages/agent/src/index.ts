@@ -1,7 +1,7 @@
 import { type RunTurnDeps, runTurn } from "./loop";
 import type { AgentDefinition } from "./types";
 
-interface Agent {
+export interface Agent {
   handleMessage(channel: string, chatId: string, text: string): Promise<string>;
 }
 

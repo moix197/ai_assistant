@@ -143,5 +143,7 @@ export function buildFiveToolRequest(model: string, maxTokens: number): Completi
     messages: [{ role: "user", content: FIVE_TOOL_USER_PROMPT }],
     tools: FIVE_TOOL_DEFINITIONS,
     maxTokens,
+    threadId: null,
+    turnId: null,
   };
 }

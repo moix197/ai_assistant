@@ -1,6 +1,5 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import type { LlmProvider } from "@hermes/llm";
 import {
   type Pool,
   claim as claimDedupe,
@@ -11,6 +10,7 @@ import {
 } from "@hermes/store";
 import { testDatabaseUrl } from "@hermes/store/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Agent } from "../../agent/build-agent";
 import { createCompletionHandler } from "../complete";
 
 const ALLOWED_ID = 111;
@@ -42,17 +42,12 @@ function inboundMessage(updateId: number): InboundMessage {
   };
 }
 
-/** Stands in for the real adapter without any live network call: counts invocations, no usage recording (irrelevant to this suite). */
-function createCountingFakeProvider(calls: { count: number }): LlmProvider {
+/** Stands in for the agent loop without any live network call: counts invocations, no usage recording (irrelevant to this suite). */
+function createCountingFakeAgent(calls: { count: number }): Agent {
   return {
-    async complete() {
+    async handleMessage() {
       calls.count++;
-      return {
-        text: `reply #${calls.count}`,
-        toolCalls: [],
-        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15, cacheHitTokens: 0 },
-        finishReason: "stop",
-      };
+      return `reply #${calls.count}`;
     },
   };
 }
@@ -85,15 +80,14 @@ describe.skipIf(!testDatabaseUrl)(
       const channel = createRecordingChannel();
       const logger = createMockLogger();
       const calls = { count: 0 };
-      const llmProvider = createCountingFakeProvider(calls);
+      const agent = createCountingFakeAgent(calls);
       const dedupeRepo = {
         claim: (key: string) => claimDedupe(pool, key),
         complete: (key: string, resultText: string) => completeDedupe(pool, key, resultText),
       };
       const handler = createCompletionHandler({
         channel,
-        llmProvider,
-        model: "some-model",
+        agent,
         logger,
         dedupeRepo,
       });

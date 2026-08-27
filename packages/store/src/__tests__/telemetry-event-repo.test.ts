@@ -81,6 +81,7 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
       tool_name: string | null;
       duration_ms: number | null;
       cost_usd: string | null;
+      total_cost_usd: string | null;
       is_error: boolean;
       fields: Record<string, unknown>;
     }>("SELECT * FROM telemetry_events ORDER BY id ASC");
@@ -93,6 +94,7 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
     expect(success?.is_error).toBe(false);
     expect(success?.tool_name).toBeNull();
     expect(Number(success?.cost_usd)).toBeCloseTo(0.000123, 6);
+    expect(success?.total_cost_usd).toBeNull();
     expect(success?.fields).toMatchObject({
       model: "deepseek-v4-flash",
       inputTokens: 70,
@@ -110,12 +112,17 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
     expect(toolCall?.turn_id).toBe("turn-1");
     expect(toolCall?.tool_name).toBe("search");
     expect(toolCall?.cost_usd).toBeNull();
+    expect(toolCall?.total_cost_usd).toBeNull();
     expect(toolCall?.is_error).toBe(false);
     expect(toolCall?.fields).toMatchObject({ approved: true });
 
+    // `cost_usd` stays NULL on a `turn` row — its total lives in
+    // `total_cost_usd` instead, so the two columns never disagree about
+    // what a plain `SUM(cost_usd)` means (03-agent-core settled decision 1).
     expect(turn?.name).toBe("turn");
     expect(turn?.tool_name).toBeNull();
-    expect(Number(turn?.cost_usd)).toBeCloseTo(0.0005, 6);
+    expect(turn?.cost_usd).toBeNull();
+    expect(Number(turn?.total_cost_usd)).toBeCloseTo(0.0005, 6);
     expect(turn?.is_error).toBe(false);
     expect(turn?.fields).toMatchObject({ iterations: 3, outcome: "completed" });
   });

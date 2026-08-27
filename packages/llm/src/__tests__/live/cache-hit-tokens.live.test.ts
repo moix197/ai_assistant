@@ -88,6 +88,8 @@ function buildRequest(model: string, userMessage: string): CompletionRequest {
     messages: [{ role: "user", content: userMessage }],
     tools: SHARED_TOOLS,
     maxTokens: 64,
+    threadId: null,
+    turnId: null,
   };
 }
 

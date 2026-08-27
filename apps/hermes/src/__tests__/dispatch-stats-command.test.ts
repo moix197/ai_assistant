@@ -1,7 +1,7 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import type { LlmProvider } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
+import type { Agent } from "../agent/build-agent";
 import { createDispatchCommand } from "../boot";
 import { type LlmDedupeRepo, createCompletionHandler } from "../handlers/complete";
 import { withAllowlist } from "../handlers/with-allowlist";
@@ -42,20 +42,14 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
 }
 
 describe("/stats is routed before the paid fallthrough (routing regression)", () => {
-  it("invokes the stats path and never the LLM provider's complete()", async () => {
+  it("invokes the stats path and never the agent", async () => {
     const logger = createMockLogger();
     const channel = createMockChannel();
-    const complete = vi.fn().mockResolvedValue({
-      text: "should never be reached",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
+    const handleMessage = vi.fn().mockResolvedValue("should never be reached");
+    const agent: Agent = { handleMessage };
     const completionHandler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -74,23 +68,17 @@ describe("/stats is routed before the paid fallthrough (routing regression)", ()
     await handler(inboundMessage());
 
     expect(statsHandler).toHaveBeenCalledTimes(1);
-    expect(complete).toHaveBeenCalledTimes(0);
+    expect(handleMessage).toHaveBeenCalledTimes(0);
   });
 
   it("drops a /stats message from an unallowlisted sender before the stats handler is ever called", async () => {
     const logger = createMockLogger();
     const channel = createMockChannel();
-    const complete = vi.fn().mockResolvedValue({
-      text: "should never be reached",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheHitTokens: 0 },
-      finishReason: "stop",
-    });
-    const llmProvider: LlmProvider = { complete };
+    const handleMessage = vi.fn().mockResolvedValue("should never be reached");
+    const agent: Agent = { handleMessage };
     const completionHandler = createCompletionHandler({
       channel,
-      llmProvider,
-      model: "some-model",
+      agent,
       logger,
       dedupeRepo: createPermissiveDedupeRepo(),
     });
@@ -109,7 +97,7 @@ describe("/stats is routed before the paid fallthrough (routing regression)", ()
     await handler(inboundMessage({ channelUserId: String(DISALLOWED_ID) }));
 
     expect(statsHandler).toHaveBeenCalledTimes(0);
-    expect(complete).toHaveBeenCalledTimes(0);
+    expect(handleMessage).toHaveBeenCalledTimes(0);
     expect(channel.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
       "rejected: unknown user",

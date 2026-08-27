@@ -29,6 +29,9 @@ importers:
 
   apps/hermes:
     dependencies:
+      '@hermes/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@hermes/channels':
         specifier: workspace:*
         version: link:../../packages/channels
@@ -47,6 +50,18 @@ importers:
       '@hermes/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+
+  packages/agent:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
+      '@hermes/llm':
+        specifier: workspace:*
+        version: link:../llm
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   packages/channels:
     dependencies:

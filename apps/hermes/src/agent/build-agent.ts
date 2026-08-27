@@ -1,4 +1,4 @@
-import { type AgentDefinition, createAgent } from "@hermes/agent";
+import { type Agent, type AgentDefinition, createAgent } from "@hermes/agent";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
@@ -19,10 +19,6 @@ const SYSTEM_PROMPT = "You are Hermes, a helpful assistant.";
  * than inventing a new constant.
  */
 const CHANNEL_TELEGRAM = "telegram";
-
-export interface Agent {
-  handleMessage(channel: string, chatId: string, text: string): Promise<string>;
-}
 
 /**
  * The only place allowed to import both `@hermes/agent` and construct the
@@ -55,3 +51,4 @@ export function buildAgent(
 }
 
 export { CHANNEL_TELEGRAM };
+export type { Agent };
