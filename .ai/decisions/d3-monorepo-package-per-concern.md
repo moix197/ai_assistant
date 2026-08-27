@@ -51,3 +51,11 @@ oversight.
   kept deliberately: dropping it would catch a removed workspace dependency, but
   breaks `pnpm -r typecheck` on a clean clone, since typecheck runs before
   `dist/` exists. The frozen-lockfile install in Docker is the backstop instead.
+- The UTC-calendar-month boundary check (`startOfCurrentUtcMonth`,
+  `packages/llm/src/budget/check-budget.ts`) is duplicated into
+  `packages/telemetry`'s `computeStats` rather than shared, because sharing it
+  means one of the two importing the other, and a six-line function does not
+  earn a third package. Revisit only if a third consumer needs the same
+  boundary logic, or the helper grows past a trivial calculation. See
+  [llm-cost-accounting](llm-cost-accounting.md) and
+  [monthly-budget-ceiling](monthly-budget-ceiling.md).
