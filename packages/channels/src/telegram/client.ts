@@ -1,4 +1,4 @@
-import { nextDelay } from "@hermes/core";
+import { delay, nextDelay } from "@hermes/core";
 import { chunkText } from "./chunk";
 
 /**
@@ -127,10 +127,6 @@ function parseErrorBody(rawText: string): {
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Single attempt at one Telegram API call. Throws `TelegramApiError` for any
  * API-level failure (HTTP not ok, or `ok: false` in the payload) carrying
@@ -143,10 +139,15 @@ function delay(ms: number): Promise<void> {
  * timeout must exceed that, or this client aborts (and the caller retries)
  * while Telegram is still legitimately waiting.
  *
- * `externalSignal`, when supplied, is composed with this function's own
- * per-request timeout signal (mirrors `packages/llm`'s
- * `openai-compatible.ts#composeSignal`) so either can abort the underlying
- * `fetch` — an aborted shutdown signal doesn't wait out the timeout.
+ * `externalSignal`, when supplied, is not composed via `AbortSignal.any` —
+ * Node 22 never releases a dependent signal from a composite `AbortSignal`
+ * it created, so a new composite retained per ~30s long-poll call leaks
+ * (measured ~2.5KB each, ~210MB/month for a long-running bot). Instead,
+ * `externalSignal` gets an `abort` listener that aborts this call's own
+ * `timeoutController` — the single signal actually passed to `fetch` — and
+ * that listener is removed in the `finally` block below so nothing survives
+ * past this call. Either `externalSignal` firing or the per-request timeout
+ * elapsing still aborts the underlying `fetch`.
  */
 async function callTelegramMethod<T>(
   fetchImpl: typeof fetch,
@@ -160,9 +161,14 @@ async function callTelegramMethod<T>(
   const redactedUrl = redact(url, token);
   const timeoutController = new AbortController();
   const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
-  const signal = externalSignal
-    ? AbortSignal.any([timeoutController.signal, externalSignal])
-    : timeoutController.signal;
+  const onExternalAbort = () => timeoutController.abort();
+  // `addEventListener` never fires for a signal already aborted before the
+  // listener was attached, so that case is handled explicitly here instead.
+  if (externalSignal?.aborted) {
+    timeoutController.abort();
+  } else {
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  }
 
   try {
     let response: Response;
@@ -171,7 +177,7 @@ async function callTelegramMethod<T>(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal,
+        signal: timeoutController.signal,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -206,6 +212,7 @@ async function callTelegramMethod<T>(
     return payload.result;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -223,7 +230,12 @@ async function callTelegramMethod<T>(
  * `externalSignal?.aborted` is checked first, ahead of any error-type
  * classification (mirrors `packages/llm`'s `completeWithRetry`): a shutdown
  * pre-empts every retry policy below, since retrying would defeat the point
- * of a prompt shutdown.
+ * of a prompt shutdown. That check alone only covers a signal already
+ * aborted by the time an attempt fails; the backoff sleep itself is the
+ * abort-aware `delay(ms, signal)` from `@hermes/core` (shared with
+ * `packages/llm`), so a shutdown landing mid-sleep resolves it immediately
+ * instead of burning a full `retry_after`/computed backoff before the check
+ * above ever runs again.
  */
 async function callWithRetry<T>(
   fetchImpl: typeof fetch,
@@ -246,7 +258,7 @@ async function callWithRetry<T>(
         if (error.status === 429) {
           rateLimitAttempt++;
           if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
-          await delay(nextDelay(rateLimitAttempt, error.retryAfter));
+          await delay(nextDelay(rateLimitAttempt, error.retryAfter), externalSignal);
           continue;
         }
         if (error.status === 409) {
@@ -262,13 +274,13 @@ async function callWithRetry<T>(
               { status: error.status, errorCode: error.errorCode, retryAfter: error.retryAfter },
             );
           }
-          await delay(nextDelay(conflictAttempt));
+          await delay(nextDelay(conflictAttempt), externalSignal);
           continue;
         }
         if (error.status >= 500) {
           transientAttempt++;
           if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-          await delay(nextDelay(transientAttempt));
+          await delay(nextDelay(transientAttempt), externalSignal);
           continue;
         }
         throw error;
@@ -276,7 +288,7 @@ async function callWithRetry<T>(
 
       transientAttempt++;
       if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-      await delay(nextDelay(transientAttempt));
+      await delay(nextDelay(transientAttempt), externalSignal);
     }
   }
 }

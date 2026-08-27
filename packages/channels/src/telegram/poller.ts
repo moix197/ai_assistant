@@ -1,4 +1,4 @@
-import type { Logger } from "@hermes/core";
+import { type Logger, delay } from "@hermes/core";
 import type {
   Channel,
   ChannelCapabilities,
@@ -61,10 +61,6 @@ export function normalizeTelegramUpdate(
     kind,
     updateId: update.update_id,
   };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -171,17 +167,25 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
         return;
       }
 
-      logger.warn("getUpdates failed, retrying", {
-        error: error instanceof Error ? error.message : String(error),
-      });
       // `stop()` sets `stopping` before this catch can run (see boot.ts's
       // shutdown(): controller.abort() then channel.stop() happen
       // synchronously back to back, with no await between them), so a
       // getUpdates rejection caused by the shared shutdown signal always
-      // observes `stopping === true` here — skip the fixed retry delay so
-      // the loop (and the drain awaiting it) exits promptly instead of
-      // waiting it out for no reason.
-      if (!stopping) await delay(retryDelayMs);
+      // observes `stopping === true` here. Checking `signal?.aborted` too
+      // covers the case where the signal aborts without `stop()` ever being
+      // called: without this, the loop would misreport a deliberate
+      // shutdown as a transport failure and spin warn + a full retryDelayMs
+      // forever, since `stopping` would never flip on its own.
+      if (signal?.aborted || stopping) {
+        stopping = true;
+        logger.info("poll aborted for shutdown");
+        return;
+      }
+
+      logger.warn("getUpdates failed, retrying", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await delay(retryDelayMs);
       return;
     }
 

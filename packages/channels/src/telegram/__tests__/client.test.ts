@@ -185,7 +185,7 @@ describe("createTelegramClient — external abort signal (shutdown)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("passes the signal through to fetch, composed with its own per-request timeout", async () => {
+  it("passes a not-yet-aborted signal through to fetch", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: true, result: [] }));
     const shutdownController = new AbortController();
     const client = createTelegramClient({ token: TOKEN, fetchImpl });
@@ -200,6 +200,90 @@ describe("createTelegramClient — external abort signal (shutdown)", () => {
     const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(init.signal).toBeDefined();
     expect(init.signal?.aborted).toBe(false);
+  });
+
+  it("aborts the fetch's own signal when the caller's signal fires mid-request (not a separate, uncombined signal)", async () => {
+    const fetchImpl = abortAwareFetch();
+    const shutdownController = new AbortController();
+    const client = createTelegramClient({
+      token: TOKEN,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const resultPromise = client
+      .getUpdates({
+        timeout: 30,
+        limit: 100,
+        allowedUpdates: ["message"],
+        signal: shutdownController.signal,
+      })
+      .catch((error: unknown) => error);
+
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.signal?.aborted).toBe(false);
+
+    shutdownController.abort();
+    await resultPromise;
+
+    // Proves the caller's abort reaches the exact signal handed to fetch
+    // (not a leaked, uncombined `AbortSignal.any` composite that fetch never
+    // saw fire).
+    expect(init.signal?.aborted).toBe(true);
+  });
+
+  it("still independently fires its own per-request timeout and aborts the fetch when the caller's signal never aborts", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = abortAwareFetch();
+      const shutdownController = new AbortController();
+      const client = createTelegramClient({
+        token: TOKEN,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      const resultPromise = client
+        .getUpdates({
+          timeout: 30,
+          limit: 100,
+          allowedUpdates: ["message"],
+          signal: shutdownController.signal,
+        })
+        .then(
+          () => {
+            throw new Error("expected getUpdates to reject");
+          },
+          (error: unknown) => error,
+        );
+
+      await vi.runAllTimersAsync();
+      const error = await resultPromise;
+
+      expect(error).toBeInstanceOf(Error);
+      expect(shutdownController.signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes the abort listener from the caller's signal once the request settles", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: true, result: [] }));
+    const shutdownController = new AbortController();
+    const removeEventListenerSpy = vi.spyOn(shutdownController.signal, "removeEventListener");
+    const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+    await client.getUpdates({
+      timeout: 30,
+      limit: 100,
+      allowedUpdates: ["message"],
+      signal: shutdownController.signal,
+    });
+
+    expect(removeEventListenerSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    // With the listener gone, firing the signal after settlement has no
+    // further effect on this already-resolved call.
+    expect(() => shutdownController.abort()).not.toThrow();
   });
 });
 

@@ -16,6 +16,7 @@ export type {
   TurnEvent,
 } from "./telemetry";
 export { nextDelay } from "./backoff";
+export { delay } from "./delay";
 export type {
   LlmUsageEntry,
   Message,

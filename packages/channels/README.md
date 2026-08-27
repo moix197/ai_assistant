@@ -77,7 +77,12 @@ messages in and out of Telegram."
   `TelegramPoller` — a `Channel` plus `stop(): Promise<void>`, which flips a
   `stopping` flag read by the loop's condition (so no new `getUpdates` call
   starts) and resolves once the loop has actually exited, in-flight handler
-  included. See `apps/hermes/src/boot.ts`'s shutdown sequence for how this is
+  included. In the normal shutdown path, `boot.ts` aborts the shared
+  `TelegramPollerOptions.signal` before calling `stop()`, which aborts the
+  in-flight `getUpdates` call immediately (see `client.ts`'s abort handling);
+  the loop detects this and exits on that same iteration, logging `"poll
+  aborted for shutdown"` at info rather than the transient-failure retry
+  warning. See `apps/hermes/src/boot.ts`'s shutdown sequence for how this is
   bounded by a timeout.
 - `telegram/allowlist.ts` — `parseAllowlist(csv): Set<number>` and
   `isAllowed(id, set)`, both pure. An empty allowlist rejects everyone

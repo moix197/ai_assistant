@@ -3,6 +3,7 @@ import {
   type Logger,
   type TelemetryEvent,
   type TelemetryRecorder,
+  delay,
   nextDelay,
   systemClock,
 } from "@hermes/core";
@@ -111,31 +112,6 @@ interface OpenAiChatCompletionResponse {
 
 function redact(value: string, apiKey: string): string {
   return value.split(apiKey).join(REDACTED_KEY);
-}
-
-/**
- * Resolves after `ms`, or as soon as `externalSignal` aborts — whichever
- * comes first. Retry backoff can be as long as `MAX_DELAY_MS` (30s, see
- * `@hermes/core`'s `nextDelay`), so a shutdown mid-sleep must not wait that
- * out. Always clears both the timer and the abort listener before resolving,
- * on either path, so nothing leaks per retry attempt.
- */
-function delay(ms: number, externalSignal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (externalSignal?.aborted) {
-      resolve();
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      externalSignal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    externalSignal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**

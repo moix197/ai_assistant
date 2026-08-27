@@ -44,10 +44,11 @@ import { buildTelemetryRecorder } from "./telemetry/build-telemetry-recorder";
 const DRAIN_TIMEOUT_MS = 5_000;
 /**
  * Guards against any shutdown step hanging past the container's stop grace
- * period (10s by default). Set 2s under that ceiling so the forced
- * `process.exit(1)` and its log line still land before Docker sends SIGKILL,
- * while leaving DRAIN_TIMEOUT_MS enough room above it for the post-drain
- * steps (see above).
+ * period (`stop_grace_period: 15s`, set explicitly in `docker-compose.yml`).
+ * Set well under that ceiling (7s of margin) so the forced `process.exit(1)`
+ * and its log line still land before Docker sends SIGKILL, while leaving
+ * DRAIN_TIMEOUT_MS enough room above it for the post-drain steps (see
+ * above).
  */
 const HARD_EXIT_TIMEOUT_MS = 8_000;
 /**
