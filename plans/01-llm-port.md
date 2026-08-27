@@ -931,7 +931,7 @@ which is `hil` regardless.
 
 **Steps:**
 
-- [ ] **Wire both mechanisms into the real paths, and pin each with a test
+- [x] **Wire both mechanisms into the real paths, and pin each with a test
       that fails if the wiring is dropped.** Phase 4 shipped a complete,
       fully-tested budget ceiling that enforced nothing for one commit,
       because the adapter it was built into was never handed the option in
@@ -944,26 +944,26 @@ which is `hil` regardless.
       also that `usageRepo` and `budget` are **required** adapter options as
       of Phase 4 — any new `createOpenAiCompatibleAdapter` call site must
       supply both
-- [ ] Migration `003_llm_dedupe.sql`
-- [ ] `claim`/`complete` in `llm-dedupe-repo.ts`: the `INSERT ... ON CONFLICT
+- [x] Migration `003_llm_dedupe.sql`
+- [x] `claim`/`complete` in `llm-dedupe-repo.ts`: the `INSERT ... ON CONFLICT
       DO NOTHING RETURNING` pattern is what makes the uniqueness a Postgres
       guarantee, not an application race — two concurrent claims for the same
       key can only ever have one winner, enforced by the primary key
       constraint itself, not by application logic checking-then-inserting
-- [ ] Widen `InboundMessage`/poller exactly as scoped by decision: add
+- [x] Widen `InboundMessage`/poller exactly as scoped by decision: add
       `updateId`, nothing else. Echo/`/ping`/`/start` handlers are unaffected
       (they simply ignore the new field) — do not retrofit dedupe onto them,
       out of scope, invariant #4 has applied to them by-inspection since
       Phase 1 of `00-skeleton` and that reasoning still holds (no paid or
       external-write side effect)
-- [ ] Handler ordering, load-bearing: `claim()` → (if claimed) `complete()` →
+- [x] Handler ordering, load-bearing: `claim()` → (if claimed) `complete()` →
       (if over budget, budget check still runs first inside the adapter) →
       reply → `dedupeRepo.complete()`. Getting `complete()` (the dedupe
       write) before the reply is sent would mark a call "done" that the user
       never actually received; getting it after is correct — a crash between
       reply-sent and dedupe-write-recorded leaves the row `pending`, which is
       exactly the documented residual retry case, not a new failure mode
-- [ ] **Accepted risk, named and deliberate — the claim-to-complete crash
+- [x] **Accepted risk, named and deliberate — the claim-to-complete crash
       window:** the exact window is between `dedupeRepo.claim()` returning
       `{status:"claimed"}` and the later `dedupeRepo.complete()` call landing
       (i.e. any crash while a claimed row is still `pending`: mid-provider-call,
@@ -996,16 +996,16 @@ which is `hil` regardless.
       "the provider call was actually issued and may have succeeded" before
       deciding to retry, enabling true exactly-once completion detection
       instead of today's at-most-one-retry-on-crash behavior
-- [ ] `AbortSignal` wiring: one controller for the process lifetime (the
+- [x] `AbortSignal` wiring: one controller for the process lifetime (the
       poller is serial — never more than one in-flight completion call at a
       time — so a single shared controller is sufficient, no per-request
       controller needed). Combine with the adapter's existing per-request
       timeout `AbortController` via composition (e.g. abort whichever fires
       first), not by replacing the timeout mechanism
-- [ ] Confirm `DRAIN_TIMEOUT_MS`/`HARD_EXIT_TIMEOUT_MS` are **not** changed —
+- [x] Confirm `DRAIN_TIMEOUT_MS`/`HARD_EXIT_TIMEOUT_MS` are **not** changed —
       per `Dependencies & Risks`, correctness here comes from dedupe on
       redelivery, not from extending the drain window
-- [ ] Document the residual pending-state risk explicitly in
+- [x] Document the residual pending-state risk explicitly in
       `packages/store/README.md`, matching the project's existing pattern of
       writing down accepted gaps rather than hiding them (see
       `telegram-long-polling-correctness.md`)
@@ -1022,32 +1022,53 @@ which is `hil` regardless.
 
 **Verification:**
 
-- [ ] `pnpm test` green (includes the abort-vs-timeout error-type distinction
+- [x] `pnpm test` green (includes the abort-vs-timeout error-type distinction
       test and the automated `shutdown-abort.test.ts`)
-- [ ] `pnpm test:db` green — including both dedupe proofs above:
+- [x] `pnpm test:db` green — including both dedupe proofs above:
       `complete-dedupe.test.ts` (the exact-duplicate case, deterministic,
       **this is the concrete test the requester called out by name; a passing
       result here, not application-level reasoning, is what closes the
       invariant #4 gap this PRD exists to close**) and
       `complete-dedupe-crash-window.test.ts` (the accepted-risk case: retry
       succeeds, no permanent block)
-- [ ] All of the above run unattended — no live Docker kill, no human
+- [x] All of the above run unattended — no live Docker kill, no human
       watching a log line, is required for this phase's proofs. (The one
       live, real-process `docker compose kill hermes` sanity check is a
       `hil` cross-check performed once in Phase 6's Final Verification, not a
       requirement of this phase.)
 
+**Code-review resolution (2026-08-26):** first pass on `b3f19e8` returned
+**yellow** with two blocking findings, both instances of the Phase-4 trap this
+phase's first Step warns about: (1) `dedupeRepo` and `controller` shipped as
+*optional* parameters, so deleting either wiring line in `boot.ts` left the
+suite green; (2) `updateId` shipped optional on `InboundMessage` instead of the
+required `number` this phase scoped, letting every keyless message collapse onto
+a single `telegram:undefined` dedupe key — a silent cross-chat reply leak.
+Both fixed in `a717798`, which makes each dependency required (deleting either
+`boot.ts` wire is now a `TS2345` typecheck failure, verified empirically by the
+reviewer) and `updateId` a required `number`. Two nits fixed in the same commit:
+the duplicate `LlmDedupeClaimResult` declaration resolved the way this phase's
+File-changes table anticipated — `packages/llm/src/dedupe/dedupe-repo-port.ts`
+deleted, the `@hermes/store` definition kept as the single source, with
+`LlmDedupeRepo` declared next to its consumer in `complete.ts` per the codebase's
+existing port-next-to-consumer pattern; and `--no-file-parallelism` added to
+`apps/hermes`'s `test` script, since store and hermes test files share one
+database and the `llm_usage` row-count assertion races otherwise. Re-review
+verdict: **green**, with one stale-doc nit (`packages/channels/README.md` still
+described `updateId` as optional), fixed by the orchestrator in the same commit
+as these checkbox updates.
+
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: dedupe LLM calls by Telegram update_id, abortable shutdown`
+- [x] Changes committed: `feat: dedupe LLM calls by Telegram update_id, abortable shutdown`
 - [ ] Phase marked complete
 
 ---

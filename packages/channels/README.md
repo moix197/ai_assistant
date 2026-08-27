@@ -13,9 +13,9 @@ implements:
   to bother formatting Markdown).
 - `subscribe(handler)` — registers the single `InboundMessageHandler`
   invoked for every inbound message, already normalized into `InboundMessage
-  { channelUserId, chatId, text, chatType, kind, updateId? }`. Handlers never
+  { channelUserId, chatId, text, chatType, kind, updateId }`. Handlers never
   see raw Telegram (or any other platform's) wire format.
-  `updateId` (optional — Phase 5) carries the platform's own update id
+  `updateId` (required, added in Phase 5) carries the platform's own update id
   (Telegram's `update_id`); it exists specifically so a handler with an
   external, paid side effect can derive a stable dedupe key
   (`apps/hermes/src/handlers/complete.ts` derives
