@@ -96,8 +96,29 @@ function redact(value: string, apiKey: string): string {
   return value.split(apiKey).join(REDACTED_KEY);
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Resolves after `ms`, or as soon as `externalSignal` aborts — whichever
+ * comes first. Retry backoff can be as long as `MAX_DELAY_MS` (30s, see
+ * `@hermes/core`'s `nextDelay`), so a shutdown mid-sleep must not wait that
+ * out. Always clears both the timer and the abort listener before resolving,
+ * on either path, so nothing leaks per retry attempt.
+ */
+function delay(ms: number, externalSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (externalSignal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      externalSignal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -387,6 +408,23 @@ async function requestOnce(
 }
 
 /**
+ * Sleeps for the retry backoff, then re-checks `externalSignal` — an abort
+ * that lands mid-sleep must surface as `LlmAbortedError` immediately rather
+ * than let the loop spend another attempt (which would itself just abort).
+ * Reuses `classifyAbort`, the same classification `callOnce`'s `fetch` path
+ * uses, so a shutdown mid-backoff and a shutdown mid-request are
+ * indistinguishable to the caller.
+ */
+async function sleepUnlessAborted(
+  ms: number,
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<void> {
+  await delay(ms, externalSignal);
+  if (externalSignal?.aborted) throw classifyAbort(externalSignal, timeoutMs);
+}
+
+/**
  * Retries `callOnce` per the bounded policy mirroring
  * `channels/src/telegram/client.ts`'s `callWithRetry`: 429 waits for the
  * shared `nextDelay` (falling back to computed backoff), 5xx and
@@ -394,6 +432,10 @@ async function requestOnce(
  * non-ok status or a malformed body is not retried. Retries resend the
  * identical request body. A shutdown-triggered `LlmAbortedError` is never
  * retried either — retrying would defeat the point of a prompt shutdown.
+ * `externalSignal?.aborted` is checked first, ahead of the error's own type:
+ * shutdown is the more specific, deliberate cause (mirroring `classifyAbort`'s
+ * own precedence) and pre-empts any retry classification a same-tick network
+ * failure would otherwise get, so a shutdown never burns another attempt.
  */
 async function completeWithRetry(
   fetchImpl: typeof fetch,
@@ -410,6 +452,7 @@ async function completeWithRetry(
     try {
       return await callOnce(fetchImpl, url, apiKey, body, timeoutMs, externalSignal);
     } catch (error) {
+      if (externalSignal?.aborted) throw classifyAbort(externalSignal, timeoutMs);
       if (error instanceof LlmAbortedError) throw error;
       if (error instanceof LlmMalformedResponseError) throw error;
 
@@ -417,13 +460,17 @@ async function completeWithRetry(
         if (error.status === 429) {
           rateLimitAttempt++;
           if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
-          await delay(nextDelay(rateLimitAttempt, error.retryAfter));
+          await sleepUnlessAborted(
+            nextDelay(rateLimitAttempt, error.retryAfter),
+            externalSignal,
+            timeoutMs,
+          );
           continue;
         }
         if (error.status >= 500) {
           transientAttempt++;
           if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-          await delay(nextDelay(transientAttempt));
+          await sleepUnlessAborted(nextDelay(transientAttempt), externalSignal, timeoutMs);
           continue;
         }
         throw error;
@@ -432,7 +479,7 @@ async function completeWithRetry(
       // LlmTimeoutError or a redacted network-failure Error: both transient.
       transientAttempt++;
       if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-      await delay(nextDelay(transientAttempt));
+      await sleepUnlessAborted(nextDelay(transientAttempt), externalSignal, timeoutMs);
     }
   }
 }

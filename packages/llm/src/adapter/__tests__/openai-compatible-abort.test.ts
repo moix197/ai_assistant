@@ -101,4 +101,49 @@ describe("createOpenAiCompatibleAdapter — external shutdown signal vs. per-req
       vi.useRealTimers();
     }
   });
+
+  it("aborts the retry backoff sleep promptly on external shutdown, instead of waiting out the full delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const shutdownController = new AbortController();
+      // A single 503 puts the retry loop into its backoff sleep (~500ms base
+      // delay, see `@hermes/core`'s `nextDelay`). If the sleep ignored
+      // `externalSignal`, this test would hang: fake timers never advance on
+      // their own, so only an abort-aware sleep can settle it below.
+      const fetchImpl = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        headers: { get: () => null },
+        json: async () => ({ error: "boom" }),
+        text: async () => JSON.stringify({ error: "boom" }),
+      } as unknown as Response);
+
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, {
+        ...PERMISSIVE_OPTS,
+        fetchImpl,
+        timeoutMs: 30_000,
+        signal: shutdownController.signal,
+      });
+
+      const resultPromise = adapter.complete(baseRequest()).then(
+        () => {
+          throw new Error("expected rejection");
+        },
+        (error) => error,
+      );
+
+      // Flush microtasks so the first attempt's 503 is classified and the
+      // retry loop reaches its backoff `setTimeout` — without advancing fake
+      // time, so the delay's timer has not fired yet.
+      await vi.advanceTimersByTimeAsync(0);
+      shutdownController.abort();
+      const error = await resultPromise;
+
+      expect(error).toBeInstanceOf(LlmAbortedError);
+      expect(error).not.toBeInstanceOf(LlmTimeoutError);
+      expect(fetchImpl.mock.calls.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
