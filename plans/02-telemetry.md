@@ -839,32 +839,32 @@ by inspection alone).
 
 **Steps:**
 
-- [ ] Service container Postgres: set `POSTGRES_DB` directly to something
+- [x] Service container Postgres: set `POSTGRES_DB` directly to something
       ending in `_test` (e.g. `hermes_ci_test`) so `db-env.ts`'s
       `assertNotTheAppDatabase` guard — which refuses a database name not
       ending in `_test` — passes without any extra CI-only carve-out in that
       guard. Do not weaken or special-case the guard for CI; make CI satisfy
       the guard as written, the same one every local `test:db` run already
       has to satisfy
-- [ ] Confirm `TEST_DATABASE_URL` in the workflow does not collide with
+- [x] Confirm `TEST_DATABASE_URL` in the workflow does not collide with
       `DATABASE_URL` — simplest: don't set `DATABASE_URL` in the CI job at
       all, since nothing in `pnpm test`/`pnpm test:db` boots the real app
       (`loadConfig()` is never called by the test suites)
-- [ ] `--frozen-lockfile` on install — a CI run must fail loudly on a
+- [x] `--frozen-lockfile` on install — a CI run must fail loudly on a
       lockfile drift, not silently resolve a different dependency tree than
       what's committed
-- [ ] The live-lane-exclusion test reads its glob from `package.json` at test
+- [x] The live-lane-exclusion test reads its glob from `package.json` at test
       run time (`readFileSync` + `JSON.parse`, no new dependency — a small
       hand-rolled glob-to-regex conversion is enough for the one pattern in
       use, `**/*.live.test.ts`; do not add a glob library for this one
       pattern, consistent with the project's build-our-own-first default)
-- [ ] Run the new test locally against the current, correct
+- [x] Run the new test locally against the current, correct
       `package.json` first to confirm it passes, then deliberately break the
       exclude flag locally (delete it) and confirm the test **fails** —
       this is the "provable, not assumed" bar from the requester's own
       framing; do this by hand once during implementation, it does not need
       to be a permanent meta-test
-- [ ] `.ai/decisions/ci-lane-policy.md`: state the decision plainly, including
+- [x] `.ai/decisions/ci-lane-policy.md`: state the decision plainly, including
       the specific observed flakiness (`7 of 10` Gemini trials hitting
       `HTTP 429` in `01-llm-port` Phase 6) as the concrete evidence, not a
       hypothetical
@@ -882,13 +882,13 @@ glob) already has its own test above, in the `test` lane.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green, including the new exclusion test
+- [x] `pnpm -r test` green, including the new exclusion test
 - [ ] Push the branch / open a PR against `main` → the GitHub Actions run
       shows all four steps (typecheck, lint, test, test:db) green, visible in
       the PR's checks tab
 - [ ] Confirm in the Actions log that `test:live` does not appear anywhere in
       the run
-- [ ] Manually break the exclude glob in `packages/llm/package.json` (per the
+- [x] Manually break the exclude glob in `packages/llm/package.json` (per the
       Steps bullet above), confirm the new test fails locally, then revert —
       do not leave the broken state committed
 
@@ -897,13 +897,48 @@ glob) already has its own test above, in the `test` lane.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `ci: add GitHub Actions workflow, prove the live test lane is excluded`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `ci: add GitHub Actions workflow, prove the live test lane is excluded`
+- [x] Phase marked complete
+
+**Deliberate deviation:** the workflow runs `pnpm build` before the test lanes.
+Cross-package value imports resolve through each package's `main` → `dist`, so a
+fresh CI checkout cannot collect the `apps/hermes` suite without a build first —
+proved empirically by moving `packages/telemetry/dist` aside and watching the
+suite fail to collect. `pnpm build` re-runs typecheck internally, making the
+separate typecheck step redundant but cheap; it is kept for a clearer failure
+signal. Recorded in `.ai/decisions/ci-lane-policy.md`.
+
+**Post-review fixes** (commit `8f04e93`, on top of `21dfd68`): the blocking one
+is that `TEST_DATABASE_URL` was set at **job** level, so it also reached the
+`pnpm test` step — and because the DB suites are `describe.skipIf(!url)` inside
+files both lanes run, `pnpm -r test` would have run the store, telemetry and
+apps DB suites concurrently against one database, with three concurrent
+`runMigrations`. That is exactly the race `test:db`'s `--workspace-concurrency=1`
+exists to prevent, so CI would have been flaky-red. The variable is now scoped to
+a step-level `env:` on the `test:db` step alone. The exclusion guard was also
+widened: it keyed on the `.live.test.ts` filename suffix while the paid lane is
+in fact a *directory* (`--dir src/__tests__/live`), so a plain `live/foo.test.ts`
+would have run in both lanes; it now walks the whole workspace rather than
+`packages/llm/src`, resolves each live file against its own package's
+`--exclude`, and parses `--dir` to assert everything under it is excluded. Teeth
+re-proved by four mutations (exclude deleted; exclude narrowed; a plain
+`.test.ts` added under the live directory; a `*.live.test.ts` added in a
+different package) — each run against the guard file alone, so no paid test ever
+executed. `.ai/decisions/ci-lane-policy.md` now records that the *primary* money
+defense is that CI sets no `LLM_*` secrets at all (live suites skip regardless),
+with the glob and the guard as defense in depth, and `.ai/index.md` gained a
+CI-lane row.
+
+**Deferred to Final Verification (Phase 6):** the two bullets above that need a
+real GitHub Actions run — push the branch / open a PR and watch the run go
+green, and confirm `test:live` appears nowhere in the Actions log. The related
+human follow-up (enabling branch protection to require the new `ci` check) is
+already tracked in Phase 6.
 
 ---
 
