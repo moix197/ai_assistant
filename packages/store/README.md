@@ -202,8 +202,10 @@ application-side scan of a blob column.
   see `sumCostSince` above and the decision doc.
 - `getTopToolsSince(pool, sinceUtc, limit)` → `TopToolCount[]` — groups
   `name = 'tool.call'` rows by `tool_name`, most-called first. Returns `[]`
-  (not an error, not `null`) today, since no producer exists until
-  `packages/agent` (2c); it needs no change here when one lands.
+  (not an error, not `null`) today: `packages/agent` has landed and its
+  `runTurn` produces the `turn` rows, but `tool.call` gets no producer until
+  that package's tool loop (03-agent-core Phase 2); it needs no change here
+  when one lands.
 
 `src/migrations/005_telemetry_event_total_cost.sql` adds `total_cost_usd
 numeric(12,6)` (03-agent-core Phase 1, settled decision 1). A `turn` row
