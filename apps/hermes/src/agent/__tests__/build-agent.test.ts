@@ -30,7 +30,13 @@ describe("buildAgent — wiring", () => {
     const llmProvider: LlmProvider = { complete };
     const recorder = createMockRecorder();
 
-    const agent = buildAgent(pool, llmProvider, "some-model", recorder, new AbortController().signal);
+    const agent = buildAgent(
+      pool,
+      llmProvider,
+      "some-model",
+      recorder,
+      new AbortController().signal,
+    );
     const reply = await agent.handleMessage("telegram", "555", "hello");
 
     expect(reply).toBe("hi there");

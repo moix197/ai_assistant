@@ -1,5 +1,5 @@
 import type { ThreadRepo } from "@hermes/agent";
-import { appendMessages, type Pool, getOrCreateThread } from "@hermes/store";
+import { type Pool, appendMessages, getOrCreateThread } from "@hermes/store";
 
 /**
  * Wires `@hermes/agent`'s injected `ThreadRepo` port to `@hermes/store`'s
@@ -9,7 +9,8 @@ import { appendMessages, type Pool, getOrCreateThread } from "@hermes/store";
  */
 export function buildThreadRepo(pool: Pool): ThreadRepo {
   return {
-    getOrCreateThread: (channel: string, chatId: string) => getOrCreateThread(pool, channel, chatId),
+    getOrCreateThread: (channel: string, chatId: string) =>
+      getOrCreateThread(pool, channel, chatId),
     appendMessages: (threadId: string, messages) => appendMessages(pool, threadId, messages),
   };
 }

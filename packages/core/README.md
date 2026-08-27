@@ -17,12 +17,14 @@ Shared types with no dependency on any other Hermes package.
   owns the port and the event shape, per ROADMAP §3.
 - `TelemetryEvent` — a discriminated union on `name`: `LlmCallEvent`
   (`"llm.call"`), `ToolCallEvent` (`"tool.call"`), `TurnEvent` (`"turn"`).
-  `threadId`/`turnId` are nullable on every variant because they don't exist
-  as real ids until `packages/agent` (2c) assigns them — `packages/llm`'s
-  adapter, the only producer wired up so far, always passes `null` for both.
-  `ToolCallEvent`/`TurnEvent` have no producer yet; they exist so 2c has a
-  typed contract to emit into. See
-  `.ai/decisions/telemetry-event-schema.md`.
+  `threadId`/`turnId` are nullable on every variant because they only become
+  real ids once `packages/agent` assigns them — a call made outside a turn
+  still carries `null` for both. `packages/agent`'s `runTurn` is the producer
+  of `turn` events, and stamps the same ids onto the `llm.call` it makes;
+  `ToolCallEvent` still has no producer, existing so tools have a typed
+  contract to emit into. `TurnEvent.outcome` is the `TurnOutcome` union —
+  `"completed" | "max_iterations" | "aborted" | "error"` — so an outcome
+  string can't drift. See `.ai/decisions/telemetry-event-schema.md`.
 - `nextDelay()` / `delay()` — the shared exponential-backoff step and its
   sleep. Both the Telegram client and the LLM adapter retry off these rather
   than each rolling their own curve.

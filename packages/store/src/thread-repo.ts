@@ -27,7 +27,11 @@ function toThread(row: ThreadRow): Thread {
  * `(channel, chat_id)` is what makes "one thread per chat" a Postgres
  * guarantee, not an application check-then-insert race.
  */
-export async function getOrCreateThread(pool: Pool, channel: string, chatId: string): Promise<Thread> {
+export async function getOrCreateThread(
+  pool: Pool,
+  channel: string,
+  chatId: string,
+): Promise<Thread> {
   const insertResult = await pool.query<ThreadRow>(
     `INSERT INTO threads (channel, chat_id) VALUES ($1, $2)
      ON CONFLICT (channel, chat_id) DO NOTHING RETURNING *`,
@@ -42,7 +46,9 @@ export async function getOrCreateThread(pool: Pool, channel: string, chatId: str
   );
   const row = selectResult.rows[0];
   if (!row) {
-    throw new Error(`getOrCreateThread: no row found for (${channel}, ${chatId}) after a failed insert`);
+    throw new Error(
+      `getOrCreateThread: no row found for (${channel}, ${chatId}) after a failed insert`,
+    );
   }
   return toThread(row);
 }

@@ -1,6 +1,12 @@
 import type { Message, TelemetryEvent, TelemetryRecorder } from "@hermes/core";
-import { LlmAbortedError, type CompletionRequest, type CompletionResult, type LlmProvider } from "@hermes/llm";
+import {
+  type CompletionRequest,
+  type CompletionResult,
+  LlmAbortedError,
+  type LlmProvider,
+} from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
+import { HISTORY_BUDGET_CHARS } from "../context-trim";
 import { runTurn } from "../loop";
 import type { Thread, ThreadRepo } from "../thread-repo-port";
 import type { AgentDefinition } from "../types";
@@ -45,7 +51,9 @@ function completionResult(overrides: Partial<CompletionResult> = {}): Completion
 }
 
 function recordedTurnEvent(recorder: { record: ReturnType<typeof vi.fn> }): TelemetryEvent {
-  const call = recorder.record.mock.calls.find(([event]) => (event as TelemetryEvent).name === "turn");
+  const call = recorder.record.mock.calls.find(
+    ([event]) => (event as TelemetryEvent).name === "turn",
+  );
   if (!call) throw new Error("no turn event was recorded");
   return call[0] as TelemetryEvent;
 }
@@ -58,7 +66,12 @@ describe("runTurn — happy path", () => {
 
     const text = await runTurn(
       definition(),
-      { llmProvider, threadRepo, telemetryRecorder: recorder, signal: new AbortController().signal },
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: new AbortController().signal,
+      },
       "telegram",
       "555",
       "hello",
@@ -100,6 +113,35 @@ describe("runTurn — happy path", () => {
     expect(typeof request.turnId).toBe("string");
     expect(request.turnId).not.toBe("");
     expect(request.tools).toBeUndefined();
+  });
+
+  it("sends the trimmed stored history followed by the new user message, and nothing else", async () => {
+    // One message over the whole budget on its own, so trimming must drop it.
+    const overBudget: Message = {
+      role: "user",
+      content: "x".repeat(HISTORY_BUDGET_CHARS * 4 + 4),
+    };
+    const kept: Message[] = [
+      { role: "assistant", content: "an earlier reply" },
+      { role: "user", content: "the message before this one" },
+    ];
+    const complete = vi.fn().mockResolvedValue(completionResult());
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo(fakeThread({ messages: [overBudget, ...kept] }));
+
+    await runTurn(
+      definition(),
+      { llmProvider, threadRepo, signal: new AbortController().signal },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    const request = complete.mock.calls[0]?.[0] as CompletionRequest;
+    expect(request.messages).toEqual([
+      ...kept,
+      { role: "user", content: "hello" },
+    ] satisfies Message[]);
   });
 });
 
@@ -145,7 +187,12 @@ describe("runTurn — provider failure", () => {
     await expect(
       runTurn(
         definition(),
-        { llmProvider, threadRepo, telemetryRecorder: recorder, signal: new AbortController().signal },
+        {
+          llmProvider,
+          threadRepo,
+          telemetryRecorder: recorder,
+          signal: new AbortController().signal,
+        },
         "telegram",
         "555",
         "hello",
@@ -162,9 +209,11 @@ describe("runTurn — provider failure", () => {
 describe("runTurn — Phase 1 tool-call guard", () => {
   it("throws when the provider returns a non-empty toolCalls, proving the temporary guard is reachable", async () => {
     const llmProvider: LlmProvider = {
-      complete: vi.fn().mockResolvedValue(
-        completionResult({ toolCalls: [{ id: "call_1", name: "noop", arguments: {} }] }),
-      ),
+      complete: vi
+        .fn()
+        .mockResolvedValue(
+          completionResult({ toolCalls: [{ id: "call_1", name: "noop", arguments: {} }] }),
+        ),
     };
     const threadRepo = fakeThreadRepo();
     const recorder = fakeRecorder();
@@ -172,7 +221,12 @@ describe("runTurn — Phase 1 tool-call guard", () => {
     await expect(
       runTurn(
         definition(),
-        { llmProvider, threadRepo, telemetryRecorder: recorder, signal: new AbortController().signal },
+        {
+          llmProvider,
+          threadRepo,
+          telemetryRecorder: recorder,
+          signal: new AbortController().signal,
+        },
         "telegram",
         "555",
         "hello",

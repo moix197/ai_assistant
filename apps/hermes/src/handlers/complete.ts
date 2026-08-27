@@ -2,7 +2,7 @@ import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError } from "@hermes/llm";
 import type { LlmDedupeClaimResult } from "@hermes/store";
-import { CHANNEL_TELEGRAM, type Agent } from "../agent/build-agent";
+import { type Agent, CHANNEL_TELEGRAM } from "../agent/build-agent";
 
 /**
  * Dedupe repo port, declared here rather than in `@hermes/llm`: dedupe is an
@@ -88,7 +88,11 @@ async function replyWithCompletion(
   message: InboundMessage,
   dedupeKey: string,
 ): Promise<void> {
-  const resultText = await options.agent.handleMessage(CHANNEL_TELEGRAM, message.chatId, message.text);
+  const resultText = await options.agent.handleMessage(
+    CHANNEL_TELEGRAM,
+    message.chatId,
+    message.text,
+  );
   await options.channel.send(message.chatId, resultText);
 
   await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, resultText);

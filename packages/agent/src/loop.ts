@@ -1,6 +1,6 @@
 import type { Message, TelemetryRecorder, TurnEvent } from "@hermes/core";
 import { newId } from "@hermes/core";
-import { LlmAbortedError, MAX_TOKENS_PER_TURN, type LlmProvider } from "@hermes/llm";
+import { LlmAbortedError, type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
 import { HISTORY_BUDGET_CHARS, trimHistory } from "./context-trim";
 import { assemblePrefix } from "./prompt";
 import type { Thread, ThreadRepo } from "./thread-repo-port";
