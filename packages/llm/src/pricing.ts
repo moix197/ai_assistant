@@ -13,7 +13,8 @@
  * Every key here MUST match a model id actually configured in
  * `LLM_PRIMARY_MODEL` / `LLM_FALLBACK_MODEL` — an id that silently drifts
  * out of sync with this table falls into `resolveCostUsd`'s unknown-model
- * path and reports $0 for real, billed calls (see its own doc comment).
+ * path and throws `UnpricedModelError`, discarding that call's already-paid-for
+ * reply rather than reporting $0 for it (see its own doc comment).
  */
 
 import type { Usage } from "@hermes/core";
@@ -113,7 +114,7 @@ export function resolveCostUsd(model: string, usage: Usage): number {
  */
 export function assertModelsPriced(models: readonly string[]): void {
   for (const model of models) {
-    if (!(model in MODEL_PRICING)) {
+    if (!MODEL_PRICING[model]) {
       throw new UnpricedModelError(model);
     }
   }

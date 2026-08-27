@@ -1,6 +1,11 @@
 import type { TelemetryEvent } from "@hermes/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BudgetExceededError, LlmHttpError, LlmMalformedResponseError } from "../../errors";
+import {
+  BudgetExceededError,
+  LlmHttpError,
+  LlmMalformedResponseError,
+  UnpricedModelError,
+} from "../../errors";
 import type { ProviderProfile } from "../../port";
 import type { LlmUsageRepo } from "../../usage/usage-repo-port";
 import {
@@ -152,6 +157,43 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
       name: "llm.call",
       inputTokens: 0,
       outputTokens: 0,
+      cacheHitTokens: 0,
+      costUsd: 0,
+    });
+    expect((event as { error?: string }).error).toEqual(expect.any(String));
+  });
+
+  it("emits exactly one llm.call event with error set and costUsd 0, using the completion's own token counts, when usage accounting throws UnpricedModelError", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [{ message: { content: "hi there" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }),
+    );
+    const recorder = createMockRecorder();
+    const adapter = createOpenAiCompatibleAdapter(
+      { ...PROFILE, model: "some-retired-model" },
+      {
+        fetchImpl,
+        usageRepo: createMockUsageRepo(),
+        budget: PERMISSIVE_BUDGET,
+        recorder,
+      },
+    );
+
+    await expect(
+      adapter.complete({ ...baseRequest(), model: "some-retired-model" }),
+    ).rejects.toBeInstanceOf(UnpricedModelError);
+
+    expect(recorder.record).toHaveBeenCalledTimes(1);
+    const event = recordedEvent(recorder);
+    expect(event).toMatchObject({
+      name: "llm.call",
+      threadId: null,
+      turnId: null,
+      model: "some-retired-model",
+      inputTokens: 100,
+      outputTokens: 20,
       cacheHitTokens: 0,
       costUsd: 0,
     });

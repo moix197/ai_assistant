@@ -67,10 +67,13 @@ non-obvious about it follows from that being true:
 - The check reads only what `recordUsage` wrote, so anything that suppresses a
   write loosens the ceiling by the same amount: a dropped insert logs and
   continues, and `cost_usd numeric(12,6)` floors sub-$5e-7 calls to zero. An
-  unpriced model is **no longer** this kind of blind spot (`02-telemetry`
+  unpriced model still suppresses that write mid-call (`02-telemetry`
   Phase 4): it now either fails boot outright (`assertModelsPriced`) or
-  throws mid-call (`UnpricedModelError`, discarding that one call's answer,
-  never silently recording `$0` for it). The ceiling's remaining blind spot
+  throws `UnpricedModelError` after the call, discarding that one call's
+  answer and never recording `$0` for it — the write is still suppressed, but
+  loudly, with an `llm.call` telemetry event and a discarded reply marking
+  exactly when it happened, rather than a silent unrecorded call. The
+  ceiling's remaining blind spot
   is narrower: a **mispriced-but-recognized** model — a stale number in
   `MODEL_PRICING` for an id that still resolves — still under- or
   over-reports, which boot validation cannot catch. See

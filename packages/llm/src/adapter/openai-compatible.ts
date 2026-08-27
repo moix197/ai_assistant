@@ -573,6 +573,28 @@ async function recordCompletionUsage(
 }
 
 /**
+ * Token counts for the on-error `llm.call` event. Zeroed when no response was
+ * ever produced (`completeWithRetry` itself failed) — there's nothing billed
+ * to report. Derived from the completion's own usage block when the failure
+ * happened later, while recording it (`recordCompletionUsage`, e.g. an
+ * `UnpricedModelError`): those tokens were genuinely billed even though the
+ * cost could not be resolved, so they're worth surfacing even as `costUsd: 0`.
+ */
+function errorEventTokens(result: CompletionResult | undefined): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+} {
+  if (!result) return { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 };
+  const { missTokens, reasoningTokens } = deriveBilledTokens(result.usage);
+  return {
+    inputTokens: missTokens,
+    outputTokens: result.usage.completionTokens + reasoningTokens,
+    cacheHitTokens: result.usage.cacheHitTokens,
+  };
+}
+
+/**
  * Calls `recorder.record()` and swallows anything it throws — `recorder` is
  * a public adapter option, so a third-party implementation throwing must
  * never replace the provider error at the failure call site or fail an
@@ -617,8 +639,7 @@ export function createOpenAiCompatibleAdapter(
       // yet) to when `completeWithRetry` settles — the DB write below is
       // deliberately excluded, see `packages/llm/README.md`.
       const startedAt = Date.now();
-      let result: CompletionResult;
-      let durationMs: number;
+      let result: CompletionResult | undefined;
       try {
         result = await completeWithRetry(
           fetchImpl,
@@ -628,37 +649,34 @@ export function createOpenAiCompatibleAdapter(
           timeoutMs,
           opts.signal,
         );
-        durationMs = Date.now() - startedAt;
+        const durationMs = Date.now() - startedAt;
+        const entry = await recordCompletionUsage(usageRepo, logger, profile, request, result);
+        safeRecord(opts.recorder, logger, {
+          name: "llm.call",
+          threadId: null,
+          turnId: null,
+          model: entry.model,
+          inputTokens: entry.inputTokens,
+          outputTokens: entry.outputTokens,
+          cacheHitTokens: entry.cacheHitTokens,
+          durationMs,
+          costUsd: entry.costUsd,
+        });
+        return result;
       } catch (error) {
-        durationMs = Date.now() - startedAt;
+        const durationMs = Date.now() - startedAt;
         safeRecord(opts.recorder, logger, {
           name: "llm.call",
           threadId: null,
           turnId: null,
           model: request.model,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheHitTokens: 0,
+          ...errorEventTokens(result),
           durationMs,
           costUsd: 0,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
-
-      const entry = await recordCompletionUsage(usageRepo, logger, profile, request, result);
-      safeRecord(opts.recorder, logger, {
-        name: "llm.call",
-        threadId: null,
-        turnId: null,
-        model: entry.model,
-        inputTokens: entry.inputTokens,
-        outputTokens: entry.outputTokens,
-        cacheHitTokens: entry.cacheHitTokens,
-        durationMs,
-        costUsd: entry.costUsd,
-      });
-      return result;
     },
   };
 }
