@@ -167,14 +167,20 @@ Both orders are load-bearing; each step is a precondition for the next.
   cold boots race to a duplicate-table error instead of the readable
   single-instance message. Accepted, not fixed.
 
-**Shutdown** (SIGTERM/SIGINT, registered once): `channel.stop()` (bounded 5s) →
-`lock.release()` → `pool.end()` → `process.exit(0)`, with an 8s hard-exit timer.
+**Shutdown** (SIGTERM/SIGINT, registered once): `controller.abort()` →
+`channel.stop()` (bounded 5s) → `lock.release()` → `pool.end()` →
+`process.exit(0)`, with an 8s hard-exit timer.
 
 - Release before the drain finishes and a restart-racing instance can acquire
   the lock while this one is still querying. Close the pool before the drain
   finishes and an in-flight query crashes. Hence this exact order.
-- 5s / 8s are sized against Docker's **10s default stop grace period** — revisit
-  both if that grace period ever changes.
+- `controller.abort()`'s signal is threaded into the poller's in-flight
+  `getUpdates` call (`packages/channels/src/telegram/{client,poller}.ts`), so
+  `channel.stop()`'s drain resolves as soon as abort fires on an idle bot
+  instead of always burning the full 5s bound.
+- 5s / 8s are sized against `docker-compose.yml`'s explicit
+  `stop_grace_period: 15s` for the `hermes` service — revisit all three
+  together if any one of them changes.
 - The hard-exit timer is deliberately *not* cleared in a `finally`: a rejected
   shutdown (`release()`/`pool.end()` throwing because the DB is already down) is
   the exact case the guard exists for, so it must survive the failure path.

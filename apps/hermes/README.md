@@ -73,9 +73,13 @@ in the entry point itself.
 order:
 
 1. `channel.stop()` — flips the poller's `stopping` flag so no new
-   `getUpdates` call starts, then awaits the in-flight handler. Bounded to
-   ~5s (`DRAIN_TIMEOUT_MS`) so a stuck drain can't block the rest of
-   shutdown indefinitely.
+   `getUpdates` call starts, then awaits the in-flight handler. The
+   boot-lifetime abort signal is threaded into the in-flight `getUpdates`
+   call (see `packages/channels/src/telegram/{client,poller}.ts`), so on an
+   idle bot this resolves promptly once the signal aborts instead of running
+   out the full window. Bounded to ~5s (`DRAIN_TIMEOUT_MS`) regardless, so a
+   genuinely stuck drain still can't block the rest of shutdown
+   indefinitely.
 2. `telemetryRecorder.stop()` — flushes any buffered `llm.call` events.
    Bounded independently to ~1s (`TELEMETRY_FLUSH_TIMEOUT_MS`) so a hung
    flush degrades to "lose the unflushed buffer" instead of stalling the
@@ -90,10 +94,13 @@ order:
    flush before the async stdout write is truncated.
 
 A hard-exit fallback timer (`HARD_EXIT_TIMEOUT_MS`, ~8s) forces
-`process.exit(1)` if any step hangs past it — comfortably under the
-container's default 10s stop grace period, so a stuck shutdown gets killed
-before Docker sends `SIGKILL`. The sequence is exported as `shutdown()` from
-`boot.ts` for unit testing (see `src/__tests__/shutdown-order.test.ts`).
+`process.exit(1)` if any step hangs past it — comfortably under
+`docker-compose.yml`'s explicit `stop_grace_period: 15s` for this service,
+so a stuck shutdown gets killed by the app's own fallback before Docker
+sends `SIGKILL`. (`stop_grace_period` must stay above `HARD_EXIT_TIMEOUT_MS`,
+which must stay above `DRAIN_TIMEOUT_MS` — don't lower one without the
+others.) The sequence is exported as `shutdown()` from `boot.ts` for unit
+testing (see `src/__tests__/shutdown-order.test.ts`).
 
 The poller's `onFatalError` callback (a persistent 409 conflict — another
 instance already holds the `getUpdates` stream) is a separate, unbounded exit

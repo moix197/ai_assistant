@@ -59,6 +59,13 @@ export interface GetUpdatesParams {
   timeout: number;
   limit: number;
   allowedUpdates: readonly string[];
+  /**
+   * The boot-lifetime shutdown signal (see `apps/hermes/src/boot.ts`),
+   * composed with — not a replacement for — this client's own per-request
+   * timeout below, so an idle long-poll aborts promptly on shutdown instead
+   * of running out its full timeout.
+   */
+  signal?: AbortSignal;
 }
 
 export interface TelegramClient {
@@ -135,6 +142,11 @@ function delay(ms: number): Promise<void> {
  * `params.timeout` seconds waiting for a message. The client-side abort
  * timeout must exceed that, or this client aborts (and the caller retries)
  * while Telegram is still legitimately waiting.
+ *
+ * `externalSignal`, when supplied, is composed with this function's own
+ * per-request timeout signal (mirrors `packages/llm`'s
+ * `openai-compatible.ts#composeSignal`) so either can abort the underlying
+ * `fetch` — an aborted shutdown signal doesn't wait out the timeout.
  */
 async function callTelegramMethod<T>(
   fetchImpl: typeof fetch,
@@ -142,11 +154,15 @@ async function callTelegramMethod<T>(
   method: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   const url = buildUrl(token, method);
   const redactedUrl = redact(url, token);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([timeoutController.signal, externalSignal])
+    : timeoutController.signal;
 
   try {
     let response: Response;
@@ -155,7 +171,7 @@ async function callTelegramMethod<T>(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: controller.signal,
+        signal,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -203,6 +219,11 @@ async function callTelegramMethod<T>(
  * status (e.g. 400/401) is not retryable and rethrows immediately. Retrying
  * the exact same `body` means a retried `getUpdates` call reuses the same
  * offset automatically — it was never mutated here.
+ *
+ * `externalSignal?.aborted` is checked first, ahead of any error-type
+ * classification (mirrors `packages/llm`'s `completeWithRetry`): a shutdown
+ * pre-empts every retry policy below, since retrying would defeat the point
+ * of a prompt shutdown.
  */
 async function callWithRetry<T>(
   fetchImpl: typeof fetch,
@@ -210,6 +231,7 @@ async function callWithRetry<T>(
   method: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   let rateLimitAttempt = 0;
   let conflictAttempt = 0;
@@ -217,8 +239,9 @@ async function callWithRetry<T>(
 
   while (true) {
     try {
-      return await callTelegramMethod<T>(fetchImpl, token, method, body, timeoutMs);
+      return await callTelegramMethod<T>(fetchImpl, token, method, body, timeoutMs, externalSignal);
     } catch (error) {
+      if (externalSignal?.aborted) throw error;
       if (error instanceof TelegramApiError) {
         if (error.status === 429) {
           rateLimitAttempt++;
@@ -276,6 +299,7 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
           allowed_updates: params.allowedUpdates,
         },
         timeoutMs,
+        params.signal,
       );
     },
 

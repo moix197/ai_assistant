@@ -112,6 +112,97 @@ describe("createTelegramClient — 409 conflict retry policy", () => {
   });
 });
 
+describe("createTelegramClient — external abort signal (shutdown)", () => {
+  /** Mimics real `fetch`: rejects immediately if the signal is already aborted, otherwise rejects on the signal's `abort` event. Mirrors packages/llm's openai-compatible-abort.test.ts. */
+  function abortAwareFetch(): ReturnType<typeof vi.fn> {
+    return vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      if (init.signal?.aborted) {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        return Promise.reject(error);
+      }
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+  }
+
+  it("rejects promptly on a pre-aborted signal instead of exhausting the transient-retry policy", async () => {
+    const fetchImpl = abortAwareFetch();
+    const shutdownController = new AbortController();
+    shutdownController.abort();
+    const client = createTelegramClient({
+      token: TOKEN,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.getUpdates({
+        timeout: 30,
+        limit: 100,
+        allowedUpdates: ["message"],
+        signal: shutdownController.signal,
+      }),
+    ).rejects.toThrow();
+
+    // A single attempt, not the up-to-6 attempts MAX_TRANSIENT_RETRIES would
+    // otherwise allow — proves the abort short-circuits the retry loop
+    // instead of being treated as an ordinary transient failure.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an in-flight long-poll as soon as the signal fires mid-request", async () => {
+    const fetchImpl = abortAwareFetch();
+    const shutdownController = new AbortController();
+    const client = createTelegramClient({
+      token: TOKEN,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const resultPromise = client
+      .getUpdates({
+        timeout: 30,
+        limit: 100,
+        allowedUpdates: ["message"],
+        signal: shutdownController.signal,
+      })
+      .then(
+        () => {
+          throw new Error("expected getUpdates to reject");
+        },
+        (error: unknown) => error,
+      );
+
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    shutdownController.abort();
+    const error = await resultPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the signal through to fetch, composed with its own per-request timeout", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: true, result: [] }));
+    const shutdownController = new AbortController();
+    const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+    await client.getUpdates({
+      timeout: 30,
+      limit: 100,
+      allowedUpdates: ["message"],
+      signal: shutdownController.signal,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeDefined();
+    expect(init.signal?.aborted).toBe(false);
+  });
+});
+
 describe("createTelegramClient — token redaction", () => {
   it("never surfaces the raw token in a thrown error on a network failure", async () => {
     // Network/timeout errors are retried with backoff before rethrowing

@@ -137,6 +137,53 @@ describe("createTelegramPoller — handler failure", () => {
   });
 });
 
+describe("createTelegramPoller — abort signal wiring (idle-bot shutdown regression)", () => {
+  it("propagates the signal into getUpdates and resolves stop() promptly once it aborts, without waiting out retryDelayMs", async () => {
+    const controller = new AbortController();
+    // Mirrors the real TelegramClient: the in-flight long-poll only settles
+    // once the signal it was given aborts, exactly like a real fetch(...,
+    // { signal }) would.
+    const getUpdates = vi.fn().mockImplementation(
+      (params: { signal?: AbortSignal }) =>
+        new Promise<TelegramUpdate[]>((_resolve, reject) => {
+          params.signal?.addEventListener(
+            "abort",
+            () => {
+              const error = new Error("aborted");
+              error.name = "AbortError";
+              reject(error);
+            },
+            { once: true },
+          );
+        }),
+    );
+    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const logger = createMockLogger();
+    const handler = vi.fn();
+
+    const poller = createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      // A large retryDelayMs proves stop() does NOT wait this out — it only
+      // resolves promptly if the abort skips the delay entirely.
+      retryDelayMs: 10_000,
+      signal: controller.signal,
+    });
+    poller.subscribe(handler);
+
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(1));
+    expect(getUpdates).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
+
+    const startedAt = Date.now();
+    controller.abort();
+    await poller.stop();
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(1_000);
+  });
+});
+
 describe("createTelegramPoller — fatal 409 conflict", () => {
   it("stops polling and reports the fatal error instead of retrying forever", async () => {
     const conflictError = new TelegramApiError("conflict, gave up after retries", {

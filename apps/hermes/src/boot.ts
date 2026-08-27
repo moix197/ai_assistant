@@ -307,8 +307,19 @@ function serveHealth(pool: Pool, port: number, logger: Logger): void {
   });
 }
 
-/** The poller bound to its Postgres-backed offset store and the fatal-error exit path. */
-function createTelegramChannel(client: TelegramClient, pool: Pool, logger: Logger): TelegramPoller {
+/**
+ * The poller bound to its Postgres-backed offset store and the fatal-error
+ * exit path. `signal` is the boot-lifetime shutdown signal, threaded into
+ * every `getUpdates` call so shutdown's `channel.stop()` drain resolves as
+ * soon as `controller.abort()` fires instead of running out `DRAIN_TIMEOUT_MS`
+ * on an idle bot (see `packages/channels/src/telegram/{client,poller}.ts`).
+ */
+function createTelegramChannel(
+  client: TelegramClient,
+  pool: Pool,
+  logger: Logger,
+  signal: AbortSignal,
+): TelegramPoller {
   return createTelegramPoller({
     client,
     logger,
@@ -316,6 +327,7 @@ function createTelegramChannel(client: TelegramClient, pool: Pool, logger: Logge
       getOffset: () => getOffset(pool),
       setOffset: (updateId: number) => setOffset(pool, updateId),
     },
+    signal,
     // A fatal poller error (e.g. a persistent 409 conflict) must surface
     // loudly and exit non-zero, not disappear into a silently-looping
     // retry. Fire-and-forget: `onFatalError` is a sync callback, and
@@ -423,14 +435,21 @@ export async function boot(): Promise<void> {
   }
 
   serveHealth(pool, config.PORT, logger);
-  const telegramChannel = createTelegramChannel(telegramClient, pool, logger);
-  const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
   // Boot-lifetime, not per-request: the poller is serial (never more than
   // one in-flight completion call), so one shared controller is sufficient.
   // Aborted as the first step of shutdown() (see above), before the drain
-  // wait on channel.stop().
+  // wait on channel.stop() — created before the channel below so its signal
+  // can be threaded into the poller's getUpdates calls from the start.
   const shutdownController = new AbortController();
+
+  const telegramChannel = createTelegramChannel(
+    telegramClient,
+    pool,
+    logger,
+    shutdownController.signal,
+  );
+  const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
   subscribeGatedDispatch({
     channel: telegramChannel,

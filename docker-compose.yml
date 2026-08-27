@@ -20,6 +20,14 @@ services:
   hermes:
     build: .
     restart: unless-stopped
+    # Must stay comfortably above apps/hermes/src/boot.ts's
+    # HARD_EXIT_TIMEOUT_MS (8s, which itself sits above DRAIN_TIMEOUT_MS's
+    # 5s) — Docker sends SIGTERM, waits this long, then SIGKILLs. Docker's
+    # own default grace period here is far shorter than that budget, so
+    # without this the container gets killed mid-shutdown before the app's
+    # own hard-exit fallback ever gets a chance to run. Never lower one of
+    # these three without raising the others to match.
+    stop_grace_period: 15s
     depends_on:
       # `depends_on: condition: service_healthy` only gates container *start*
       # order — it does not guarantee Postgres accepts connections the

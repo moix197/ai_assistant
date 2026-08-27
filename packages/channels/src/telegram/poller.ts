@@ -93,6 +93,14 @@ export interface TelegramPollerOptions {
    * itself and hands the error to the caller (boot.ts) instead.
    */
   onFatalError?: (error: Error) => void;
+  /**
+   * The boot-lifetime shutdown signal (see `apps/hermes/src/boot.ts`),
+   * threaded into every `getUpdates` call so an in-flight long-poll aborts
+   * promptly when shutdown fires, instead of `stop()`'s drain wait always
+   * running out the caller's backstop timeout. Optional: tests exercise the
+   * poller without wiring one.
+   */
+  signal?: AbortSignal;
 }
 
 /** A Telegram `Channel` plus graceful-shutdown control. */
@@ -115,7 +123,7 @@ export interface TelegramPoller extends Channel {
  * backoff before one reaches here.
  */
 export function createTelegramPoller(options: TelegramPollerOptions): TelegramPoller {
-  const { client, logger, offsetRepo, onFatalError } = options;
+  const { client, logger, offsetRepo, onFatalError, signal } = options;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   let handler: InboundMessageHandler | undefined;
   let offset: number | undefined;
@@ -146,6 +154,7 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
         timeout: POLL_TIMEOUT_SECONDS,
         limit: POLL_LIMIT,
         allowedUpdates: ALLOWED_UPDATES,
+        signal,
       });
     } catch (error) {
       // A 409 that already exhausted client.ts's own bounded retries is a
@@ -165,7 +174,14 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
       logger.warn("getUpdates failed, retrying", {
         error: error instanceof Error ? error.message : String(error),
       });
-      await delay(retryDelayMs);
+      // `stop()` sets `stopping` before this catch can run (see boot.ts's
+      // shutdown(): controller.abort() then channel.stop() happen
+      // synchronously back to back, with no await between them), so a
+      // getUpdates rejection caused by the shared shutdown signal always
+      // observes `stopping === true` here — skip the fixed retry delay so
+      // the loop (and the drain awaiting it) exits promptly instead of
+      // waiting it out for no reason.
+      if (!stopping) await delay(retryDelayMs);
       return;
     }
 

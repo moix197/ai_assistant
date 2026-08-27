@@ -69,6 +69,55 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
     ]);
     expect(controller.signal.aborted).toBe(true);
   });
+
+  it("resolves the drain promptly once the abort fires, instead of always waiting out drainTimeoutMs (idle-bot regression)", async () => {
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const controller = new AbortController();
+    // Mirrors the real Telegram poller once its getUpdates call is wired to
+    // the shared shutdown signal (see packages/channels/src/telegram's
+    // client.ts/poller.ts): the drain settles as soon as the signal aborts,
+    // rather than a timer that always burns the full window regardless of
+    // when abort() fired.
+    const channel = {
+      stop: vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            // `controller.abort()` (called by `shutdown()` itself, above this
+            // call) fires the abort event before `channel.stop()` runs, so an
+            // already-aborted check is required — an `addEventListener` alone
+            // would never fire, mirroring why the real fetch-based client
+            // needs the same check (see client.ts's composed signal).
+            if (controller.signal.aborted) {
+              resolve();
+              return;
+            }
+            controller.signal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+      ),
+    };
+    const lock = { release: vi.fn().mockResolvedValue(undefined) };
+    const pool = { end: vi.fn().mockResolvedValue(undefined) };
+    const logger = createMockLogger();
+    const telemetryRecorder = { stop: vi.fn().mockResolvedValue(undefined) };
+
+    const startedAt = Date.now();
+    await shutdown({
+      channel,
+      lock,
+      pool,
+      logger,
+      controller,
+      telemetryRecorder,
+      // A large ceiling: this test's assertion is meaningless if the drain
+      // just happens to still be racing a short timeout — it must resolve
+      // because the abort woke it, well before this backstop would ever fire.
+      drainTimeoutMs: 5_000,
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(500);
+  });
 });
 
 describe("shutdown — telemetry flush (Phase 2b)", () => {
