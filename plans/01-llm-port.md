@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-26
 **Branch:** `feat/01-llm-port`
-**Status:** Phases 1–5 complete — Phase 6 (Final Verification, hil) next
+**Status:** Phases 1–5 complete; Phase 6 (Final Verification, hil) in progress — automated lanes green, two container checks and the CLAUDE.md function-length nits outstanding
 
 ## Context
 
@@ -1110,12 +1110,12 @@ as these checkbox updates.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–5 together
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated on `TEST_DATABASE_URL`), `pnpm test:live` (gated on real credentials — confirm the default `pnpm test` and CI both genuinely exclude it)
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated on `TEST_DATABASE_URL`), `pnpm test:live` (gated on real credentials — confirm the default `pnpm test` and CI both genuinely exclude it)
 - [ ] No CLAUDE.md invariants violated
 - [ ] Feature tested manually: golden path (real LLM reply, env-swap changes
       provider) + edge cases (budget breach, duplicate update from an
@@ -1130,7 +1130,7 @@ as these checkbox updates.
       Separately, `docker compose stop hermes` while a completion call is in
       flight → logs show the `fetch` aborting promptly via `LlmAbortedError`,
       clean exit within the grace period
-- [ ] **Re-measure D5 — its recorded numbers are against a model that no
+- [x] **Re-measure D5 — its recorded numbers are against a model that no
       longer exists.** `.ai/decisions/d5-deepseek-primary-gemini-fallback.md`
       records the §8 tool-calling result as 10/10 for `deepseek-chat`, which
       DeepSeek retired between Phase 2 and Phase 3 (`GET /v1/models` no longer
@@ -1146,8 +1146,57 @@ as these checkbox updates.
       `fixtures/recorded/`; decide deliberately whether to keep the new ones
       (they match the models in use) or revert them, and say which
 - [ ] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
 - [ ] All phase checkboxes above are ticked
+
+**Phase 6 execution notes (what was verified, deviated, and left open):**
+
+- **Review mechanics deviated.** The end-to-end review of Phases 1-5 ran as a
+  dispatched `code-reviewer` subagent with a clean context, not via a pasted
+  handoff prompt into a `/clear`ed session. The review's *intent* was met; the
+  two mechanics checkboxes stay unticked because the literal steps did not
+  happen.
+- **Review verdict: yellow, one blocking finding, since fixed.** The hermes DB
+  suites had reimplemented `packages/store`'s `TEST_DATABASE_URL` resolver
+  *without* its `assertNotTheAppDatabase` guard, while running
+  `DELETE FROM llm_usage` - a mis-set `TEST_DATABASE_URL` would have wiped real
+  spend history and silently reset the budget ceiling. Fixed in `b15523e` by
+  sharing the guarded helper through a new `@hermes/store/testing` subpath
+  export; both guard branches proven to throw before any pool or DELETE.
+- **Two further defects found during the live run and fixed in `2464a26`:**
+  the adapter read rate-limit retry hints only from the `Retry-After` header,
+  which Google does not send (it returns `RetryInfo` in the error body), making
+  the Gemini fallback unrecoverable under throttling; and the section 8 check
+  scored any non-truncation throw as a hard failure, so a quota event was
+  indistinguishable from a model-quality failure.
+- **`No CLAUDE.md invariants violated` is deliberately unticked.** The review
+  flagged `apps/hermes/src/boot.ts` (~110 lines) and
+  `apps/hermes/src/handlers/complete.ts` (~44 lines) as over the ~30-line
+  guidance. Not addressed in this PRD; carry to a follow-up rather than
+  claiming compliance.
+- **Test lanes.** `pnpm test` (52 llm / 39 hermes / 21 store / core / config /
+  channels - all green), `pnpm test:db` green, `pnpm typecheck` and
+  `biome check` clean. The default `pnpm test` genuinely excludes the live lane
+  (verified: the llm package collects 9 files, no `*.live.test.ts`). The
+  "and CI" half of that clause is **vacuous - this repo has no CI**; there is no
+  `.github/` directory. Worth a follow-up.
+- **D5 re-measurement, partial.** `deepseek-v4-flash`: 10/10 accuracy, 0
+  malformed, 0 truncated, 0 hard failures - the original verdict reproduces on
+  the configured model, and the retired `deepseek-chat` table was deleted from
+  D5 rather than left alongside. `gemini-3.6-flash`: **not measured.** 7 of 10
+  trials returned HTTP 429 `RESOURCE_EXHAUSTED` (free-tier quota, limit 20); the
+  3 that completed were clean but self-selected. D5 records no Gemini verdict
+  from this run; the standing evidence remains the tracked `gemini-3.6-flash`
+  fixtures.
+- **Fixtures decision (`b3669e5`): asymmetric, deliberately.** The new
+  `deepseek-v4-flash` primary recordings were kept (they finally retire the
+  `deepseek-chat` evidence); the 10 fallback recordings were reverted to HEAD,
+  because the live run captured quota errors rather than a measurement and the
+  tracked ones are against the same model still configured.
+- **Fallback path never exercised end to end.** The manual env-swap proved
+  either provider works as *primary*. Whether Hermes fails over to the fallback
+  profile is untested - consistent with this PRD shipping manual failover only
+  (edit env, restart), but not evidence of failover working.
 
 ## Documentation
 
