@@ -1,11 +1,11 @@
 {
   "profileSlot": "primary",
   "providerFamily": "deepseek",
-  "model": "deepseek-chat",
+  "model": "deepseek-v4-flash",
   "trial": 1,
   "attemptIndex": 1,
   "attemptKind": "initial",
   "maxTokens": 8192,
   "status": 200,
-  "bodyText": "{\"id\":\"3c255cd3-06b8-48c1-b12b-d504cde25bda\",\"object\":\"chat.completion\",\"created\":1787767795,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"I'll convert $250 USD to Japanese yen for you.\",\"tool_calls\":[{\"index\":0,\"id\":\"call_00_5CzgT6awJohfotxmmcgG0052\",\"type\":\"function\",\"function\":{\"name\":\"convert_currency\",\"arguments\":\"{\\\"amount\\\": 250, \\\"from\\\": \\\"USD\\\", \\\"to\\\": \\\"JPY\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":939,\"completion_tokens\":88,\"total_tokens\":1027,\"prompt_tokens_details\":{\"cached_tokens\":0},\"prompt_cache_hit_tokens\":0,\"prompt_cache_miss_tokens\":939},\"system_fingerprint\":\"a26a7955944dc5c60445bff77fac9c8e\"}"
+  "bodyText": "{\"id\":\"08ce2211-220d-4a48-addc-7fdabd195490\",\"object\":\"chat.completion\",\"created\":1787795304,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"The user wants to convert 250 USD to JPY. I'll use the convert_currency tool.\",\"tool_calls\":[{\"index\":0,\"id\":\"call_00_P7SSPIMqyr3P7RDvcuEK8740\",\"type\":\"function\",\"function\":{\"name\":\"convert_currency\",\"arguments\":\"{\\\"amount\\\": 250, \\\"from\\\": \\\"USD\\\", \\\"to\\\": \\\"JPY\\\"}\"}}]},\"logprobs\":null,\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1018,\"completion_tokens\":98,\"total_tokens\":1116,\"prompt_tokens_details\":{\"cached_tokens\":896},\"completion_tokens_details\":{\"reasoning_tokens\":20},\"prompt_cache_hit_tokens\":896,\"prompt_cache_miss_tokens\":122},\"system_fingerprint\":\"a26a7955944dc5c60445bff77fac9c8e\"}"
 }
