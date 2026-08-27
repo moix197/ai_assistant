@@ -62,11 +62,17 @@ order:
    `getUpdates` call starts, then awaits the in-flight handler. Bounded to
    ~5s (`DRAIN_TIMEOUT_MS`) so a stuck drain can't block the rest of
    shutdown indefinitely.
-2. The advisory lock's `release()` — only once no more DB work from this
+2. `telemetryRecorder.stop()` — flushes any buffered `llm.call` events.
+   Bounded independently to ~1s (`TELEMETRY_FLUSH_TIMEOUT_MS`) so a hung
+   flush degrades to "lose the unflushed buffer" instead of stalling the
+   rest of shutdown. Runs after the drain (so it can capture events from the
+   in-flight work that just finished) and before the pool closes (so its own
+   write still has a live pool to go through).
+3. The advisory lock's `release()` — only once no more DB work from this
    instance is possible, so a restart-racing second instance can't acquire
    the lock while this one is still draining.
-3. `pool.end()`.
-4. `process.exit(0)`, after a tick (`setImmediate`) to let the final log line
+4. `pool.end()`.
+5. `process.exit(0)`, after a tick (`setImmediate`) to let the final log line
    flush before the async stdout write is truncated.
 
 A hard-exit fallback timer (`HARD_EXIT_TIMEOUT_MS`, ~8s) forces

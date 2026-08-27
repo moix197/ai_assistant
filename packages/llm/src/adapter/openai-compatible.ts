@@ -1,6 +1,7 @@
 import {
   type Clock,
   type Logger,
+  type TelemetryEvent,
   type TelemetryRecorder,
   nextDelay,
   systemClock,
@@ -565,6 +566,27 @@ async function recordCompletionUsage(
   return entry;
 }
 
+/**
+ * Calls `recorder.record()` and swallows anything it throws — `recorder` is
+ * a public adapter option, so a third-party implementation throwing must
+ * never replace the provider error at the failure call site or fail an
+ * already-paid-for successful completion at the success call site.
+ */
+function safeRecord(
+  recorder: TelemetryRecorder | undefined,
+  logger: Logger,
+  event: TelemetryEvent,
+): void {
+  try {
+    recorder?.record(event);
+  } catch (error) {
+    logger.warn("telemetry recorder threw — event dropped", {
+      name: event.name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /** OpenAI-compatible adapter over raw `fetch`. No SDK: two endpoints don't justify a mega-package. */
 export function createOpenAiCompatibleAdapter(
   profile: ProviderProfile,
@@ -586,10 +608,11 @@ export function createOpenAiCompatibleAdapter(
 
       const body = buildRequestBody(request);
       // Timed from immediately after the budget check (nothing attempted
-      // yet) so `durationMs` reflects the provider call itself, not queueing
-      // behind the budget query.
+      // yet) to when `completeWithRetry` settles — the DB write below is
+      // deliberately excluded, see `packages/llm/README.md`.
       const startedAt = Date.now();
       let result: CompletionResult;
+      let durationMs: number;
       try {
         result = await completeWithRetry(
           fetchImpl,
@@ -599,8 +622,10 @@ export function createOpenAiCompatibleAdapter(
           timeoutMs,
           opts.signal,
         );
+        durationMs = Date.now() - startedAt;
       } catch (error) {
-        opts.recorder?.record({
+        durationMs = Date.now() - startedAt;
+        safeRecord(opts.recorder, logger, {
           name: "llm.call",
           threadId: null,
           turnId: null,
@@ -608,7 +633,7 @@ export function createOpenAiCompatibleAdapter(
           inputTokens: 0,
           outputTokens: 0,
           cacheHitTokens: 0,
-          durationMs: Date.now() - startedAt,
+          durationMs,
           costUsd: 0,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -616,7 +641,7 @@ export function createOpenAiCompatibleAdapter(
       }
 
       const entry = await recordCompletionUsage(usageRepo, logger, profile, request, result);
-      opts.recorder?.record({
+      safeRecord(opts.recorder, logger, {
         name: "llm.call",
         threadId: null,
         turnId: null,
@@ -624,7 +649,7 @@ export function createOpenAiCompatibleAdapter(
         inputTokens: entry.inputTokens,
         outputTokens: entry.outputTokens,
         cacheHitTokens: entry.cacheHitTokens,
-        durationMs: Date.now() - startedAt,
+        durationMs,
         costUsd: entry.costUsd,
       });
       return result;

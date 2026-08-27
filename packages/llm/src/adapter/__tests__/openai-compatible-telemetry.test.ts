@@ -1,5 +1,5 @@
 import type { TelemetryEvent } from "@hermes/core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BudgetExceededError, LlmHttpError, LlmMalformedResponseError } from "../../errors";
 import type { ProviderProfile } from "../../port";
 import type { LlmUsageRepo } from "../../usage/usage-repo-port";
@@ -54,14 +54,20 @@ function recordedEvent(recorder: { record: ReturnType<typeof vi.fn> }): Telemetr
   return recorder.record.mock.calls[0]?.[0] as TelemetryEvent;
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
   it("emits exactly one llm.call event on success, matching the recorded LlmUsageEntry, with a positive durationMs and no error", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      jsonResponse({
+    const fetchImpl = vi.fn().mockImplementation(async () => {
+      vi.advanceTimersByTime(5);
+      return jsonResponse({
         choices: [{ message: { content: "hi there" }, finish_reason: "stop" }],
         usage: {
           prompt_tokens: 100,
@@ -69,8 +75,8 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
           total_tokens: 120,
           prompt_cache_hit_tokens: 30,
         },
-      }),
-    );
+      });
+    });
     const recorder = createMockRecorder();
     const adapter = createOpenAiCompatibleAdapter(PROFILE, {
       fetchImpl,
@@ -94,7 +100,7 @@ describe("createOpenAiCompatibleAdapter — telemetry emission", () => {
     });
     expect(event).not.toHaveProperty("error");
     expect((event as { costUsd: number }).costUsd).toBeGreaterThan(0);
-    expect((event as { durationMs: number }).durationMs).toBeGreaterThanOrEqual(0);
+    expect((event as { durationMs: number }).durationMs).toBeGreaterThan(0);
   });
 
   it("emits exactly one llm.call event with error set and all numeric usage fields 0 on a provider HTTP failure, then still rethrows", async () => {
