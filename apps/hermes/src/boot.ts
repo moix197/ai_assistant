@@ -1,5 +1,7 @@
 import {
   type InboundMessage,
+  type TelegramClient,
+  type TelegramPoller,
   createTelegramClient,
   createTelegramPoller,
   parseAllowlist,
@@ -8,6 +10,7 @@ import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config
 import { type Logger, createLogger } from "@hermes/core";
 import {
   INSTANCE_LOCK_KEY,
+  type Pool,
   acquireInstanceLock,
   claim as claimDedupe,
   complete as completeDedupe,
@@ -107,6 +110,23 @@ export async function exitAfterFatalPollerError(
   await pool.end();
 }
 
+/**
+ * Losing the single-instance race is an expected outcome, and exits the same
+ * non-`process.exit()` way `exitAfterFatalPollerError` does, for the same
+ * reason: stdout writes (e.g. Docker's piped stdout) are async, and exiting
+ * immediately can drop this log line before it flushes. Setting `exitCode`
+ * and closing the pool lets the event loop drain naturally once the write
+ * completes, so the process still exits non-zero without racing the log.
+ */
+async function exitAfterLostInstanceLock(
+  pool: { end(): Promise<void> },
+  logger: Logger,
+): Promise<void> {
+  logger.error("another Hermes instance is already running against this database");
+  process.exitCode = 1;
+  await pool.end();
+}
+
 function withTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
   return Promise.race([promise, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
 }
@@ -191,53 +211,43 @@ export function registerShutdown(deps: ShutdownDeps): void {
   process.once("SIGINT", handleSignal);
 }
 
-/** Thin entry point: load config -> build logger -> run migrations -> serve /health. */
-export async function boot(): Promise<void> {
-  const config = loadConfigOrExit();
-  const logger = createLogger({ level: config.LOG_LEVEL, fields: { service: "hermes" } });
-  logger.info("booting", { config: toRedactedLog(config) });
-
-  const pool = createPool(config.DATABASE_URL);
+/**
+ * The pool plus the two steps that must complete before anything else queries
+ * it: the readiness wait and the schema migrations.
+ */
+async function createMigratedPool(databaseUrl: string): Promise<Pool> {
+  const pool = createPool(databaseUrl);
   await waitForDatabase(pool);
   await runMigrations(pool, getDefaultMigrationsDir());
+  return pool;
+}
 
-  const telegramClient = createTelegramClient({ token: config.TELEGRAM_BOT_TOKEN });
+/**
+ * `deleteWebhook` is unconditional and idempotent: getUpdates long-polling and
+ * a webhook are mutually exclusive on Telegram's side, so a webhook left over
+ * from a previous deployment mode would otherwise silently starve the poller.
+ */
+async function createPollingTelegramClient(token: string): Promise<TelegramClient> {
+  const client = createTelegramClient({ token });
+  await client.deleteWebhook();
+  return client;
+}
 
-  // Unconditional and idempotent: getUpdates long-polling and a webhook are
-  // mutually exclusive on Telegram's side, so a webhook left over from a
-  // previous deployment mode would otherwise silently starve the poller.
-  await telegramClient.deleteWebhook();
-
-  // Must happen before the poller starts, never after: Telegram allows one
-  // getUpdates consumer per bot token, so a second instance racing this one
-  // must fail fast here with a readable error instead of a mysterious 409
-  // surfacing later from inside the poll loop.
-  const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, config.DATABASE_URL);
-  if (!instanceLock.acquired) {
-    await instanceLock.release();
-    // No process.exit() here: stdout writes (e.g. Docker's piped stdout) are
-    // async, and exiting immediately can drop this log line before it
-    // flushes. Setting exitCode and closing the pool lets the event loop
-    // drain naturally once the write completes, so the process still exits
-    // non-zero without racing the log.
-    logger.error("another Hermes instance is already running against this database");
-    process.exitCode = 1;
-    await pool.end();
-    return;
-  }
-
-  // Started only after the lock is held: starting it earlier would let a
-  // losing second instance briefly report healthy before it exits.
-  startHealthServer(pool, config.PORT, {
-    onListening: () => logger.info("health server listening", { port: config.PORT }),
+/** `/health` on the configured port, with boot-logger reporting for both outcomes. */
+function serveHealth(pool: Pool, port: number, logger: Logger): void {
+  startHealthServer(pool, port, {
+    onListening: () => logger.info("health server listening", { port }),
     onError: (error) => {
       logger.error("health server error", { error: error.message });
       process.exit(1);
     },
   });
+}
 
-  const telegramChannel = createTelegramPoller({
-    client: telegramClient,
+/** The poller bound to its Postgres-backed offset store and the fatal-error exit path. */
+function createTelegramChannel(client: TelegramClient, pool: Pool, logger: Logger): TelegramPoller {
+  return createTelegramPoller({
+    client,
     logger,
     offsetRepo: {
       getOffset: () => getOffset(pool),
@@ -252,51 +262,100 @@ export async function boot(): Promise<void> {
       void exitAfterFatalPollerError(pool, logger, error);
     },
   });
+}
 
-  // echoHandler stays available (createEchoHandler, "./handlers/echo") as a
-  // documented reference/fallback but is no longer wired — completionHandler
-  // (below) is dispatchCommand's fallthrough now.
-  const pingHandler = createPingHandler(telegramChannel, pool);
-  const startHandler = createStartHandler(telegramChannel, pool);
+export interface MessageHandlerDeps {
+  channel: TelegramPoller;
+  pool: Pool;
+  config: Env;
+  logger: Logger;
+  /** The boot-lifetime abort signal, threaded through to the LLM adapter. */
+  signal: AbortSignal;
+}
+
+/**
+ * The three handlers `dispatchCommand` routes between, each wired to real
+ * infrastructure. echoHandler stays available (createEchoHandler,
+ * "./handlers/echo") as a documented reference/fallback but is no longer
+ * wired — completionHandler is dispatchCommand's fallthrough now.
+ */
+function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
+  const { channel, pool, config, logger, signal } = deps;
+  const providerProfiles = buildProviderProfiles(config);
+  const llmProvider = buildLlmProvider(pool, providerProfiles.primary, logger, config, signal);
+
+  return {
+    pingHandler: createPingHandler(channel, pool),
+    startHandler: createStartHandler(channel, pool),
+    completionHandler: createCompletionHandler({
+      channel,
+      llmProvider,
+      model: providerProfiles.primary.model,
+      logger,
+      dedupeRepo: {
+        claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
+        complete: (dedupeKey: string, resultText: string) =>
+          completeDedupe(pool, dedupeKey, resultText),
+      },
+    }),
+  };
+}
+
+/**
+ * Every handler (ping/start/completion) must pass both gates — composed once
+ * here rather than duplicated per handler, so neither check can be forgotten
+ * by a future handler. Allowlist runs outermost so an unknown sender is
+ * rejected before the private-chat check even looks at them — and, since
+ * completionHandler is the fallthrough, before it ever reaches
+ * `llmProvider.complete()`, so an unknown sender never costs anything.
+ */
+function subscribeGatedDispatch(deps: MessageHandlerDeps): void {
+  const { channel, config, logger } = deps;
+  const dispatchCommand = createDispatchCommand(createMessageHandlers(deps));
+  const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
+  channel.subscribe(withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger));
+}
+
+/**
+ * Thin entry point, in load-bearing order (see
+ * `.ai/architecture.md#boot-and-shutdown-order`): config -> logger -> pool
+ * (waited + migrated) -> webhook cleared -> advisory lock -> health server ->
+ * poller -> handlers -> shutdown registration. The lock is taken before the
+ * health server starts and before the poller exists, so an instance that
+ * loses the race never briefly reports healthy and never races Telegram's
+ * one-getUpdates-consumer-per-token rule.
+ */
+export async function boot(): Promise<void> {
+  const config = loadConfigOrExit();
+  const logger = createLogger({ level: config.LOG_LEVEL, fields: { service: "hermes" } });
+  logger.info("booting", { config: toRedactedLog(config) });
+
+  const pool = await createMigratedPool(config.DATABASE_URL);
+  const telegramClient = await createPollingTelegramClient(config.TELEGRAM_BOT_TOKEN);
+
+  const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, config.DATABASE_URL);
+  if (!instanceLock.acquired) {
+    await instanceLock.release();
+    await exitAfterLostInstanceLock(pool, logger);
+    return;
+  }
+
+  serveHealth(pool, config.PORT, logger);
+  const telegramChannel = createTelegramChannel(telegramClient, pool, logger);
 
   // Boot-lifetime, not per-request: the poller is serial (never more than
   // one in-flight completion call), so one shared controller is sufficient.
-  // Aborted as the first step of shutdown() (see below), before the drain
+  // Aborted as the first step of shutdown() (see above), before the drain
   // wait on channel.stop().
   const shutdownController = new AbortController();
 
-  const providerProfiles = buildProviderProfiles(config);
-  const llmProvider = buildLlmProvider(
-    pool,
-    providerProfiles.primary,
-    logger,
-    config,
-    shutdownController.signal,
-  );
-  const completionHandler = createCompletionHandler({
+  subscribeGatedDispatch({
     channel: telegramChannel,
-    llmProvider,
-    model: providerProfiles.primary.model,
+    pool,
+    config,
     logger,
-    dedupeRepo: {
-      claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
-      complete: (dedupeKey: string, resultText: string) =>
-        completeDedupe(pool, dedupeKey, resultText),
-    },
+    signal: shutdownController.signal,
   });
-
-  const dispatchCommand = createDispatchCommand({ pingHandler, startHandler, completionHandler });
-
-  const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
-  // Every handler (ping/start/completion) must pass both gates — composed
-  // once here rather than duplicated per handler, so neither check can be
-  // forgotten by a future handler. Allowlist runs outermost so an unknown
-  // sender is rejected before the private-chat check even looks at them —
-  // and, since completionHandler is the fallthrough, before it ever reaches
-  // llmProvider.complete(), so an unknown sender never costs anything.
-  telegramChannel.subscribe(
-    withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger),
-  );
 
   registerShutdown({
     channel: telegramChannel,

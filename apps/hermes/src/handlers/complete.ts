@@ -86,6 +86,58 @@ async function recordDedupeCompletion(
 }
 
 /**
+ * The unclaimed path, in the load-bearing order documented on
+ * `createCompletionHandler`: one provider call, then the reply, then the
+ * dedupe completion — never the completion first.
+ */
+async function replyWithCompletion(
+  options: CreateCompletionHandlerOptions,
+  message: InboundMessage,
+  dedupeKey: string,
+): Promise<void> {
+  const result = await options.llmProvider.complete({
+    model: options.model,
+    system: SYSTEM_PROMPT_PLACEHOLDER,
+    messages: [{ role: "user", content: message.text }],
+    tools: undefined,
+    maxTokens: MAX_TOKENS_PER_TURN,
+  });
+  await options.channel.send(message.chatId, result.text);
+
+  await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, result.text);
+}
+
+/**
+ * The one place a failure becomes user-visible text: a budget rejection gets
+ * its own fixed string, anything else the generic one. The error itself is
+ * logged, never sent.
+ */
+async function replyWithFailureNotice(
+  options: CreateCompletionHandlerOptions,
+  message: InboundMessage,
+  channelUserId: number,
+  error: unknown,
+): Promise<void> {
+  const { channel, logger } = options;
+
+  if (error instanceof BudgetExceededError) {
+    logger.error("llm completion rejected, monthly budget exceeded", {
+      channelUserId,
+      capUsd: error.capUsd,
+      spentUsd: error.spentUsd,
+    });
+    await channel.send(message.chatId, OUT_OF_BUDGET_REPLY);
+    return;
+  }
+
+  logger.error("llm completion failed", {
+    channelUserId,
+    error: error instanceof Error ? error.message : String(error),
+  });
+  await channel.send(message.chatId, GENERIC_FAILURE_REPLY);
+}
+
+/**
  * `createCompletionHandler({ channel, llmProvider, model, logger, dedupeRepo })`
  * → `(message) => Promise<void>`: one `complete()` call per Telegram
  * message, reply with `result.text`. No tool loop, no approval gate, no
@@ -104,7 +156,7 @@ async function recordDedupeCompletion(
 export function createCompletionHandler(
   options: CreateCompletionHandlerOptions,
 ): (message: InboundMessage) => Promise<void> {
-  const { channel, llmProvider, model, logger, dedupeRepo } = options;
+  const { channel, logger, dedupeRepo } = options;
 
   return async function handleCompletion(message: InboundMessage): Promise<void> {
     const channelUserId = Number(message.channelUserId);
@@ -123,32 +175,9 @@ export function createCompletionHandler(
         return;
       }
 
-      const result = await llmProvider.complete({
-        model,
-        system: SYSTEM_PROMPT_PLACEHOLDER,
-        messages: [{ role: "user", content: message.text }],
-        tools: undefined,
-        maxTokens: MAX_TOKENS_PER_TURN,
-      });
-      await channel.send(message.chatId, result.text);
-
-      await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, result.text);
+      await replyWithCompletion(options, message, dedupeKey);
     } catch (error) {
-      if (error instanceof BudgetExceededError) {
-        logger.error("llm completion rejected, monthly budget exceeded", {
-          channelUserId,
-          capUsd: error.capUsd,
-          spentUsd: error.spentUsd,
-        });
-        await channel.send(message.chatId, OUT_OF_BUDGET_REPLY);
-        return;
-      }
-
-      logger.error("llm completion failed", {
-        channelUserId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await channel.send(message.chatId, GENERIC_FAILURE_REPLY);
+      await replyWithFailureNotice(options, message, channelUserId, error);
     }
   };
 }
