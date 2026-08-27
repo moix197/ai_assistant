@@ -21,4 +21,14 @@ Shared types with no dependency on any other Hermes package.
   as real ids until `packages/agent` (2c) assigns them — `packages/llm`'s
   adapter, the only producer wired up so far, always passes `null` for both.
   `ToolCallEvent`/`TurnEvent` have no producer yet; they exist so 2c has a
-  typed contract to emit into.
+  typed contract to emit into. See
+  `.ai/decisions/telemetry-event-schema.md`.
+- `nextDelay()` / `delay()` — the shared exponential-backoff step and its
+  sleep. Both the Telegram client and the LLM adapter retry off these rather
+  than each rolling their own curve.
+- The provider-neutral LLM types — `Message`, `MessageRole`, `ToolCall`,
+  `ToolResult`, `Usage`, `LlmUsageEntry`. They live here, not in
+  `@hermes/llm`, precisely because `store` and (later) `agent` need to name
+  them without depending on the adapter: `LlmUsageEntry` is re-exported by
+  both `llm` and `store`, so neither side can drift a field apart without a
+  type error.

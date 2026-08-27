@@ -13,11 +13,12 @@ What exists today:
 
 ```
 apps/hermes        wiring + boot + shutdown, no logic
-packages/core      Result, ids, Clock, logger, telemetry recorder PORT
+packages/core      Result, ids, Clock, logger, TelemetryEvent union + recorder PORT
 packages/config    zod env schema, fail-fast, redaction
 packages/store     pg pool, migration runner, repos, advisory lock
 packages/channels  Channel port + telegram/ adapter
 packages/llm       LlmProvider port + OpenAI-compatible adapter over fetch
+packages/telemetry buffered recorder behind core's port + /stats rollup math
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -29,13 +30,13 @@ later — see [lean-docker-build](decisions/lean-docker-build.md).
 Strictly downward; no package imports one above it.
 
 ```
-                apps/hermes
-                     │  (imports all five; the ONLY place they are wired together)
-     ┌───────────┬───┴───────┬──────────────┬──────────────┐
-     ▼           ▼           ▼              ▼              ▼
-  config       store     channels          llm            core
-     │           │       (only dep)     (only dep)
-     └───────────┴──────────────┴──────────────┴───────────► core
+                        apps/hermes
+                             │  (imports all six; the ONLY place they are wired together)
+     ┌───────────┬───────────┼───────────┬───────────┬──────────┐
+     ▼           ▼           ▼           ▼           ▼          ▼
+  config       store     channels       llm      telemetry     core
+     │           │       (only dep)  (only dep)  (only dep)
+     └───────────┴───────────┴───────────┴───────────┴──────────► core
 ```
 
 - `packages/core` depends on nothing. It is where ports live so lower packages
@@ -68,8 +69,22 @@ Strictly downward; no package imports one above it.
   - The row's shape, `LlmUsageEntry`, lives in `@hermes/core` and is
     re-exported by both `llm` and `store`, so neither side can drift a field
     apart without a type error.
-- **Nothing imports an implementation of `telemetry`.** The recorder port sits
-  in `core`; `apps/hermes` will inject the implementation at boot (Phase 2).
+- **`packages/telemetry` depends on `packages/core` only** — never
+  `@hermes/store`, the same boundary `llm` holds and for the same reason. It
+  takes two injected ports: `TelemetryEventRepo` (`{ insertEvents }`) for the
+  write side and `StatsRepo`
+  (`{ sumCostSince, getLlmCallStatsSince, getTopToolsSince }`) for `/stats`'
+  read side. `apps/hermes/src/telemetry/build-telemetry-recorder.ts` and
+  `build-stats-repo.ts` bind both to `@hermes/store` against the one pool.
+- **`llm` and `telemetry` never import each other**, in either direction. The
+  recorder *port* lives in `core`, so `llm`'s adapter emits through
+  `opts.recorder?: TelemetryRecorder` and `apps/hermes` is the only place that
+  passes the concrete handle in. `StatsRepo.sumCostSince` is re-declared in
+  `telemetry` with the same shape as `llm`'s `BudgetUsageRepo.sumCostSince`
+  rather than imported; `apps/hermes` wires the *same* `@hermes/store`
+  `sumCostSince` into both, which is what makes the cost-source split hold in
+  practice and not just in prose — see
+  [telemetry-event-schema](decisions/telemetry-event-schema.md).
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
@@ -105,11 +120,16 @@ Telegram getUpdates (long poll, 30s)
    │                                    │     Clock) → packages/store → llm_usage
    │                                    │     spend >= cap ⇒ BudgetExceededError
    │                                    │     BEFORE any fetch: zero provider
-   │                                    │     calls, fixed reply, no new row
+   │                                    │     calls, fixed reply, no new row,
+   │                                    │     and no llm.call event either
    │                                    ▼  provider HTTP (retries live in here,
    │                                    │     i.e. inside the already-checked call)
    │                                    ▼  llm_usage row via injected LlmUsageRepo
    │                                    │     →  packages/store  →  llm_usage
+   │                                    ▼  llm.call event via injected
+   │                                    │     TelemetryRecorder — returns at once,
+   │                                    │     the INSERT happens on a later flush
+   │                                    │     →  packages/telemetry  →  telemetry_events
    │                                    ▼  result.text
    │                                 channel.send() → chunkText → sendMessage
    │                                    ▼  dedupe complete, storing the reply —
@@ -127,6 +147,17 @@ usage row is written from the adapter's success path, so a failed call records
 nothing and a retried one still records exactly once; see
 [llm-cost-accounting](decisions/llm-cost-accounting.md). One `complete()` per
 message: no tool loop, no history persistence yet — that's `packages/agent`.
+
+The `llm.call` event that rides alongside that write is deliberately **not** the
+same shape of guarantee, and the three differences are the whole point of
+keeping them separate paths. It fires on provider *failure* as well as success
+(`llm_usage` records nothing on a failure — no tokens were billed), it never
+fires on a budget rejection (no call was attempted, so `/stats`' error rate
+cannot conflate a policy stop with a call failure), and it is buffered and
+at-most-once rather than written inside `complete()`'s await chain — a slow or
+down Postgres degrades telemetry fidelity instead of delaying or failing a
+user's reply. `llm_usage` is a ledger, `telemetry_events` is an instrument; see
+[telemetry-event-schema](decisions/telemetry-event-schema.md).
 
 Both gates on that path — the dedupe claim and the budget check — are only
 worth anything *before* `complete()`; run either after the call and it records
@@ -151,9 +182,21 @@ that failed.
 
 Both orders are load-bearing; each step is a precondition for the next.
 
-**Boot** (`apps/hermes/src/boot.ts`): config → logger → pool → `waitForDatabase`
-→ migrations → `deleteWebhook()` → **advisory lock** → health server → poller.
+**Boot** (`apps/hermes/src/boot.ts`): config → `assertModelsPriced` → logger →
+pool → `waitForDatabase` → migrations → `deleteWebhook()` → **advisory lock** →
+health server → poller → telemetry recorder + handlers → shutdown registration.
 
+- `assertModelsPriced` runs on `LLM_PRIMARY_MODEL` and (when set)
+  `LLM_FALLBACK_MODEL` immediately after config loads, before any DB or network
+  I/O — the cheapest step is also the one that must fail first. It is the
+  primary defense that keeps `resolveCostUsd`'s `UnpricedModelError` a rare
+  backstop rather than a live-call hazard; see
+  [llm-cost-accounting](decisions/llm-cost-accounting.md).
+- The telemetry recorder is built *after* the pool (it writes through it) and
+  handed to two places at once: the handler wiring, which passes it into the LLM
+  adapter, and `registerShutdown`, where it is a **required** dep. Required, not
+  optional-with-a-default, because this project has twice shipped a fully tested
+  mechanism that the real construction site silently never received.
 - `deleteWebhook` is unconditional and idempotent: a webhook and `getUpdates`
   are mutually exclusive on Telegram's side, so a leftover webhook from another
   deployment mode would silently starve the poller.
@@ -168,18 +211,29 @@ Both orders are load-bearing; each step is a precondition for the next.
   single-instance message. Accepted, not fixed.
 
 **Shutdown** (SIGTERM/SIGINT, registered once): `controller.abort()` →
-`channel.stop()` (bounded 5s) → `lock.release()` → `pool.end()` →
-`process.exit(0)`, with an 8s hard-exit timer.
+`channel.stop()` (bounded 5s) → `telemetryRecorder.stop()` (bounded 1s) →
+`lock.release()` → `pool.end()` → `process.exit(0)`, with an 8s hard-exit timer.
 
 - Release before the drain finishes and a restart-racing instance can acquire
   the lock while this one is still querying. Close the pool before the drain
   finishes and an in-flight query crashes. Hence this exact order.
+- The telemetry flush sits *after* the drain so it captures events from work
+  that was still in flight, and *before* `pool.end()` so its own `INSERT` has a
+  live pool to write through. Those two constraints leave it exactly one slot.
+- It gets its own deliberately small budget (`TELEMETRY_FLUSH_TIMEOUT_MS`, 1s)
+  via the same `withTimeout` helper the drain uses, not a second timeout
+  mechanism. `packages/telemetry`'s own `stop()` has no internal timeout — it
+  has no concept of the process's shutdown budget, so bounding it is the call
+  site's job. 5s of drain + 1s of flush still leaves room under the 8s
+  hard-exit ceiling for `lock.release()`/`pool.end()`; a hung flush degrades to
+  "lose the unflushed buffer," never to "hang shutdown," which is the
+  at-most-once tradeoff telemetry already accepts everywhere else.
 - `controller.abort()`'s signal is threaded into the poller's in-flight
   `getUpdates` call (`packages/channels/src/telegram/{client,poller}.ts`), so
   `channel.stop()`'s drain resolves as soon as abort fires on an idle bot
   instead of always burning the full 5s bound.
-- 5s / 8s are sized against `docker-compose.yml`'s explicit
-  `stop_grace_period: 15s` for the `hermes` service — revisit all three
+- 5s / 1s / 8s are sized against `docker-compose.yml`'s explicit
+  `stop_grace_period: 15s` for the `hermes` service — revisit all four
   together if any one of them changes.
 - The hard-exit timer is deliberately *not* cleared in a `finally`: a rejected
   shutdown (`release()`/`pool.end()` throwing because the DB is already down) is

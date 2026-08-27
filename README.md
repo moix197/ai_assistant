@@ -1,26 +1,37 @@
 # Hermes
 
 A pnpm monorepo: a deterministic, restart-safe assistant. See `plans/ROADMAP.md`
-and `plans/00-skeleton.md` for the current build plan.
+for the overall arc and `plans/02-telemetry.md` for the current build plan.
 
 ## Layout
 
-- `apps/hermes` — the process entry point (thin: config → logger → store →
-  channels).
-- `packages/core` — shared types (`Result`, ids, clock, logger, telemetry
-  port).
+- `apps/hermes` — the process entry point. Thin, in load-bearing order: config
+  → models-priced check → logger → pool (waited + migrated) → webhook cleared
+  → advisory lock → health server → poller, telemetry and handlers → shutdown
+  registration. See `apps/hermes/README.md`.
+- `packages/core` — shared types (`Result`, ids, clock, logger, backoff, the
+  provider-neutral LLM types, and the telemetry event union + recorder port).
 - `packages/config` — env schema validation and redaction.
-- `packages/store` — Postgres pool + migration runner.
+- `packages/store` — Postgres pool + migration runner + repositories.
 - `packages/channels` — chat channel adapters (Telegram, long-polled).
+- `packages/llm` — `LlmProvider` port, the OpenAI-compatible adapter, pricing
+  and the monthly spend ceiling.
+- `packages/telemetry` — buffered telemetry recorder and `/stats` rollup math.
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` — get one
-   from [@BotFather](https://t.me/BotFather).
+1. Copy `.env.example` to `.env`. `TELEGRAM_BOT_TOKEN` (from
+   [@BotFather](https://t.me/BotFather)) is not the only required value —
+   boot also fails fast without `LLM_PRIMARY_BASE_URL`, `LLM_PRIMARY_API_KEY`
+   and `LLM_PRIMARY_MODEL`, and under compose without
+   `LLM_MONTHLY_BUDGET_USD` (compose passes an unset host var through as `""`,
+   which the schema rejects rather than silently defaulting). A missing or
+   invalid key is named in the boot error.
 2. Leave `TELEGRAM_ALLOWLIST` empty on first boot (an empty allowlist rejects
    everyone, so nothing can act on the bot yet).
 3. Start the full stack: `docker compose up -d`, then message the bot.
-4. It replies with `"rejected: unknown user"` and logs a warn line with your
+4. It sends **no reply at all** — an unknown sender is dropped silently, on
+   purpose. It logs a warn line (`"rejected: unknown user"`) carrying your
    numeric Telegram id in the `channelUserId` field —
    `docker compose logs hermes` to find it.
 5. Set `TELEGRAM_ALLOWLIST` in `.env` to that id, then run
@@ -50,8 +61,14 @@ curl -i localhost:3000/health
 
 ## Scripts
 
-- `pnpm build` — build every package (`pnpm -r build`)
-- `pnpm test` — run every package's tests (`pnpm -r test`)
+- `pnpm typecheck` — typecheck every package (`pnpm -r typecheck`)
+- `pnpm build` — typecheck then build every package (`pnpm -r typecheck && pnpm
+  -r build`, in that order — a build over a broken type graph is not worth
+  having)
+- `pnpm test` — run every package's hermetic tests (`pnpm -r test`)
+- `pnpm test:db` — the Postgres integration lane, run serially
+  (`--workspace-concurrency=1`) because the suites share one database. Refuses
+  to start without `TEST_DATABASE_URL`; see `packages/store/README.md`.
 - `pnpm test:live` — the §8 live tool-calling check in `@hermes/llm`. Excluded
   from `pnpm test`: it spends real money against live provider APIs and skips
   itself unless both `LLM_*` profiles are set.

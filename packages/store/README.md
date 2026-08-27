@@ -57,8 +57,10 @@ ordered shutdown sequence calls it as one step. Any process exit still frees
 the lock implicitly regardless — Postgres releases session-level locks when
 their connection closes, crash or not.
 
-`src/migrations/` holds `001_telegram_offset.sql` — the first real
-migration.
+`src/migrations/` holds, in apply order, `001_telegram_offset.sql`,
+`002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`. A new
+migration is numbered one past whatever is actually highest in the directory —
+re-list it rather than trusting an assumed number.
 
 ## LLM usage accounting
 
@@ -86,9 +88,13 @@ the cache.
   — `apps/hermes/src/llm/build-llm-provider.ts` wires this function into that port so `llm`
   never depends on `@hermes/store` directly.
 - `sumCostSince(pool, sinceUtc)` — sums `cost_usd` for every row recorded at
-  or after `sinceUtc`. Built now, next to `recordUsage`, because it's the
-  natural home for it; used by Phase 4's budget ceiling, not by anything in
-  this phase.
+  or after `sinceUtc`. It has **two** callers, deliberately: the budget
+  ceiling (through `@hermes/llm`'s `BudgetUsageRepo`) and `/stats`' spend
+  lines (through `@hermes/telemetry`'s `StatsRepo`), both bound in
+  `apps/hermes`. One function feeding both is what stops `/stats` from ever
+  disagreeing with the ceiling it reports against — `/stats` never derives
+  spend from `telemetry_events`. See
+  `.ai/decisions/telemetry-event-schema.md`.
 
 `cost_usd` is `numeric(12,6)`, so a call costing less than $0.0000005 rounds
 to zero and one costing $0.0000015 rounds to $0.000002. This bounds the
@@ -169,15 +175,17 @@ hidden.
 not null, thread_id text, turn_id text, tool_name text, duration_ms int,
 cost_usd numeric(12,6), is_error boolean not null default false, fields
 jsonb not null default '{}'::jsonb`), with indexes on `(created_at)`,
-`(name, created_at)`, and `(tool_name)`. One row per `@hermes/core`
-`TelemetryEvent` (`llm.call` / `tool.call` / `turn`).
+`(name, created_at)`, and a **partial** index on `(tool_name) WHERE tool_name
+IS NOT NULL` — `tool_name` is null on every non-`tool.call` row, so a full
+index would be mostly nulls. One row per `@hermes/core` `TelemetryEvent`
+(`llm.call` / `tool.call` / `turn`).
 
 The columns every rollup query filters or aggregates on directly —
 `name`, `thread_id`, `turn_id`, `tool_name`, `duration_ms`, `cost_usd`,
 `is_error` — are real columns; everything event-specific (e.g. `llm.call`'s
 `model`/`inputTokens`/`outputTokens`/`cacheHitTokens`) lives in `fields`
 jsonb instead. This is the wide-table shape the schema is named for: it lets
-Postgres do the rollup math (Phase 3) as a plain aggregate query, not an
+Postgres do the rollup math as a plain aggregate query, not an
 application-side scan of a blob column.
 
 - `insertEvents(pool, events)` — one multi-row `INSERT` per call, never a
@@ -186,6 +194,21 @@ application-side scan of a blob column.
   exception. Called from `packages/telemetry`'s buffered recorder via the
   `TelemetryEventRepo` port, the same injection shape `LlmUsageRepo` and
   `BudgetUsageRepo` use.
+- `getLlmCallStatsSince(pool, sinceUtc)` → `LlmCallStats`
+  (`{ calls, errorCalls, inputTokens, outputTokens, cacheHitTokens }`) — one
+  aggregate over `name = 'llm.call'` rows, token sums pulled out of `fields`
+  and cast to numeric. It deliberately carries **no cost or dollar field**;
+  see `sumCostSince` above and the decision doc.
+- `getTopToolsSince(pool, sinceUtc, limit)` → `TopToolCount[]` — groups
+  `name = 'tool.call'` rows by `tool_name`, most-called first. Returns `[]`
+  (not an error, not `null`) today, since no producer exists until
+  `packages/agent` (2c); it needs no change here when one lands.
+
+`cost_usd` is shared by `llm.call` (one call's cost) and `turn`
+(`totalCostUsd`, the sum over a turn's calls). Every query above filters on
+`name` first, which is what keeps that safe — a `SUM(cost_usd)` across all
+event kinds would double-count once a `turn` producer exists. See the decision
+doc's open items.
 
 **No retention or pruning policy exists for this table.** It grows
 unbounded from this migration onward — an explicit, accepted open item, not
@@ -242,3 +265,20 @@ same way: the migration applies cleanly; `insertEvents` with a mixed batch
 kind) writes the right number of rows in one round trip, with
 `tool_name`/`cost_usd`/`is_error` populated correctly per kind and the rest
 recoverable from `fields`; an empty array performs no query.
+
+`src/__tests__/telemetry-stats-repo.test.ts` is integration-only, gated the
+same way: `getLlmCallStatsSince` sums and counts across a mix of success and
+error `llm.call` rows and **excludes** `tool.call`/`turn` rows and rows
+outside the window; `getTopToolsSince` groups and orders by `tool_name`,
+honors its `limit`, and returns `[]` when no `tool.call` rows exist.
+
+`src/__tests__/llm-usage-repo-month-boundary.test.ts` is integration-only,
+gated the same way: it pins `sumCostSince`'s UTC calendar-month window against
+rows placed either side of the boundary — the arithmetic the budget ceiling
+and `/stats` both depend on.
+
+The guard and URL resolution in `src/__tests__/db-env.ts` are published to
+other packages through this package's `./testing` subpath export, so
+`apps/hermes`' and `@hermes/telemetry`'s DB suites reuse the one guard instead
+of re-resolving `TEST_DATABASE_URL` privately — a suite that re-resolves it
+opts out of both safety checks.

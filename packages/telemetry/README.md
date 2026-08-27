@@ -1,19 +1,35 @@
 # @hermes/telemetry
 
-The real implementation behind `@hermes/core`'s `TelemetryRecorder` port.
-Depends on `@hermes/core` only — same shape as `@hermes/llm` and
-`@hermes/channels` — and never imports `@hermes/store` directly; a small
-injected `TelemetryEventRepo` port stands in for it, exactly like `@hermes/llm`'s
-`LlmUsageRepo`/`BudgetUsageRepo`. `apps/hermes/src/telemetry/build-telemetry-recorder.ts`
-(Phase 2) is the one place that wires the port to `@hermes/store`'s real
-`insertEvents`.
+Two things, both behind injected ports: the real implementation of
+`@hermes/core`'s `TelemetryRecorder` (the write side) and the rollup math
+`/stats` renders (the read side).
 
-**Unwired as of this phase.** Nothing outside this package's own tests calls
-`createBufferedTelemetryRecorder` yet — `packages/llm`'s adapter and
-`apps/hermes/src/boot.ts` are wired in Phase 2. This package's own
-`recorder-integration.test.ts` proves the mechanism against a real Postgres
-using a thin in-test wiring, not the production wiring, which doesn't exist
-yet.
+Depends on `@hermes/core` only — same shape as `@hermes/llm` and
+`@hermes/channels` — and never imports `@hermes/store` directly; two small
+injected ports stand in for it, exactly like `@hermes/llm`'s
+`LlmUsageRepo`/`BudgetUsageRepo`:
+
+- `TelemetryEventRepo { insertEvents }` — the write side.
+- `StatsRepo { sumCostSince, getLlmCallStatsSince, getTopToolsSince }` — the
+  read side.
+
+`apps/hermes/src/telemetry/build-telemetry-recorder.ts` and
+`build-stats-repo.ts` are the only places that bind either to `@hermes/store`.
+
+## Public API
+
+| Export | What it is |
+| ------ | ---------- |
+| `createBufferedTelemetryRecorder(repo, opts?)` | The recorder. Returns a `TelemetryRecorderHandle` (`TelemetryRecorder` + `stop()`). |
+| `TelemetryEventRepo`, `StatsRepo` | The two injected ports above. |
+| `computeStats(repo, clock, capUsd, now?)` | Reads the five rollups off a `StatsRepo` and returns `Stats`. |
+| `formatStatsMessage(stats)` | Renders `Stats` as the plain-text `/stats` reply. |
+| `Stats`, `TelemetryEvent`, `TelemetryRecorder` | Types (the latter two re-exported from `@hermes/core`). |
+
+**Wired, as of Phase 2/3.** `packages/llm`'s adapter emits `llm.call` events
+through the recorder on the real paid path, `apps/hermes/src/boot.ts` builds it
+and flushes it during shutdown, and `apps/hermes/src/handlers/stats.ts` renders
+`/stats` off `computeStats`/`formatStatsMessage`.
 
 ## Recorder contract
 

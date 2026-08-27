@@ -95,7 +95,10 @@ parses to `0` — only a missing `usage` block entirely is malformed (see
 Errors above).
 
 `src/pricing.ts` exports `MODEL_PRICING` (per-model
-`{ inputPerMillionUsd, outputPerMillionUsd, cacheHitDiscount }`, verified
+`{ inputPerMillionUsd, outputPerMillionUsd, cacheHitPerMillionUsd }` — the
+cache-hit price is held as a published *rate*, not a multiplier off the input
+rate: a multiplier has to be divided back out to check against a pricing page,
+and doing that arithmetic hid a rounding error in every entry; verified
 against each provider's own pricing page — see the file-level comment for
 the "as of" date and sources) and `resolveCostUsd(model, usage)`. An unknown
 model id throws `UnpricedModelError(model)` rather than returning `0` —
@@ -151,17 +154,31 @@ rather than hardcoded so a new host needs no code change here.
 `createOpenAiCompatibleAdapter`'s `opts.recorder?: TelemetryRecorder` (from
 `@hermes/core`) is optional — this package stays usable with no telemetry
 wired at all, unlike `usageRepo`/`budget` above. When supplied, `complete()`
-emits exactly one `llm.call` event per call, timed from immediately after the
-budget check to when `completeWithRetry` settles:
+emits exactly one `llm.call` event per call. `durationMs` starts immediately
+after the budget check (nothing has been attempted yet); on the success path
+it stops the moment `completeWithRetry` settles, so the `llm_usage` write that
+follows is excluded from the latency number. On the failure path it is taken in
+the `catch`, which means a failure raised *while* recording usage (the
+`UnpricedModelError` case) includes that write's own time — an error's duration
+is a diagnostic, not the latency metric `/stats` is built on.
 
 - **Success:** fired after `recordCompletionUsage`, reusing the
   `LlmUsageEntry` it already built (`model`/`inputTokens`/`outputTokens`/
   `cacheHitTokens`/`costUsd`) rather than re-deriving those numbers a second
   time — one derivation, one source of truth. `error` is absent.
-- **Provider-call failure** (any error `completeWithRetry` throws — HTTP,
-  timeout, malformed response, abort): fired with all numeric usage fields
-  `0`, `costUsd: 0`, and `error` set to the failure's message, then the
-  original error is rethrown unchanged.
+- **Failure:** fired with `costUsd: 0` and `error` set to the failure's
+  message, then the original error is rethrown unchanged. The token fields
+  depend on how far the call got, and the distinction matters:
+  - *No response was ever produced* — `completeWithRetry` itself threw (HTTP,
+    timeout, malformed response, abort). All numeric usage fields are `0`,
+    because nothing was billed.
+  - *The response arrived and the failure came afterwards, while recording it*
+    — the `UnpricedModelError` path, where the HTTP call succeeded and only
+    cost resolution failed. The event reports the **real billed tokens** from
+    the completion's own usage block, still at `costUsd: 0`. Those tokens were
+    genuinely charged; zeroing them would hide a paid call from `/stats`
+    exactly when a pricing-table drift is the thing you need to see.
+  - `errorEventTokens` is the one function that makes this choice.
 - **Budget-ceiling rejection:** does **not** fire. `assertBudgetNotExceeded`
   throws before any provider call is attempted, so there is no duration or
   cost to attribute — a deliberate scope line, not an omission (see

@@ -611,9 +611,14 @@ export function createOpenAiCompatibleAdapter(
       await assertBudgetNotExceeded(budgetUsageRepo, capUsd, clock ?? systemClock);
 
       const body = buildRequestBody(request);
-      // Timed from immediately after the budget check (nothing attempted
-      // yet) to when `completeWithRetry` settles — the DB write below is
-      // deliberately excluded, see `packages/llm/README.md`.
+      // Timed from immediately after the budget check — nothing attempted
+      // yet. On the success path the clock stops the moment
+      // `completeWithRetry` settles, so `recordCompletionUsage`'s DB write is
+      // excluded from the latency metric. The catch below reads the clock
+      // later, so a failure raised *inside* `recordCompletionUsage` (an
+      // `UnpricedModelError`) does include that write — deliberate: an
+      // error's duration is a diagnostic, not the latency number `/stats`
+      // reports. See `packages/llm/README.md`.
       const startedAt = Date.now();
       let result: CompletionResult | undefined;
       try {
