@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import type { LlmProvider } from "@hermes/llm";
@@ -11,29 +10,9 @@ import {
   recordUsage,
   runMigrations,
 } from "@hermes/store";
+import { testDatabaseUrl } from "@hermes/store/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCompletionHandler } from "../complete";
-
-/**
- * Resolves TEST_DATABASE_URL for this DB-gated suite, falling back to the
- * repo-root `.env` when the shell didn't export it — mirrors
- * `packages/store/src/__tests__/db-env.ts` (there is no `vitest.config.ts`
- * anywhere, so nothing loads `.env` for us otherwise). Duplicated rather
- * than shared: `apps/hermes` has no prior `__tests__/db-env.ts` and adding
- * one is outside this phase's scoped file changes.
- */
-function resolveTestDatabaseUrl(): string | undefined {
-  if ((process.env.TEST_DATABASE_URL ?? "").trim() === "") {
-    try {
-      process.loadEnvFile(fileURLToPath(new URL("../../../../../.env", import.meta.url)));
-    } catch {
-      // No readable .env; the suite skips as usual.
-    }
-  }
-  return process.env.TEST_DATABASE_URL?.trim() || undefined;
-}
-
-const testDatabaseUrl = resolveTestDatabaseUrl();
 
 const ALLOWED_ID = 111;
 

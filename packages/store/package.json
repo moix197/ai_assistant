@@ -5,6 +5,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./testing": "./src/__tests__/db-env.ts"
+  },
   "bin": {
     "hermes-migrate": "./dist/migrate-cli.js"
   },

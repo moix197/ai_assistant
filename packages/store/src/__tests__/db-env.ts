@@ -2,6 +2,13 @@
  * Resolves `TEST_DATABASE_URL` for the DB integration lane, falling back to the
  * repo-root `.env` when the shell did not set it.
  *
+ * Shared with every DB-gated suite in the monorepo — `apps/hermes` reaches it
+ * through the `@hermes/store/testing` subpath export, deliberately kept off the
+ * package's runtime entry point so test-only code never lands in `dist`. The
+ * resolver and the `assertNotTheAppDatabase` guard below travel together on
+ * purpose: a caller that copies only the resolver loses the one check that
+ * stops a mis-set URL from truncating real spend history.
+ *
  * Mirrors `packages/llm/src/__tests__/live/setup.ts`: there is no
  * `vitest.config.ts` anywhere (the plan forbids one), so nothing loads `.env`
  * for us and each gated lane loads it itself. As with the live lane, a missing
