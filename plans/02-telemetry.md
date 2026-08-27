@@ -371,6 +371,22 @@ horizontal-layering shape this format forbids.
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 
+**Post-review fixes** (commit `e90acb5`, on top of `32dadf1`): `durationMs` was
+being measured *after* `recordCompletionUsage`'s `llm_usage` INSERT, so a slow
+database inflated the PRD's headline latency metric; it is now taken the moment
+`completeWithRetry` settles and the one value is reused by both emissions. Also:
+`recorder.record()` is wrapped in a `safeRecord` try/catch so a third-party
+recorder that throws can neither replace the original provider error nor fail an
+already-paid successful completion; `apps/hermes/README.md`'s graceful-shutdown
+section now documents the flush step and `TELEMETRY_FLUSH_TIMEOUT_MS`; the
+duration assertion is now deterministically *positive* via fake timers.
+
+**Deferred to Final Verification (Phase 6):** the four live Verification bullets
+above (bot message → row; bad API key → `is_error = true`; budget rejection →
+zero new rows; `docker compose stop hermes` → buffered event survives) need a
+running bot and a real provider key, so they are hil by nature and are carried
+into Phase 6 rather than being ticked here.
+
 **Post-review fixes** (commit `0fa3688`, on top of `d507286`): the first
 implementation's `flush()` was re-entrant and drained the buffer *before*
 awaiting, so with the default `flushThreshold` (50) below `maxBufferSize`
@@ -424,12 +440,12 @@ the vertical slice every later phase in this PRD builds on — without it,
 
 **Steps:**
 
-- [ ] Wire the recorder into the adapter exactly where `recordCompletionUsage`
+- [x] Wire the recorder into the adapter exactly where `recordCompletionUsage`
       already runs, reusing its returned `LlmUsageEntry` rather than
       recomputing cost/tokens a second time — two independent derivations of
       the same cost number is the kind of drift `01-llm-port`'s cost-accounting
       decision doc exists to prevent
-- [ ] **Do not emit an event for a budget-exceeded rejection.** This is a
+- [x] **Do not emit an event for a budget-exceeded rejection.** This is a
       deliberate scope line (see `Dependencies & Risks`): no provider call
       was attempted, so there is no duration or cost to attribute, and
       `/stats`' error rate is defined as "share of `llm.call` events with
@@ -437,7 +453,7 @@ the vertical slice every later phase in this PRD builds on — without it,
       no `llm.call` event — cannot be conflated with a provider failure.
       Pin this with a test asserting `recorder.record` is called **zero**
       times when `assertBudgetNotExceeded` throws
-- [ ] **Wire the recorder into the real construction sites and pin the
+- [x] **Wire the recorder into the real construction sites and pin the
       wiring, not just the mechanism.** `01-llm-port` shipped two fully
       tested mechanisms (`usageRepo`, then `dedupeRepo`/`AbortController`)
       that `boot.ts`'s real adapter construction never actually received,
@@ -449,7 +465,7 @@ the vertical slice every later phase in this PRD builds on — without it,
       the adapter's options, so deleting that one wiring line in
       `build-llm-provider.ts` fails a test instead of merely losing a
       feature no one notices missing
-- [ ] **Shutdown, precisely:** `controller.abort()` still fires first,
+- [x] **Shutdown, precisely:** `controller.abort()` still fires first,
       unchanged. Then `channel.stop()`'s drain (bounded `DRAIN_TIMEOUT_MS`).
       Then `withTimeout(telemetryRecorder.stop(), TELEMETRY_FLUSH_TIMEOUT_MS)`
       — bounded independently, so a hung flush degrades to "lose the
@@ -458,7 +474,7 @@ the vertical slice every later phase in this PRD builds on — without it,
       `lock.release()`. Then `pool.end()`. Add a test asserting this exact
       order, extending the existing shutdown-ordering test rather than
       writing a parallel one
-- [ ] Confirm `packages/llm`'s adapter still functions with no `recorder`
+- [x] Confirm `packages/llm`'s adapter still functions with no `recorder`
       supplied at all (every test that predates this phase must keep
       passing unmodified) — the option is additive, not a breaking change to
       the adapter's public contract
@@ -474,8 +490,8 @@ the vertical slice every later phase in this PRD builds on — without it,
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
 - [ ] Message the bot (any configured provider) → within a few seconds,
       `psql` into the app database shows a new `telemetry_events` row with
       `name = 'llm.call'`, `is_error = false`, correct `model` and non-zero
@@ -498,13 +514,13 @@ the vertical slice every later phase in this PRD builds on — without it,
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: wire llm.call events into the LLM adapter and shutdown flush`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: wire llm.call events into the LLM adapter and shutdown flush`
+- [x] Phase marked complete
 
 ---
 
