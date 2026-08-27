@@ -287,50 +287,50 @@ becomes possible once this phase ships.)
 
 **Steps:**
 
-- [ ] **Re-list `packages/store/src/migrations/` first** and confirm `004` is
+- [x] **Re-list `packages/store/src/migrations/` first** and confirm `004` is
       still the highest-numbered file before creating `005`/`006` — do not
       trust this plan's assumed numbers if the directory has moved on
-- [ ] Narrow `TurnEvent.outcome` in `@hermes/core` before anything else in this
+- [x] Narrow `TurnEvent.outcome` in `@hermes/core` before anything else in this
       phase depends on it
-- [ ] Migrations `005` (additive `ALTER TABLE`, no backfill needed — existing
+- [x] Migrations `005` (additive `ALTER TABLE`, no backfill needed — existing
       `turn` rows, if any, simply keep `total_cost_usd` `NULL`) and `006`,
       following `001`–`004`'s conventions (own transaction, tracked in
       `schema_migrations`, applied by the existing `runMigrations`)
-- [ ] `getOrCreateThread`/`appendMessages`: use the `INSERT ... ON CONFLICT
+- [x] `getOrCreateThread`/`appendMessages`: use the `INSERT ... ON CONFLICT
       DO NOTHING RETURNING *` + `SELECT`-on-conflict shape, matching
       `llm-dedupe-repo.ts` — confirmed during plan review as the only
       existing upsert idiom in `packages/store`; do not introduce
       `ON CONFLICT DO UPDATE` as a new pattern
-- [ ] **Widen `CompletionRequest`/`CompletionResult` and grep-fix every
+- [x] **Widen `CompletionRequest`/`CompletionResult` and grep-fix every
       existing fixture in `packages/llm`'s test suite.** This is mechanical
       but touches every adapter test file — do it as one focused pass
       (`grep -rn "system:" packages/llm/src/**/__tests__` or similar to find
       every literal), not scattered across later steps
-- [ ] `assemblePrefix`: prove determinism with `definition.tools = []` this
+- [x] `assemblePrefix`: prove determinism with `definition.tools = []` this
       phase — two independent calls with the same definition produce
       byte-identical `system` and `toolDefs` output (an empty-array
       `toolDefs` is still a meaningful assertion: it proves the function is
       pure and takes no hidden dynamic input, which is what Phase 2 depends on
       when tools become non-empty)
-- [ ] `trimHistory`: the newest user message is **never** passed into
+- [x] `trimHistory`: the newest user message is **never** passed into
       `trimHistory` — it's appended to the trimmed result afterward, so it can
       never be dropped even if it alone exceeds `HISTORY_BUDGET_CHARS`. Test
       this specifically, not just "trims oldest first"
-- [ ] `runTurn`'s persistence order: append user + assistant messages
+- [x] `runTurn`'s persistence order: append user + assistant messages
       **together, in one `appendMessages` call, only on success** — a failed
       call (provider error, abort) does not record the user's message either,
       consistent with `llm_dedupe`'s one-inbound-message-equals-one-attempt
       contract (no retry means nothing to replay into history)
-- [ ] Confirm `deps.signal.aborted` is checked **before** the LLM call is
+- [x] Confirm `deps.signal.aborted` is checked **before** the LLM call is
       attempted, not just relied on via the adapter's own abort plumbing —
       this loop must fail fast on an already-aborted signal rather than
       starting a call it can't finish
-- [ ] Wire `buildThreadRepo`/`buildAgent` into `boot.ts`'s real construction
+- [x] Wire `buildThreadRepo`/`buildAgent` into `boot.ts`'s real construction
       site, not just build them — the same "mechanism proven, wiring
       dropped" trap flagged twice already in this codebase's history. Add a
       wiring-pin test (see Tests) asserting the real `boot.ts` path actually
       constructs and passes a real `ThreadRepo`/`Agent`, not a stub
-- [ ] `apps/hermes/src/agent/build-agent.ts`: confirm the existing channel
+- [x] `apps/hermes/src/agent/build-agent.ts`: confirm the existing channel
       identifier string (however `apps/hermes` already names "telegram"
       internally, if at all) before inventing a new constant
 
@@ -348,9 +348,9 @@ becomes possible once this phase ships.)
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green — migrations `005`/`006` apply cleanly, thread
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green — migrations `005`/`006` apply cleanly, thread
       repo round-trips for real
 - [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
 - [ ] Manual: message the bot twice in the same chat, second message
@@ -369,12 +369,12 @@ becomes possible once this phase ships.)
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: agent package, multi-turn history, wired into the completion path`
+- [x] Changes committed: `feat: agent package, multi-turn history, wired into the completion path`
 - [ ] Phase marked complete
 
 ---
@@ -429,10 +429,10 @@ layer. Phase 2's success criteria remain the next user-visible bar.
 
 **Steps:**
 
-- [ ] An implementation agent already made most of these edits, uncommitted —
+- [x] An implementation agent already made most of these edits, uncommitted —
       treat every step below as verify/complete against the worktree's actual
       state, not write-from-scratch
-- [ ] `build-llm-provider.test.ts`: open the shared `baseRequest(model)`
+- [x] `build-llm-provider.test.ts`: open the shared `baseRequest(model)`
       helper at lines 60–67 and add `threadId: null, turnId: null` to its
       one returned object — **do not** go looking for 5 separate
       `CompletionRequest` literals; lines 80, 99, 125, 147, 166 are just the
@@ -440,7 +440,7 @@ layer. Phase 2's success criteria remain the next user-visible bar.
       is reported, because `baseRequest` has no explicit return-type
       annotation. This is the sole remaining `pnpm -r typecheck` failure;
       confirm by rerunning typecheck after
-- [ ] Confirm the four `dispatch-*`/`complete-dedupe*` test files already
+- [x] Confirm the four `dispatch-*`/`complete-dedupe*` test files already
       swapped their fake `llmProvider`+`model` deps for a fake `Agent`
       matching `createCompletionHandler`'s new deps shape from Phase 1 —
       check the fake's surface matches `Agent.handleMessage(channel, chatId,
@@ -454,11 +454,11 @@ layer. Phase 2's success criteria remain the next user-visible bar.
       `toolCalls`/`usage`/`finishReason` envelope), and replace the
       `llmProvider`+`model` fields passed into `createCompletionHandler`
       with a single `agent` field
-- [ ] Confirm `telemetry-event-repo.test.ts`'s `turn`-branch assertions read
+- [x] Confirm `telemetry-event-repo.test.ts`'s `turn`-branch assertions read
       `total_cost_usd` set / `cost_usd` `NULL` (matching what Phase 1's
       `toRow()` change actually writes), not the reverse. (Verified during
       plan review: already correct in the worktree.)
-- [ ] `cache-hit-tokens.live.test.ts` and its `five-tool-prompt.ts` fixture:
+- [x] `cache-hit-tokens.live.test.ts` and its `five-tool-prompt.ts` fixture:
       **verify only, already done** — both already carry
       `threadId: null, turnId: null` on their `CompletionRequest` builders
       (confirmed during plan review). These live under `__tests__/live/`, a
@@ -468,11 +468,11 @@ layer. Phase 2's success criteria remain the next user-visible bar.
       regressed (missing `threadId`/`turnId` on its request builder), add
       `threadId: null, turnId: null` to match `build-llm-provider.test.ts`'s
       fix above
-- [ ] Confirm `apps/hermes/package.json` carries `"@hermes/agent":
+- [x] Confirm `apps/hermes/package.json` carries `"@hermes/agent":
       "workspace:*"` (confirmed during plan review) and `pnpm-lock.yaml` is
       regenerated and consistent (`pnpm install` with no unexpected diff) —
       required for `build-agent.ts`'s import to resolve at all
-- [ ] Move the `Agent` type (decision 2). Today: `packages/agent/src/index.ts`
+- [x] Move the `Agent` type (decision 2). Today: `packages/agent/src/index.ts`
       declares `interface Agent { handleMessage(channel: string, chatId:
       string, text: string): Promise<string>; }` at lines 4–6 but never
       exports it; `apps/hermes/src/agent/build-agent.ts` separately declares
@@ -491,7 +491,7 @@ layer. Phase 2's success criteria remain the next user-visible bar.
       imports it from `../agent/build-agent` (or `../../agent/build-agent`)
       — re-exporting preserves that, rewriting 6 import paths would not be
       minimal
-- [ ] **Six files import `Agent` from `build-agent.ts` today** (confirmed by
+- [x] **Six files import `Agent` from `build-agent.ts` today** (confirmed by
       grep during plan review) — after the re-export above, all six must
       still typecheck with zero import-path edits:
       `apps/hermes/src/__tests__/dispatch-stats-command.test.ts`,
@@ -504,10 +504,10 @@ layer. Phase 2's success criteria remain the next user-visible bar.
       the re-export was done wrong (e.g. `export interface Agent` instead of
       `export type { Agent }` pointing at the `@hermes/agent` import) — fix
       the re-export, do not edit these six files' import paths
-- [ ] `pnpm -r typecheck` — must be fully green, all 8 projects; this is the
+- [x] `pnpm -r typecheck` — must be fully green, all 8 projects; this is the
       gate this phase exists to close
-- [ ] `pnpm -r test` — green
-- [ ] `pnpm test:db` — green
+- [x] `pnpm -r test` — green
+- [x] `pnpm test:db` — green
 
 **Tests:**
 
@@ -524,22 +524,22 @@ assertion would prove nothing the type checker doesn't already prove).
 
 **Verification:**
 
-- [ ] `pnpm -r typecheck` green — THE gate this phase exists to close (Phase
+- [x] `pnpm -r typecheck` green — THE gate this phase exists to close (Phase
       1 fails it; this phase's success is defined by turning it green)
-- [ ] `pnpm -r test` green
-- [ ] `pnpm test:db` green
+- [x] `pnpm -r test` green
+- [x] `pnpm test:db` green
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing (no-tests justification above accepted)
-- [ ] Documentation updated (see Documentation section) — none required this phase, no README content changes
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing (no-tests justification above accepted)
+- [x] Documentation updated (see Documentation section) — none required this phase, no README content changes
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `fix: repair Phase 1 consumer fallout — CompletionRequest ids, agent-handler deps, Agent type export`
+- [x] Changes committed: `fix: repair Phase 1 consumer fallout — CompletionRequest ids, agent-handler deps, Agent type export`
 - [ ] Phase marked complete
 
 ---
