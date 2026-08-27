@@ -17,7 +17,8 @@ non-obvious about it follows from that being true:
   record the spend it exists to prevent. Because the check is the first
   statement in `complete()`, a breach costs zero provider calls — and the
   adapter's 429/5xx retries all sit *inside* one already-checked call, so a
-  retry storm cannot multiply spend past a check.
+  retry storm cannot multiply spend past a check. Honoring a provider's own
+  retry hint lengthens that wait; it never adds a call or a second check.
 - **`>=`, not `>`.** At exactly the cap the operator has spent what they
   authorized. Blocking there makes the configured number the actual limit
   rather than the last value that still permits another call.

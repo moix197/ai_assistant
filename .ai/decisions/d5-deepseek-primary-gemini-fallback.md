@@ -89,7 +89,8 @@ first thing to do if tool calling ever misbehaves there.**
   may return alongside `tool_calls`: the old adapter threw
   `LlmMalformedResponseError` on exactly that reply. It could **not** have
   produced a silent false trigger. `scoreTrial` books a thrown adapter error as
-  a **hard failure**, not as a malformed-JSON trial; hard failures leave a
+  an **infra** failure, never as a malformed-JSON trial; a run with no scorable
+  trial leaves a
   provider `comparable: false`, so the report would have printed
   `INVALID — NOT COMPARABLE` for it and the contingency `NOT EVALUATED`. The
   guards were built for this and would have caught it loudly. Its real blast
@@ -149,6 +150,20 @@ either):
   nothing in the suite notices. On any model swap, re-record that provider's
   fixtures — and if the re-run fails to produce trials, leave the old ones and
   say so here rather than recording a void run over valid evidence.
+- **The fallback is only usable while throttled because its retry hint is
+  honored.** Gemini's 429s send no `Retry-After` and state a 27-53s delay in the
+  error body instead; while the adapter read the header only, every bounded
+  retry expired inside a window that could not have cleared — the designated
+  fallback failed precisely when it was rate limited. The hint is still capped
+  at `nextDelay`'s ceiling, so a longer ask is under-waited: quota must be
+  budgeted before a fallback run, not retried through. See
+  [index → Provider rate-limit backoff](../index.md#cross-cutting).
+- **A rate limit is not a quality datum.** Failed trials classify as `infra`
+  (429/5xx/network/timeout/abort) or `quality` (malformed response), and an
+  infra-only run reports *could not be measured* instead of a score. Before that
+  split every throw counted alike, and the quota-starved run above read as a
+  Gemini **quality** failure — an infrastructure event nearly recorded here as a
+  verdict about the model. Cite no fallback number without its infra count.
 - The check is reproducible: `pnpm test:live` re-runs it, and the recorded
   responses are replayed offline by the default `pnpm test` lane. Re-run it
   before any provider swap; do not carry these numbers forward to a model this
