@@ -22,6 +22,7 @@ function inboundMessage(): InboundMessage {
     text: "/start",
     chatType: "private",
     kind: "message",
+    updateId: 1,
   };
 }
 

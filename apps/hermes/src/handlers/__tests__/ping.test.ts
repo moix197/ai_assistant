@@ -22,6 +22,7 @@ function inboundMessage(): InboundMessage {
     text: "/ping",
     chatType: "private",
     kind: "message",
+    updateId: 1,
   };
 }
 

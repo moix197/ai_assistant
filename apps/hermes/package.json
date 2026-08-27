@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsup src/index.ts --format esm --clean --target node22 --out-dir dist",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests --no-file-parallelism",
     "test:db": "node -e \"try{process.loadEnvFile('../../.env')}catch{};if(!(process.env.TEST_DATABASE_URL||'').trim()){console.error('TEST_DATABASE_URL is unset - pnpm test:db needs a scratch database. See packages/store/README.md');process.exit(1)}\" && vitest run --no-file-parallelism"
   },
   "dependencies": {

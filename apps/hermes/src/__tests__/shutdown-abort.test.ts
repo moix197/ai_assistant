@@ -50,19 +50,4 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
     expect(callOrder).toEqual(["controller.abort", "channel.stop", "lock.release", "pool.end"]);
     expect(controller.signal.aborted).toBe(true);
   });
-
-  it("still completes shutdown when no controller is supplied (backward-compatible default)", async () => {
-    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
-
-    const channel = { stop: vi.fn().mockResolvedValue(undefined) };
-    const lock = { release: vi.fn().mockResolvedValue(undefined) };
-    const pool = { end: vi.fn().mockResolvedValue(undefined) };
-    const logger = createMockLogger();
-
-    await expect(
-      shutdown({ channel, lock, pool, logger, drainTimeoutMs: 1000 }),
-    ).resolves.toBeUndefined();
-
-    expect(pool.end).toHaveBeenCalledOnce();
-  });
 });

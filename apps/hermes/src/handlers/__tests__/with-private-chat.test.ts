@@ -22,6 +22,7 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
     text: "hello",
     chatType: "private",
     kind: "message",
+    updateId: 1,
     ...overrides,
   };
 }

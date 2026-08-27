@@ -119,13 +119,15 @@ export interface ShutdownDeps {
   drainTimeoutMs?: number;
   /**
    * The boot-lifetime `AbortController` (Phase 5) whose signal is threaded
-   * into the LLM adapter. Optional so callers built before this phase are
-   * unaffected when omitted; `boot()`'s real registration always supplies
-   * one. Aborting it here, before `channel.stop()`'s drain wait, is what
-   * makes an in-flight completion call's `fetch` reject promptly instead of
-   * running out its full per-request timeout during shutdown.
+   * into the LLM adapter. Required, not optional: an optional-with-no-op
+   * default would let `boot()`'s real registration silently drop this wire
+   * with nothing catching it — the same Phase-4 trap (a mechanism built and
+   * tested but never actually connected) this project has already been
+   * burned by once. Aborting it here, before `channel.stop()`'s drain wait,
+   * is what makes an in-flight completion call's `fetch` reject promptly
+   * instead of running out its full per-request timeout during shutdown.
    */
-  controller?: { abort(): void };
+  controller: { abort(): void };
 }
 
 /**
@@ -143,7 +145,7 @@ export interface ShutdownDeps {
  */
 export async function shutdown(deps: ShutdownDeps): Promise<void> {
   const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
-  deps.controller?.abort();
+  deps.controller.abort();
   await withTimeout(deps.channel.stop(), drainTimeoutMs);
   await deps.lock.release();
   await deps.pool.end();

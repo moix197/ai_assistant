@@ -3,7 +3,7 @@ import type { Logger } from "@hermes/core";
 import type { LlmProvider } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createDispatchCommand } from "../boot";
-import { createCompletionHandler } from "../handlers/complete";
+import { type LlmDedupeRepo, createCompletionHandler } from "../handlers/complete";
 import { withAllowlist } from "../handlers/with-allowlist";
 import { withPrivateChat } from "../handlers/with-private-chat";
 
@@ -27,6 +27,16 @@ function createMockChannel(): Channel {
   };
 }
 
+// `dedupeRepo` is a mandatory handler option (Phase 5 gap fix — see
+// complete.ts). This file exercises allowlist gating, unrelated to dedupe,
+// so a permissive fake that always reports "claimed" stands in.
+function createPermissiveDedupeRepo(): LlmDedupeRepo {
+  return {
+    claim: vi.fn().mockResolvedValue({ status: "claimed" }),
+    complete: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
     channelUserId: String(DISALLOWED_ID),
@@ -34,6 +44,7 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
     text: "hello",
     chatType: "private",
     kind: "message",
+    updateId: 1,
     ...overrides,
   };
 }
@@ -54,6 +65,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
       llmProvider,
       model: "some-model",
       logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
     });
 
     const dispatchCommand = createDispatchCommand({
@@ -90,6 +102,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
       llmProvider,
       model: "some-model",
       logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
     });
 
     const dispatchCommand = createDispatchCommand({

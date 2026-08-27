@@ -1,11 +1,21 @@
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
-import {
-  BudgetExceededError,
-  type LlmDedupeRepo,
-  type LlmProvider,
-  MAX_TOKENS_PER_TURN,
-} from "@hermes/llm";
+import { BudgetExceededError, type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
+import type { LlmDedupeClaimResult } from "@hermes/store";
+
+/**
+ * Dedupe repo port, declared here rather than in `@hermes/llm`: dedupe is an
+ * application-level concern (this handler owns claiming, not the adapter),
+ * so it has no home in the LLM package's own port surface. `LlmDedupeClaimResult`
+ * is imported, not redeclared, from `@hermes/store` — the single source for
+ * that shape (see `packages/store/src/llm-dedupe-repo.ts`).
+ * `apps/hermes/src/boot.ts` wires this to `@hermes/store`'s
+ * `claim(pool, dedupeKey)` / `complete(pool, dedupeKey, resultText)`.
+ */
+export interface LlmDedupeRepo {
+  claim(dedupeKey: string): Promise<LlmDedupeClaimResult>;
+  complete(dedupeKey: string, resultText: string): Promise<void>;
+}
 
 /**
  * Fixed placeholder — no persona/tool instructions beyond this string.
@@ -34,13 +44,16 @@ export interface CreateCompletionHandlerOptions {
   model: string;
   logger: Logger;
   /**
-   * Optional so handlers/tests built before Phase 5 keep working unchanged
-   * when omitted (no dedupe, prior behavior). `apps/hermes/src/boot.ts` —
-   * the one real production wiring site — always supplies a real,
-   * Postgres-backed one; see `packages/store/README.md`'s `llm_dedupe`
-   * section for the claim/complete states this guards.
+   * Required, not optional: an optional-with-a-silent-no-dedupe default is
+   * exactly the Phase-4 trap this project has already been burned by once
+   * (a mechanism built and tested but never actually wired into the real
+   * adapter). Making it mandatory means a dropped wire is a compile error,
+   * not a silent gap. `apps/hermes/src/boot.ts` — the one real production
+   * wiring site — always supplies a real, Postgres-backed one; see
+   * `packages/store/README.md`'s `llm_dedupe` section for the claim/complete
+   * states this guards.
    */
-  dedupeRepo?: LlmDedupeRepo;
+  dedupeRepo: LlmDedupeRepo;
 }
 
 /** `telegram:<update_id>` — stable across the exact-duplicate redelivery `dedupeRepo` exists to catch. */
@@ -80,13 +93,13 @@ async function recordDedupeCompletion(
  * agentic loop, not this phase's. A thrown provider error is caught and
  * replaced with a generic readable reply instead of crashing the handler.
  *
- * Ordering, load-bearing when `dedupeRepo` is supplied: `claim()` -> (if
- * already `completed`) reply from the stored text, skip the provider call
- * entirely -> otherwise call the provider -> reply -> `complete()`.
- * `complete()` runs strictly after the reply is sent: recording completion
- * first would mark a call "done" the user never actually received. See
- * packages/store/README.md for the claim-to-complete crash window this
- * ordering accepts as a narrow, fail-open residual risk.
+ * Ordering, load-bearing: `claim()` -> (if already `completed`) reply from
+ * the stored text, skip the provider call entirely -> otherwise call the
+ * provider -> reply -> `complete()`. `complete()` runs strictly after the
+ * reply is sent: recording completion first would mark a call "done" the
+ * user never actually received. See packages/store/README.md for the
+ * claim-to-complete crash window this ordering accepts as a narrow,
+ * fail-open residual risk.
  */
 export function createCompletionHandler(
   options: CreateCompletionHandlerOptions,
@@ -104,12 +117,10 @@ export function createCompletionHandler(
     const dedupeKey = deriveDedupeKey(message);
 
     try {
-      if (dedupeRepo) {
-        const claimResult = await dedupeRepo.claim(dedupeKey);
-        if (claimResult.status === "completed") {
-          await channel.send(message.chatId, claimResult.resultText);
-          return;
-        }
+      const claimResult = await dedupeRepo.claim(dedupeKey);
+      if (claimResult.status === "completed") {
+        await channel.send(message.chatId, claimResult.resultText);
+        return;
       }
 
       const result = await llmProvider.complete({
@@ -121,9 +132,7 @@ export function createCompletionHandler(
       });
       await channel.send(message.chatId, result.text);
 
-      if (dedupeRepo) {
-        await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, result.text);
-      }
+      await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, result.text);
     } catch (error) {
       if (error instanceof BudgetExceededError) {
         logger.error("llm completion rejected, monthly budget exceeded", {

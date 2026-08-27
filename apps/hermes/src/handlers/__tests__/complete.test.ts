@@ -2,7 +2,7 @@ import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError, LlmHttpError, type LlmProvider, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
-import { createCompletionHandler } from "../complete";
+import { type LlmDedupeRepo, createCompletionHandler } from "../complete";
 
 const ALLOWED_ID = 111;
 
@@ -23,6 +23,18 @@ function createMockChannel(): Channel {
   };
 }
 
+// `dedupeRepo` is a mandatory handler option (Phase 5 gap fix — see
+// complete.ts). This file exercises unrelated completion behavior, so a
+// permissive fake that always reports "claimed" (never short-circuits)
+// stands in, mirroring how other suites wire a no-op for a mandatory,
+// unrelated-to-the-test-at-hand dependency.
+function createPermissiveDedupeRepo(): LlmDedupeRepo {
+  return {
+    claim: vi.fn().mockResolvedValue({ status: "claimed" }),
+    complete: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
   return {
     channelUserId: String(ALLOWED_ID),
@@ -30,6 +42,7 @@ function inboundMessage(overrides: Partial<InboundMessage> = {}): InboundMessage
     text: "hello",
     chatType: "private",
     kind: "message",
+    updateId: 1,
     ...overrides,
   };
 }
@@ -46,7 +59,13 @@ describe("createCompletionHandler", () => {
         finishReason: "stop",
       }),
     };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await handler(inboundMessage());
 
@@ -63,7 +82,13 @@ describe("createCompletionHandler", () => {
       finishReason: "stop",
     });
     const llmProvider: LlmProvider = { complete };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await handler(inboundMessage({ text: "what is the capital of France?" }));
 
@@ -82,7 +107,13 @@ describe("createCompletionHandler", () => {
     const llmProvider: LlmProvider = {
       complete: vi.fn().mockRejectedValue(new LlmHttpError("HTTP 500", 500)),
     };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
     expect(channel.send).toHaveBeenCalledTimes(1);
@@ -99,7 +130,13 @@ describe("createCompletionHandler", () => {
     const llmProvider: LlmProvider = {
       complete: vi.fn().mockRejectedValue(new LlmTimeoutError("timed out")),
     };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
     expect(channel.send).toHaveBeenCalledTimes(1);
@@ -111,7 +148,13 @@ describe("createCompletionHandler", () => {
     const llmProvider: LlmProvider = {
       complete: vi.fn().mockRejectedValue(new BudgetExceededError(5, 5.5)),
     };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
     expect(channel.send).toHaveBeenCalledTimes(1);
@@ -130,7 +173,13 @@ describe("createCompletionHandler", () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
     const llmProvider: LlmProvider = { complete: vi.fn() };
-    const handler = createCompletionHandler({ channel, llmProvider, model: "some-model", logger });
+    const handler = createCompletionHandler({
+      channel,
+      llmProvider,
+      model: "some-model",
+      logger,
+      dedupeRepo: createPermissiveDedupeRepo(),
+    });
 
     await handler(inboundMessage({ kind: "edited_message" }));
 

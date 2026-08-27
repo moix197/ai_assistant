@@ -38,8 +38,9 @@ describe("shutdown", () => {
       }),
     };
     const logger = createMockLogger();
+    const controller = { abort: vi.fn() };
 
-    await shutdown({ channel, lock, pool, logger, drainTimeoutMs: 1000 });
+    await shutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 1000 });
     callOrder.push("process.exit");
 
     expect(callOrder).toEqual(["channel.stop", "lock.release", "pool.end", "process.exit"]);
@@ -62,8 +63,9 @@ describe("shutdown", () => {
       }),
     };
     const logger = createMockLogger();
+    const controller = { abort: vi.fn() };
 
-    await shutdown({ channel, lock, pool, logger, drainTimeoutMs: 20 });
+    await shutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 20 });
 
     expect(callOrder).toEqual(["lock.release", "pool.end"]);
   });
@@ -99,8 +101,9 @@ describe("registerShutdown", () => {
       const lock = { release: vi.fn().mockRejectedValue(new Error("DB down")) };
       const pool = { end: vi.fn().mockResolvedValue(undefined) };
       const logger = createMockLogger();
+      const controller = { abort: vi.fn() };
 
-      registerShutdown({ channel, lock, pool, logger, drainTimeoutMs: 10 });
+      registerShutdown({ channel, lock, pool, logger, controller, drainTimeoutMs: 10 });
       process.emit("SIGTERM");
 
       await vi.runAllTimersAsync();
