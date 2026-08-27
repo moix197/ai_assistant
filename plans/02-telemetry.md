@@ -289,27 +289,27 @@ horizontal-layering shape this format forbids.
 
 **Steps:**
 
-- [ ] **Re-list `packages/store/src/migrations/` first** and confirm `003` is
+- [x] **Re-list `packages/store/src/migrations/` first** and confirm `003` is
       still the highest-numbered file before creating `004_telemetry_events.sql`
       — do not trust this plan's assumed number if the directory has changed
       since this plan was written
-- [ ] Widen `TelemetryEvent` in `@hermes/core` — every other change in this
+- [x] Widen `TelemetryEvent` in `@hermes/core` — every other change in this
       phase depends on the union shape existing. Keep `TelemetryRecorder`
       itself unchanged (`record(event): void`, synchronous) — only the event
       shape changes, not the port's contract
-- [ ] Scaffold `packages/telemetry` per D3's package-creation rule (created
+- [x] Scaffold `packages/telemetry` per D3's package-creation rule (created
       here, never grown inside `llm` or `store` first). Declared dependency:
       `@hermes/core` only — confirm `package.json` does **not** list
       `@hermes/store`, mirroring the same boundary check `01-llm-port` Phase 1
       called "the single most concrete boundary decision in this phase"
-- [ ] Migration `004_telemetry_events.sql`, following `001`–`003`'s
+- [x] Migration `004_telemetry_events.sql`, following `001`–`003`'s
       conventions exactly (own transaction, tracked in `schema_migrations`,
       applied by the existing `runMigrations` — no new migration mechanism)
-- [ ] `insertEvents`: one multi-row `INSERT`, not a loop of single-row
+- [x] `insertEvents`: one multi-row `INSERT`, not a loop of single-row
       inserts — a burst-flushed buffer of 50 events must not become 50 round
       trips. Guard the empty-array case explicitly (a periodic flush firing
       on an empty buffer is the common case, not the exception)
-- [ ] `createBufferedTelemetryRecorder`: `record()` must never `await`
+- [x] `createBufferedTelemetryRecorder`: `record()` must never `await`
       anything and must never throw, under any of the following, all of
       which need a passing test (see Tests below), not just an implementation:
       - **Normal operation:** push to the buffer, return. Reaching
@@ -329,18 +329,18 @@ horizontal-layering shape this format forbids.
         dropped (same code path as overflow, including the `logger.warn`),
         never buffered and never flushed — `stop()` must be a real terminal
         state, not a suggestion
-- [ ] `stop()`: clears the interval, then awaits **one** final flush of
+- [x] `stop()`: clears the interval, then awaits **one** final flush of
       whatever remains — this is the shutdown-time drain Phase 2 depends on.
       `stop()` itself has no timeout internally; Phase 2's shutdown wiring is
       what time-boxes it (see Phase 2's Steps) — do not duplicate a timeout
       mechanism inside `packages/telemetry`, which has no concept of the
       process's overall shutdown budget
-- [ ] Register the two touchpoints the codebase-surface research flags:
+- [x] Register the two touchpoints the codebase-surface research flags:
       `tsconfig.base.json` paths, `Dockerfile` package-manifest COPY — miss
       either and typecheck or the container build breaks on a clean clone.
       No `docker-compose.yml` change needed — this phase introduces no new
       env vars
-- [ ] `packages/telemetry/README.md`, `packages/core/README.md`,
+- [x] `packages/telemetry/README.md`, `packages/core/README.md`,
       `packages/store/README.md`: document as scoped in the file table above
 
 **Tests:**
@@ -353,12 +353,12 @@ horizontal-layering shape this format forbids.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green (catches a missing `tsconfig.base.json` path entry)
-- [ ] `pnpm test:db` green against the compose Postgres — migration, batch
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green (catches a missing `tsconfig.base.json` path entry)
+- [x] `pnpm test:db` green against the compose Postgres — migration, batch
       insert, and the end-to-end recorder round trip all proven for real
-- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
-- [ ] Manually confirm nothing outside `packages/telemetry`'s own tests
+- [x] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
+- [x] Manually confirm nothing outside `packages/telemetry`'s own tests
       references `@hermes/telemetry` yet — `grep -r "@hermes/telemetry"
       apps/ packages/llm packages/store` (excluding `packages/telemetry`
       itself) returns nothing. This is the phase's own "still unwired" claim,
@@ -366,16 +366,30 @@ horizontal-layering shape this format forbids.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: telemetry event union, buffered Postgres recorder`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+
+**Post-review fixes** (commit `0fa3688`, on top of `d507286`): the first
+implementation's `flush()` was re-entrant and drained the buffer *before*
+awaiting, so with the default `flushThreshold` (50) below `maxBufferSize`
+(500) the bound could never be reached — a slow-Postgres burst produced
+unbounded concurrent `insertEvents` calls instead of the documented
+drop-on-overflow backpressure. Fixed with a single-flight guard: while a
+flush is in flight neither `record()` nor the interval starts another, so
+the buffer accumulates and `maxBufferSize` is the real valve; `stop()`
+awaits the in-flight flush, then does its one final flush, and is
+idempotent. Also: interval `unref()`'d, `dropEvent` → `logDroppedEvent`,
+`004`'s `tool_name` index made partial (`WHERE tool_name IS NOT NULL`), and
+two missing assertions added (overflow proven under the *default* config;
+`insertEvents` proven to be exactly one query).
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: telemetry event union, buffered Postgres recorder`
+- [x] Phase marked complete
 
 ---
 
