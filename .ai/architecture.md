@@ -93,7 +93,7 @@ Telegram getUpdates (long poll, 30s)
    │                    │                 allowlisted sender: replying into a
    │                    │                 group broadcasts to everyone in it
    │                    └─ unknown sender rejected before anything else looks at it
-   ▼  handler: /ping | /start | else → completionHandler   ← the fallthrough is
+   ▼  handler: /ping | /start | /stats | else → completionHandler   ← the fallthrough is
    │                                    │                    PAID from here on
    │                                    ▼  dedupe claim `telegram:<updateId>`
    │                                    │     →  packages/store  →  llm_dedupe

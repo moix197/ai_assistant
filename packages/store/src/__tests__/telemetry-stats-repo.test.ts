@@ -159,5 +159,35 @@ describe.skipIf(!testDatabaseUrl)("telemetry-stats-repo (integration)", () => {
 
       expect(topTools).toEqual([]);
     });
+
+    it("excludes rows before sinceUtc and truncates to limit", async () => {
+      const toolCall = (tool: string): TelemetryEvent => ({
+        name: "tool.call",
+        threadId: "t1",
+        turnId: "turn1",
+        tool,
+        durationMs: 10,
+        approved: true,
+      });
+
+      // Outside the window, higher count than anything inside it — if the
+      // window cutoff were broken, this would win the top spot.
+      for (let i = 0; i < 5; i++) {
+        await insertEventAt(`2026-07-15T00:00:0${i}.000Z`, toolCall("old-tool"));
+      }
+      await insertEventAt("2026-08-10T00:00:00.000Z", toolCall("search"));
+      await insertEventAt("2026-08-10T00:00:01.000Z", toolCall("search"));
+      await insertEventAt("2026-08-10T00:00:02.000Z", toolCall("search"));
+      await insertEventAt("2026-08-11T00:00:00.000Z", toolCall("lookup"));
+      await insertEventAt("2026-08-11T00:00:01.000Z", toolCall("lookup"));
+      await insertEventAt("2026-08-12T00:00:00.000Z", toolCall("fetch"));
+
+      const topTools = await getTopToolsSince(pool, SINCE, 2);
+
+      expect(topTools).toEqual([
+        { tool: "search", count: 3 },
+        { tool: "lookup", count: 2 },
+      ]);
+    });
   });
 });

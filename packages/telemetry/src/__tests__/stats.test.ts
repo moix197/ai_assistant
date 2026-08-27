@@ -163,12 +163,12 @@ describe("formatStatsMessage", () => {
     expect(message).toBe(
       [
         "Spend today: $1.234567",
-        "Spend this month: $45.600000 / $100.00 (46%)",
+        "Spend this month: $45.600000 / $100.00 (45.6%)",
         "Calls today: 2",
         "Calls this month: 20",
         "Tokens in/out (month): 2000 / 400",
-        "Cache hit rate (month): 33%",
-        "Error rate (month): 5%",
+        "Cache hit rate (month): 33.3%",
+        "Error rate (month): 5.0%",
         "Top tools (month): search: 5, lookup: 2",
       ].join("\n"),
     );

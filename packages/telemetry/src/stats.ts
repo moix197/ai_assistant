@@ -93,8 +93,9 @@ function formatUsd(amountUsd: number): string {
   return `$${amountUsd.toFixed(6)}`;
 }
 
+/** One decimal place — `Math.round` would render 1 error in 500 calls as `0%`. */
 function formatPercent(rate: number): string {
-  return `${Math.round(rate * 100)}%`;
+  return `${(rate * 100).toFixed(1)}%`;
 }
 
 function formatTopTools(topTools: ToolCount[]): string {
@@ -110,10 +111,10 @@ function formatTopTools(topTools: ToolCount[]): string {
  * omitting the section.
  */
 export function formatStatsMessage(stats: Stats): string {
-  const budgetPercent = Math.round((stats.spendMonthUsd / stats.capUsd) * 100);
+  const budgetRate = computeRate(stats.spendMonthUsd, stats.capUsd);
   return [
     `Spend today: ${formatUsd(stats.spendTodayUsd)}`,
-    `Spend this month: ${formatUsd(stats.spendMonthUsd)} / $${stats.capUsd.toFixed(2)} (${budgetPercent}%)`,
+    `Spend this month: ${formatUsd(stats.spendMonthUsd)} / $${stats.capUsd.toFixed(2)} (${formatPercent(budgetRate)})`,
     `Calls today: ${stats.callsToday}`,
     `Calls this month: ${stats.callsMonth}`,
     `Tokens in/out (month): ${stats.inputTokensMonth} / ${stats.outputTokensMonth}`,

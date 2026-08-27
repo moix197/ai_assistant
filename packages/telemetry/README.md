@@ -74,6 +74,14 @@ for the time-boxed call site. `stop()` is idempotent: calling it again
 after it has already resolved (or while the first call is still in
 flight) is a no-op that resolves without a second flush.
 
+## `created_at` is flush time, not event time
+
+`telemetry_events.created_at` is stamped by `insertEvents` at flush time, not
+when `record()` was called. Buffering plus the flush interval means an event
+can land in the adjacent day's or month's bucket if it occurs within one
+flush interval of a UTC boundary — a rollup counting it in "today" or "this
+month" may occasionally disagree with when the event actually happened.
+
 ## Testing
 
 `src/__tests__/recorder.test.ts` (always runs, no DB) covers every behavior
