@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-26
 **Branch:** `feat/01-llm-port`
-**Status:** Phases 1–5 complete; Phase 6 (Final Verification, hil) in progress — automated lanes green, two container checks and the CLAUDE.md function-length nits outstanding
+**Status:** Phases 1–6 complete. Phase 6 closed with its exceptions recorded in its execution notes: `pnpm test:live` fails on Gemini free-tier quota, the two container-level shutdown checks were not run, the repo has no CI, and two over-length functions are carried to follow-up. Four boxes stay unticked because that work did not happen.
 
 ## Context
 
@@ -1115,7 +1115,7 @@ as these checkbox updates.
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent reviews the entire change end-to-end
 - [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [x] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated on `TEST_DATABASE_URL`), `pnpm test:live` (gated on real credentials — confirm the default `pnpm test` and CI both genuinely exclude it)
+- [ ] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated on `TEST_DATABASE_URL`), `pnpm test:live` (gated on real credentials — confirm the default `pnpm test` and CI both genuinely exclude it)
 - [ ] No CLAUDE.md invariants violated
 - [ ] Feature tested manually: golden path (real LLM reply, env-swap changes
       provider) + edge cases (budget breach, duplicate update from an
@@ -1197,6 +1197,30 @@ as these checkbox updates.
   either provider works as *primary*. Whether Hermes fails over to the fallback
   profile is untested - consistent with this PRD shipping manual failover only
   (edit env, restart), but not evidence of failover working.
+
+- **`All tests pass` is deliberately unticked.** `pnpm test` and `pnpm test:db`
+  are green, but `pnpm test:live` **failed**: its Gemini column exhausted the
+  free-tier quota (7/10 trials HTTP 429), and the run exits non-zero. The
+  hermetic and DB lanes pass; the live lane does not currently pass end to end.
+- **Manual verification, what the orchestrator actually ran.** Confirmed by the
+  operator against the live bot: golden path (real LLM reply, not an echo),
+  non-allowlisted sender gets no reply and costs nothing, group chat behaves,
+  budget ceiling enforced, and the provider env-swap works in both directions.
+- **Two live checks NOT performed.** The mid-flight `SIGTERM` abort
+  (`docker compose stop hermes` -> `LlmAbortedError`, clean exit in the grace
+  period) and the crash-window sanity check (`docker compose kill hermes`
+  mid-flight -> recover, count replies and `llm_usage` rows) were **not run**.
+  Both behaviors are covered by passing automated tests
+  (`shutdown-abort.test.ts`, `shutdown-order.test.ts`,
+  `complete-dedupe-crash-window.test.ts`), but neither was exercised against a
+  real container. Recorded as a known gap, not as a passed check.
+- **`Overall success criteria met` is unticked for the same reason.** Every
+  criterion is satisfied except the two shutdown behaviors above, which are
+  verified in tests but unverified in deployment.
+- **The end-to-end code review predates the last four commits.** It covered
+  Phases 1-5 as of `251523b`; `b15523e`, `b3669e5`, `e72bb05`, `2464a26` and
+  `2e69a21` landed after it. The adapter retry path and the section 8 scoring
+  changes in `2464a26` have not been reviewed by a second pass.
 
 ## Documentation
 
