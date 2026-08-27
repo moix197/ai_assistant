@@ -11,6 +11,7 @@ import { type Logger, createLogger, systemClock } from "@hermes/core";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
+  type InstanceLock,
   type Pool,
   acquireInstanceLock,
   claim as claimDedupe,
@@ -408,35 +409,40 @@ function subscribeGatedDispatch(deps: MessageHandlerDeps): void {
 }
 
 /**
- * Thin entry point, in load-bearing order (see
- * `.ai/architecture.md#boot-and-shutdown-order`): config -> models-priced
- * check -> logger -> pool (waited + migrated) -> webhook cleared -> advisory
- * lock -> health server -> poller -> handlers -> shutdown registration. The
- * models-priced check runs before any DB or network I/O so a misconfigured
- * `LLM_PRIMARY_MODEL`/`LLM_FALLBACK_MODEL` fails fast rather than after a
- * slow or hanging connection attempt. The lock is taken before the health
- * server starts and before the poller exists, so an instance that loses the
- * race never briefly reports healthy and never races Telegram's
- * one-getUpdates-consumer-per-token rule.
+ * Acquires the single-instance advisory lock, or performs the losing-the-race
+ * exit dance (release the not-acquired lock, log, close the pool) and returns
+ * `undefined` so `boot()` can return early. Extracted so `boot()`'s body
+ * reads as one call per load-bearing step.
  */
-export async function boot(): Promise<void> {
-  const config = loadConfigOrExit();
-  assertModelsPricedOrExit(config);
-  const logger = createLogger({ level: config.LOG_LEVEL, fields: { service: "hermes" } });
-  logger.info("booting", { config: toRedactedLog(config) });
-
-  const pool = await createMigratedPool(config.DATABASE_URL);
-  const telegramClient = await createPollingTelegramClient(config.TELEGRAM_BOT_TOKEN);
-
-  const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, config.DATABASE_URL);
+async function acquireInstanceLockOrExit(
+  pool: Pool,
+  databaseUrl: string,
+  logger: Logger,
+): Promise<InstanceLock | undefined> {
+  const instanceLock = await acquireInstanceLock(INSTANCE_LOCK_KEY, databaseUrl);
   if (!instanceLock.acquired) {
     await instanceLock.release();
     await exitAfterLostInstanceLock(pool, logger);
-    return;
+    return undefined;
   }
+  return instanceLock;
+}
 
-  serveHealth(pool, config.PORT, logger);
-
+/**
+ * Wires the boot-lifetime abort controller, the Telegram channel, the
+ * telemetry recorder, the gated message-handler subscription, and shutdown
+ * registration — the steps that only run once the instance lock is held and
+ * the health server is serving. Order preserved exactly as it was inline in
+ * `boot()`: controller -> channel -> telemetry recorder -> dispatch
+ * subscription -> shutdown registration.
+ */
+function wireChannelAndShutdown(
+  telegramClient: TelegramClient,
+  pool: Pool,
+  config: Env,
+  logger: Logger,
+  instanceLock: InstanceLock,
+): void {
   // Boot-lifetime, not per-request: the poller is serial (never more than
   // one in-flight completion call), so one shared controller is sufficient.
   // Aborted as the first step of shutdown() (see above), before the drain
@@ -469,4 +475,33 @@ export async function boot(): Promise<void> {
     controller: shutdownController,
     telemetryRecorder,
   });
+}
+
+/**
+ * Thin entry point, in load-bearing order (see
+ * `.ai/architecture.md#boot-and-shutdown-order`): config -> models-priced
+ * check -> logger -> pool (waited + migrated) -> webhook cleared -> advisory
+ * lock -> health server -> poller -> handlers -> shutdown registration. The
+ * models-priced check runs before any DB or network I/O so a misconfigured
+ * `LLM_PRIMARY_MODEL`/`LLM_FALLBACK_MODEL` fails fast rather than after a
+ * slow or hanging connection attempt. The lock is taken before the health
+ * server starts and before the poller exists, so an instance that loses the
+ * race never briefly reports healthy and never races Telegram's
+ * one-getUpdates-consumer-per-token rule.
+ */
+export async function boot(): Promise<void> {
+  const config = loadConfigOrExit();
+  assertModelsPricedOrExit(config);
+  const logger = createLogger({ level: config.LOG_LEVEL, fields: { service: "hermes" } });
+  logger.info("booting", { config: toRedactedLog(config) });
+
+  const pool = await createMigratedPool(config.DATABASE_URL);
+  const telegramClient = await createPollingTelegramClient(config.TELEGRAM_BOT_TOKEN);
+
+  const instanceLock = await acquireInstanceLockOrExit(pool, config.DATABASE_URL, logger);
+  if (!instanceLock) return;
+
+  serveHealth(pool, config.PORT, logger);
+
+  wireChannelAndShutdown(telegramClient, pool, config, logger, instanceLock);
 }
