@@ -180,15 +180,23 @@ function runHeadline(allMetrics: ProviderMetrics[], verdict: ContingencyVerdict)
   if (!allMetrics.every((metrics) => metrics.comparable)) {
     return "INVALID RUN — NOT COMPARABLE, nothing here is a measured result";
   }
+  // An infra failure (429/5xx/network/timeout) means the run was starved, not
+  // that the model was judged and found wanting — say so distinctly rather
+  // than reporting a plain "FAIL" a reader could mistake for a quality
+  // result recordable in D5.
+  if (allMetrics.some((metrics) => metrics.infraFailures > 0)) {
+    return "FAIL — INFRASTRUCTURE (429/5xx/network/timeout), not a quality result; rerun once cleared";
+  }
   const clean = allMetrics.every(
-    (metrics) => metrics.hardFailures === 0 && metrics.scoredTrials === TRIALS_PER_PROVIDER,
+    (metrics) => metrics.qualityFailures === 0 && metrics.scoredTrials === TRIALS_PER_PROVIDER,
   );
   return clean && !verdict.fired ? "PASS" : "FAIL";
 }
 
 function providerFootnote(metrics: ProviderMetrics): string {
   return (
-    `${metrics.label}: model=${metrics.model}, hard failures=${metrics.hardFailures}, ` +
+    `${metrics.label}: model=${metrics.model}, ` +
+    `infra failures=${metrics.infraFailures}, quality failures=${metrics.qualityFailures}, ` +
     `trials still truncated after the ladder=${metrics.truncatedTrials}, ` +
     `bigger-budget re-runs spent=${metrics.truncationRetries}`
   );
@@ -231,7 +239,17 @@ describe.skipIf(!liveProfiles)("§8 live tool-calling check — DeepSeek vs Gemi
 
       for (const metrics of allMetrics) {
         expect(metrics.comparable, `${metrics.label} produced no scorable trials`).toBe(true);
-        expect(metrics.hardFailures, `${metrics.label} had unrecoverable trials`).toBe(0);
+        // Split so a rate-limited/outage run fails on its own, distinct
+        // assertion, with a message that says "we could not measure" —
+        // never conflated with the model-quality assertion below it.
+        expect(
+          metrics.infraFailures,
+          `${metrics.label} could not be measured — ${metrics.infraFailures} trial(s) failed on infrastructure grounds (429/5xx/network/timeout), not model quality. This is not a quality result; rerun once the provider's rate limit/outage has cleared.`,
+        ).toBe(0);
+        expect(
+          metrics.qualityFailures,
+          `${metrics.label} produced ${metrics.qualityFailures} quality failure(s) (malformed/unparseable response) — a genuine model-quality result.`,
+        ).toBe(0);
         expect(
           metrics.truncatedTrials,
           `${metrics.label} still truncated at ${MAX_TOKENS_LADDER.at(-1)} maxTokens`,

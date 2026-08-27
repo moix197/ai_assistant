@@ -108,7 +108,14 @@ describe("§8 tool-calling check — offline fixture replay", () => {
 
       for (const metrics of allMetrics) {
         expect(metrics.comparable, `${metrics.label} produced no scorable trials`).toBe(true);
-        expect(metrics.hardFailures, `${metrics.label} had unrecoverable trials`).toBe(0);
+        expect(
+          metrics.infraFailures,
+          `${metrics.label} had infrastructure failures (429/5xx/network/timeout), not a quality result`,
+        ).toBe(0);
+        expect(
+          metrics.qualityFailures,
+          `${metrics.label} had quality failures (malformed/unparseable response)`,
+        ).toBe(0);
         expect(metrics.scoredTrials, `${metrics.label} scored trials`).toBe(TRIALS_PER_PROVIDER);
         expect(metrics.correctToolCalls).toBeLessThanOrEqual(metrics.scoredTrials);
         expect(metrics.malformedJsonTrials).toBeLessThanOrEqual(metrics.attemptedToolCallTrials);

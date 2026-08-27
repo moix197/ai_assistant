@@ -53,7 +53,11 @@ Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 
 - `429` — bounded retries, backoff via `nextDelay`; the provider's
   `Retry-After` header (seconds) wins over the computed backoff when
-  present, same as the Telegram client's `retry_after` handling.
+  present, same as the Telegram client's `retry_after` handling. Google's
+  Generative Language API sends no `Retry-After` header on a 429 at all — the
+  adapter falls back to the body's `google.rpc.RetryInfo.retryDelay` detail
+  (e.g. `"26.6s"`) instead. Either source is still capped by `nextDelay`'s
+  usual ceiling.
 - `5xx` or a network/timeout failure — bounded retries, exponential backoff.
 - Any other non-ok status — thrown immediately as `LlmHttpError` (carries
   `status`), not retried.

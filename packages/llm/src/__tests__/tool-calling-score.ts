@@ -27,6 +27,7 @@
  */
 
 import type { ToolCall } from "@hermes/core";
+import { LlmMalformedResponseError } from "../errors";
 import type { CompletionResult, ProviderProfile, ToolDefinition } from "../port";
 
 /** Trials per provider, per ROADMAP §8 (bounded and free-tier-safe). */
@@ -47,6 +48,17 @@ export const CONTINGENCY_TRIGGER = {
   deepseekAccuracyPctAtLeast: 90,
 } as const;
 
+/**
+ * `"infra"` — the trial could not be measured at all: a 429/5xx, a network or
+ * timeout error, a shutdown abort, or the harness never getting a result.
+ * `"quality"` — the model *answered*, but with something unusable (malformed
+ * or unparseable). Only a `LlmMalformedResponseError` is a quality signal;
+ * see `classifyFailureKind`. A pure rate-limit run must read as "we could not
+ * measure Gemini", never as "Gemini did badly" — conflating the two nearly
+ * corrupted a decision record from a live run that was purely 429s.
+ */
+export type FailureKind = "infra" | "quality";
+
 export interface TrialOutcome {
   /** The tool the model picked, or `undefined` when it answered with prose. */
   pickedTool: string | undefined;
@@ -58,6 +70,8 @@ export interface TrialOutcome {
   truncated: boolean;
   /** Set when the trial produced neither a scorable answer nor a truncation. */
   failure: string | undefined;
+  /** Set alongside `failure`; `undefined` exactly when `failure` is. */
+  failureKind: FailureKind | undefined;
   detail: string | undefined;
 }
 
@@ -82,7 +96,12 @@ export interface ProviderMetrics {
   truncatedTrials: number;
   /** Extra attempts the ladder spent re-running truncated trials with a bigger budget. */
   truncationRetries: number;
+  /** `infraFailures + qualityFailures`. Kept for callers that only need "did anything go hard-wrong". */
   hardFailures: number;
+  /** 429/5xx/network/timeout/abort: we could not measure this trial at all. */
+  infraFailures: number;
+  /** The model answered with something unusable (malformed/unparseable). A real quality signal. */
+  qualityFailures: number;
 }
 
 export type ProviderFamily = "gemini" | "deepseek" | "unknown";
@@ -208,8 +227,20 @@ const CLEAN_OUTCOME: TrialOutcome = {
   malformedArguments: false,
   truncated: false,
   failure: undefined,
+  failureKind: undefined,
   detail: undefined,
 };
+
+/**
+ * Only a malformed/unparseable response is a genuine quality signal — the
+ * model answered, just with something unusable. Everything else the adapter
+ * throws (`LlmHttpError` for a 429/5xx, `LlmTimeoutError`, `LlmAbortedError`,
+ * a redacted network-failure `Error`) is a transport-level failure: we could
+ * not measure the trial at all, so it must not count against the model.
+ */
+function classifyFailureKind(error: unknown): FailureKind {
+  return error instanceof LlmMalformedResponseError ? "quality" : "infra";
+}
 
 /** Scores one attempt into the three columns. The single source of truth for both lanes. */
 export function scoreTrial(input: TrialInput): TrialOutcome {
@@ -217,14 +248,24 @@ export function scoreTrial(input: TrialInput): TrialOutcome {
     return { ...CLEAN_OUTCOME, truncated: true, detail: 'finish_reason "length", no content' };
   }
   if (input.error !== undefined) return scoreFailedTrial(input.error);
-  if (!input.result) return { ...CLEAN_OUTCOME, failure: "NoResult", detail: "no result recorded" };
+  if (!input.result) {
+    // The harness never got a result and never caught an error either — an
+    // internal inconsistency, not a model answer, so "we could not measure"
+    // (infra) rather than "the model did badly" (quality).
+    return {
+      ...CLEAN_OUTCOME,
+      failure: "NoResult",
+      failureKind: "infra",
+      detail: "no result recorded",
+    };
+  }
   return scoreCompletedTrial(input.result, input);
 }
 
 function scoreFailedTrial(error: unknown): TrialOutcome {
   const failure = error instanceof Error ? error.name : "UnknownError";
   const detail = error instanceof Error ? error.message : String(error);
-  return { ...CLEAN_OUTCOME, failure, detail };
+  return { ...CLEAN_OUTCOME, failure, failureKind: classifyFailureKind(error), detail };
 }
 
 function scoreCompletedTrial(result: CompletionResult, input: TrialInput): TrialOutcome {
@@ -247,6 +288,7 @@ function scoreCompletedTrial(result: CompletionResult, input: TrialInput): Trial
     malformedArguments,
     truncated: false,
     failure: undefined,
+    failureKind: undefined,
     detail: parseFailed ? "tool-call arguments are not valid JSON" : violation,
   };
 }
@@ -295,6 +337,9 @@ export function summarizeOutcomes(
   const attempted = scored.filter((outcome) => outcome.attemptedToolCall);
   const correctToolCalls = scored.filter((outcome) => outcome.correctTool).length;
   const malformedJsonTrials = attempted.filter((outcome) => outcome.malformedArguments).length;
+  const failed = resolved.filter((outcome) => outcome.failure !== undefined);
+  const infraFailures = failed.filter((outcome) => outcome.failureKind === "infra").length;
+  const qualityFailures = failed.filter((outcome) => outcome.failureKind === "quality").length;
 
   return {
     label,
@@ -312,7 +357,9 @@ export function summarizeOutcomes(
       (total, attempts) => total + Math.max(attempts.length - 1, 0),
       0,
     ),
-    hardFailures: resolved.filter((outcome) => outcome.failure !== undefined).length,
+    hardFailures: failed.length,
+    infraFailures,
+    qualityFailures,
   };
 }
 
@@ -420,7 +467,11 @@ function metricsRow(metrics: ProviderMetrics): string {
 function invalidRunNote(metrics: ProviderMetrics): string {
   return [
     `INVALID RUN — ${metrics.label} produced 0 scorable trials out of ${metrics.totalTrials} `,
-    `(${metrics.truncatedTrials} still truncated, ${metrics.hardFailures} hard failures). `,
+    `(${metrics.truncatedTrials} still truncated, ${metrics.infraFailures} infra failures, `,
+    `${metrics.qualityFailures} quality failures). `,
+    metrics.infraFailures > 0 && metrics.qualityFailures === 0
+      ? "This run could not be measured (infrastructure only, e.g. rate limiting) — "
+      : "",
     "Its numbers are NOT COMPARABLE and must not be recorded in D5.",
   ].join("");
 }

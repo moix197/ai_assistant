@@ -316,6 +316,124 @@ describe("createOpenAiCompatibleAdapter — Retry-After honored on 429", () => {
   });
 });
 
+/**
+ * Google's Generative Language API never sends a `Retry-After` header on a
+ * 429 — a live probe confirmed `retry-after: null` — but its JSON body
+ * carries the same hint as a `google.rpc.RetryInfo` detail instead. Without
+ * this fallback the adapter falls through to computed backoff (capped well
+ * under what the provider actually asked for), burning every bounded retry
+ * inside a rate-limit window that cannot have cleared.
+ */
+describe("createOpenAiCompatibleAdapter — RetryInfo body honored when Retry-After is absent", () => {
+  function geminiRateLimitBody(retryDelay: string) {
+    return {
+      error: {
+        code: 429,
+        status: "RESOURCE_EXHAUSTED",
+        message: "Quota exceeded for metric generativelanguage.googleapis.com/...",
+        details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay }],
+      },
+    };
+  }
+
+  it("waits the body's RetryInfo.retryDelay when no Retry-After header is present", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(geminiRateLimitBody("26.6s"), false, 429))
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      // 26.6s from the body, not the ~1s the computed backoff would use for
+      // attempt 1.
+      const retryDelayCall = setTimeoutSpy.mock.calls.find(
+        (call) => typeof call[1] === "number" && call[1] === 26_600,
+      );
+      expect(retryDelayCall).toBeDefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps a RetryInfo delay that exceeds the shared backoff ceiling, same as an oversized header value", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(geminiRateLimitBody("53s"), false, 429))
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      // `nextDelay`'s MAX_DELAY_MS (30s) ceiling applies to a body-sourced
+      // hint exactly as it does to a header-sourced one — no separate cap.
+      const retryDelayCall = setTimeoutSpy.mock.calls.find(
+        (call) => typeof call[1] === "number" && call[1] === 30_000,
+      );
+      expect(retryDelayCall).toBeDefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prefers the Retry-After header over the body's RetryInfo when both are present", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse(geminiRateLimitBody("26.6s"), false, 429, { "retry-after": "3" }),
+        )
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      const retryDelayCall = setTimeoutSpy.mock.calls.find(
+        (call) => typeof call[1] === "number" && call[1] === 3_000,
+      );
+      expect(retryDelayCall).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to computed backoff when the body has no RetryInfo detail either", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ error: { message: "rate limited" } }, false, 429))
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(result.text).toBe("hello there");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("createOpenAiCompatibleAdapter — 5xx exhausts retries", () => {
   it("throws LlmHttpError after bounded retries", async () => {
     vi.useFakeTimers();

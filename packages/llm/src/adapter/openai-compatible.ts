@@ -107,6 +107,41 @@ function parseRetryAfterSeconds(headerValue: string | null): number | undefined 
   return Number.isFinite(seconds) ? seconds : undefined;
 }
 
+/** Parses a protobuf `Duration` string (e.g. `"26.6s"`) into seconds, or `undefined` when malformed. */
+function parseDurationSeconds(duration: unknown): number | undefined {
+  if (typeof duration !== "string") return undefined;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(duration);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Falls back to the error body's `RetryInfo` detail when the response carried
+ * no `Retry-After` header — Google's Generative Language API never sends that
+ * header on a 429, but its JSON body includes a `google.rpc.RetryInfo` detail
+ * with a `retryDelay` duration (e.g. `"26.6s"`) instead. Header wins when
+ * present; this only runs as a fallback (see `callOnce`'s call site).
+ */
+function parseRetryInfoDelaySeconds(bodyText: string): number | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(bodyText);
+  } catch {
+    return undefined;
+  }
+  const details = (payload as { error?: { details?: unknown } })?.error?.details;
+  if (!Array.isArray(details)) return undefined;
+
+  const retryInfo = details.find(
+    (detail): detail is { retryDelay?: unknown } =>
+      typeof detail === "object" &&
+      detail !== null &&
+      "@type" in detail &&
+      typeof (detail as { "@type"?: unknown })["@type"] === "string" &&
+      (detail as { "@type": string })["@type"].endsWith("RetryInfo"),
+  );
+  return parseDurationSeconds(retryInfo?.retryDelay);
+}
+
 /**
  * Serializes one port-level `ToolDefinition` into the OpenAI-compatible wire
  * envelope. The port's shape is deliberately provider-neutral
@@ -294,7 +329,9 @@ async function callOnce(
         if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
         return "";
       });
-      const retryAfter = parseRetryAfterSeconds(response.headers.get("retry-after"));
+      const retryAfter =
+        parseRetryAfterSeconds(response.headers.get("retry-after")) ??
+        parseRetryInfoDelaySeconds(rawText);
       throw new LlmHttpError(
         redact(`LLM provider returned HTTP ${response.status}: ${rawText}`, apiKey),
         response.status,

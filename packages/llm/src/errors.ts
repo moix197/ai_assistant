@@ -31,10 +31,14 @@ export class LlmAbortedError extends Error {
 }
 
 /**
- * Carries the HTTP status of a non-ok response from the provider, plus the
- * server's `Retry-After` header (seconds) when a 429 response sends one —
- * an authoritative signal that wins over computed backoff, mirroring
- * `channels/src/telegram/client.ts`'s `TelegramApiError.retryAfter`.
+ * Carries the HTTP status of a non-ok response from the provider, plus its
+ * retry hint (seconds) when a 429 response sends one — an authoritative
+ * signal that wins over computed backoff, mirroring
+ * `channels/src/telegram/client.ts`'s `TelegramApiError.retryAfter`. Sourced
+ * from the standard `Retry-After` header when present; Google's Generative
+ * Language API sends no such header on a 429, so the adapter falls back to
+ * the body's `google.rpc.RetryInfo.retryDelay` detail instead (see
+ * `adapter/openai-compatible.ts`'s `parseRetryInfoDelaySeconds`).
  */
 export class LlmHttpError extends Error {
   readonly status: number;
