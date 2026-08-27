@@ -413,6 +413,33 @@ describe("createOpenAiCompatibleAdapter — RetryInfo body honored when Retry-Af
     }
   });
 
+  it("ignores a blank Retry-After header and still honors the body's RetryInfo", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse(geminiRateLimitBody("26.6s"), false, 429, { "retry-after": "  " }),
+        )
+        .mockResolvedValueOnce(jsonResponse(validCompletionBody()));
+      const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+      const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+      const resultPromise = adapter.complete(baseRequest());
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      // `Number("  ")` is 0, so a blank header would otherwise read as a
+      // present-but-zero hint and suppress the body fallback entirely.
+      const retryDelayCall = setTimeoutSpy.mock.calls.find(
+        (call) => typeof call[1] === "number" && call[1] === 26_600,
+      );
+      expect(retryDelayCall).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back to computed backoff when the body has no RetryInfo detail either", async () => {
     vi.useFakeTimers();
     try {

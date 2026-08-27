@@ -96,8 +96,6 @@ export interface ProviderMetrics {
   truncatedTrials: number;
   /** Extra attempts the ladder spent re-running truncated trials with a bigger budget. */
   truncationRetries: number;
-  /** `infraFailures + qualityFailures`. Kept for callers that only need "did anything go hard-wrong". */
-  hardFailures: number;
   /** 429/5xx/network/timeout/abort: we could not measure this trial at all. */
   infraFailures: number;
   /** The model answered with something unusable (malformed/unparseable). A real quality signal. */
@@ -357,7 +355,6 @@ export function summarizeOutcomes(
       (total, attempts) => total + Math.max(attempts.length - 1, 0),
       0,
     ),
-    hardFailures: failed.length,
     infraFailures,
     qualityFailures,
   };

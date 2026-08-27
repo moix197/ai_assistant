@@ -100,11 +100,16 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Parses a `Retry-After` header value (seconds) into a number, or `undefined` when absent/non-numeric. */
+/**
+ * Parses a `Retry-After` header value (seconds) into a number, or `undefined`
+ * when absent, blank, non-numeric, or non-positive. Blank matters: `Number("")`
+ * is `0`, which is non-nullish and would suppress the `RetryInfo` body fallback
+ * below while also asking for five zero-wait retries.
+ */
 function parseRetryAfterSeconds(headerValue: string | null): number | undefined {
-  if (headerValue === null) return undefined;
+  if (headerValue === null || headerValue.trim() === "") return undefined;
   const seconds = Number(headerValue);
-  return Number.isFinite(seconds) ? seconds : undefined;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 /** Parses a protobuf `Duration` string (e.g. `"26.6s"`) into seconds, or `undefined` when malformed. */

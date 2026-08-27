@@ -88,9 +88,12 @@ first thing to do if tool calling ever misbehaves there.**
   response side rejected `content: null`, which an OpenAI-compatible provider
   may return alongside `tool_calls`: the old adapter threw
   `LlmMalformedResponseError` on exactly that reply. It could **not** have
-  produced a silent false trigger. `scoreTrial` books a thrown adapter error as
-  an **infra** failure, never as a malformed-JSON trial; a run with no scorable
-  trial leaves a
+  produced a silent false trigger. `scoreTrial` books a thrown adapter error as a
+  *failed* trial — since `2464a26` a `LlmMalformedResponseError` specifically
+  counts as a **quality** failure rather than an infra one — but a failed trial
+  is never a malformed-JSON *trial*: that rate counts only trials that returned
+  parseable-but-bad arguments, so an adapter-side throw cannot inflate it or
+  fire the contingency. A run with no scorable trial leaves a
   provider `comparable: false`, so the report would have printed
   `INVALID — NOT COMPARABLE` for it and the contingency `NOT EVALUATED`. The
   guards were built for this and would have caught it loudly. Its real blast
