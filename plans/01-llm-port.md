@@ -753,25 +753,25 @@ usage table not growing further.
 
 **Steps:**
 
-- [ ] `resolveBudgetCapUsd`: reads the already-parsed config value; this is
+- [x] `resolveBudgetCapUsd`: reads the already-parsed config value; this is
       purely a naming/indirection seam per decision — do not add caching,
       DB reads, or multi-tenancy here, that is explicitly future scope
-- [ ] `assertBudgetNotExceeded`: month boundary is **calendar month, UTC** —
+- [x] `assertBudgetNotExceeded`: month boundary is **calendar month, UTC** —
       use an injected `Clock` (already exists in `@hermes/core` from Phase 1
       of `00-skeleton`) so this is testable without waiting for a real
       month rollover
-- [ ] Wire the check into the adapter's `complete()` as the very first thing
+- [x] Wire the check into the adapter's `complete()` as the very first thing
       it does, before building the request — a breach must cost nothing
-- [ ] `BudgetExceededError` message includes both numbers (`spentUsd`,
+- [x] `BudgetExceededError` message includes both numbers (`spentUsd`,
       `capUsd`) so the boot logs are useful, but the **user-facing** Telegram
       reply is a fixed friendly string, not the raw error message (avoid
       leaking internal cost figures to chat by default — note this as a
       deliberate choice in the handler, `/stats` is where spend surfaces,
       per 02-telemetry)
-- [ ] Confirm no test or manual run can bypass the check by calling the
+- [x] Confirm no test or manual run can bypass the check by calling the
       adapter without a `usageRepo`/cap wired — the constructor should make
       the dependency mandatory, not optional-with-a-silent-no-op default
-- [ ] **Design note — granularity of "breached mid-conversation":** the check
+- [x] **Design note — granularity of "breached mid-conversation":** the check
       gates the *next* call against spend already recorded, not against spend
       still in flight. A call that passed the check and is executing when its
       own cost would push cumulative spend over the cap still completes and
@@ -795,27 +795,93 @@ usage table not growing further.
 
 **Verification:**
 
-- [ ] `pnpm test` green
-- [ ] `pnpm test:db` green (month-boundary sum test, against the compose Postgres)
-- [ ] Manual: set `LLM_MONTHLY_BUDGET_USD` to a value already exceeded by
+- [x] `pnpm test` green
+- [x] `pnpm test:db` green (month-boundary sum test, against the compose Postgres)
+- [x] Manual: set `LLM_MONTHLY_BUDGET_USD` to a value already exceeded by
       Phase 3's live-test spend (or send messages until it is), restart,
       message the bot → readable "out of budget" reply, no stack trace in
       `docker compose logs`
-- [ ] Confirm via `psql` that no new `llm_usage` row was written for the
+- [x] Confirm via `psql` that no new `llm_usage` row was written for the
       rejected call (the ceiling really did stop the spend, not just the reply)
+
+**Execution notes (deviations from the plan as written):**
+
+- **This phase's File-changes table was stale, and the first implementation
+  shipped a ceiling that enforced nothing.** The table predates Phase 3, which
+  moved adapter construction out of `boot.ts` into
+  `apps/hermes/src/llm/build-llm-provider.ts`. Commit `40bca81` therefore built
+  the whole budget mechanism, passed every test, and never wired it to the
+  running bot — `buildLlmProvider` constructed the adapter with no `budget`, so
+  the real Telegram path had zero enforcement. The implementing agent was right
+  to stop at the file list rather than widen it; the orchestrator authorized the
+  expansion, and `dd69545` closed it. Worth recording because the phase looked
+  complete and green at the point where it was still entirely inert.
+- **`usageRepo` and `budget` are now required adapter options, not optional.**
+  The Steps called for this ("mandatory, not optional-with-a-silent-no-op
+  default") and `40bca81` shipped `budget?` with an `if (opts?.budget)` guard,
+  which leaves the ceiling bypassable by omission — the same silent-money-hole
+  shape Phase 3's review had already raised about `usageRepo`'s no-op default.
+  Both were made required together in `dd69545`, across ~26 call sites. `logger`
+  stays optional: its only effect is a diagnostic warn, so omitting it cannot
+  cost money.
+- **`DEFAULT_LLM_MONTHLY_BUDGET_USD = 1_000_000` was reviewed and kept.** It
+  looks like a silent hole but is not: compose passes an unset host var as `""`,
+  which `z.coerce.number()` reads as `0` and `.positive()` rejects loudly, so a
+  real deployment cannot fall through to it. The default only serves callers
+  that do not touch the budget feature.
+- **Test fixture rows reached the app database and were counted as real spend.**
+  A `provider: "p", model: "m1", cost_usd: 0.005` row from
+  `llm-usage-repo.test.ts` was found in the `hermes` database, accounting for
+  92% of the month's apparent spend ($0.005424 reported vs. $0.000424 real). A
+  `test:db` run had been pointed at the app database instead of the scratch one.
+  This is a budget-integrity defect, not just untidy data: the ceiling reads
+  whatever `recordUsage` wrote, so any stray test run permanently lowers the
+  effective cap in real dollars with nothing reporting it. The row was deleted
+  and `db-env.ts` now refuses to run when `TEST_DATABASE_URL` equals
+  `DATABASE_URL` or names a database not ending in `_test` — two independent
+  checks, throwing rather than skipping, since a silent skip is how the
+  misconfiguration survived unnoticed the first time.
+- **The store suite is only deterministic under `--no-file-parallelism`.** Run
+  in parallel, the two `llm_usage`-touching files race and fail 25/25; serially
+  they pass 25/25. The flag was added to both `test` and `test:db` and is
+  load-bearing, not a tuning preference.
+- **A pre-existing flake in `sumCostSince` was diagnosed and fixed.** `since`
+  came from `new Date()` while `created_at` defaults to Postgres `now()` — a
+  different clock — so roughly 1 run in 20 dropped the first row from the sum
+  (expected 0.003, got 0.002). `since` is now backdated one second; the window
+  under test is minutes wide. The new month-boundary test injects every
+  timestamp and never had the problem.
+- **Manual verification, performed live by the orchestrator.** With the cap at
+  `1e-7` and $0.005424 already recorded, two Telegram messages both received
+  "Hermes is out of budget for this month. Please try again after the monthly
+  reset." The `llm_usage` count did not move (3 rows, unchanged), proving the
+  ceiling stopped the spend and not merely the reply, and the logs carried a
+  structured `capUsd`/`spentUsd` error line with no stack trace and no figures
+  leaked to chat. Restoring the cap to `5` and messaging again produced a normal
+  answer and a new usage row (+$0.000128) — the ceiling releases rather than
+  permanently wedging the bot.
+- **Two `.env` files exist and only one is read.** The worktree's `.env` is
+  gitignored and does not track the repo root's; editing the root copy has no
+  effect on the running bot. Separately, `docker compose restart` re-reads
+  neither `.env` nor rebuilt code — the container under test was built before
+  this phase existed, so `docker compose up -d --build` is required for any
+  manual verification of new behavior to mean anything.
+- **Code review: green, no blocking findings.** Four nits, all fixed: the stale
+  `.env.example` comment, the unexported `BudgetUsageRepo` type, the
+  `sumCostSince` flake above, and the missing `.ai/` sync.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: monthly budget ceiling with typed BudgetExceededError`
-- [ ] Phase marked complete
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: monthly budget ceiling with typed BudgetExceededError`
+- [x] Phase marked complete
 
 ---
 
