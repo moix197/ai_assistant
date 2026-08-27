@@ -55,7 +55,7 @@ describe("resolveCostUsd — known models", () => {
       logger,
     );
     const pricing = getPricing("deepseek-v4-flash");
-    expect(cost).toBeCloseTo(pricing.inputPerMillionUsd * pricing.cacheHitDiscount, 6);
+    expect(cost).toBeCloseTo(pricing.cacheHitPerMillionUsd, 6);
   });
 
   it("prices the 17 unaccounted reasoning tokens at the output rate — real observed gemini-3.6-flash response", () => {

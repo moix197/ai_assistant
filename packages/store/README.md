@@ -83,12 +83,23 @@ the cache.
   `{ provider, model, inputTokens, outputTokens, cacheHitTokens, costUsd }`.
   Called from `@hermes/llm`'s OpenAI-compatible adapter, on its success path
   only, via the `LlmUsageRepo` port (`packages/llm/src/usage/usage-repo-port.ts`)
-  — `apps/hermes/src/boot.ts` wires this function into that port so `llm`
+  — `apps/hermes/src/llm/build-llm-provider.ts` wires this function into that port so `llm`
   never depends on `@hermes/store` directly.
 - `sumCostSince(pool, sinceUtc)` — sums `cost_usd` for every row recorded at
   or after `sinceUtc`. Built now, next to `recordUsage`, because it's the
   natural home for it; used by Phase 4's budget ceiling, not by anything in
   this phase.
+
+`cost_usd` is `numeric(12,6)`, so a call costing less than $0.0000005 rounds
+to zero and one costing $0.0000015 rounds to $0.000002. This bounds the
+budget ceiling's accuracy, so it is worth stating rather than discovering: a
+single call would have to be about one token to floor away entirely — real
+completions land near $0.0001 — and because the rounding goes to nearest
+rather than down, errors cancel across rows instead of drifting one way. At
+half a microdollar per row, ten thousand calls sit within a cent of truth,
+against a ceiling denominated in dollars. Widening the column would trade a
+migration for precision nothing currently needs; revisit it if per-token or
+sub-cent accounting ever becomes the point.
 
 ## Testing
 

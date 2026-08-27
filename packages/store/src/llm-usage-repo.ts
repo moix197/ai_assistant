@@ -6,7 +6,7 @@ export type { LlmUsageEntry };
 /**
  * Persists one completed LLM call's usage and cost. Called from
  * `@hermes/llm`'s adapter success path only, via the `LlmUsageRepo` port
- * `apps/hermes/src/boot.ts` wires to this function — see
+ * `apps/hermes/src/llm/build-llm-provider.ts` wires to this function — see
  * `packages/llm/src/usage/usage-repo-port.ts`.
  */
 export async function recordUsage(pool: Pool, entry: LlmUsageEntry): Promise<void> {

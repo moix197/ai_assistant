@@ -21,25 +21,31 @@ import type { Logger, Usage } from "@hermes/core";
 export interface ModelPricing {
   inputPerMillionUsd: number;
   outputPerMillionUsd: number;
-  /** Multiplier applied to a cache-hit input token's price, e.g. 0.1 = 90% off the miss rate. */
-  cacheHitDiscount: number;
+  /**
+   * Price per million cache-hit input tokens, as published. Held as a rate
+   * rather than a multiplier off `inputPerMillionUsd`: a multiplier has to be
+   * divided out by hand to check against a pricing page, and the arithmetic
+   * hid a rounding error in every entry (0.031818 x 0.44 = $0.0140 rather
+   * than the published $0.014). A rate is read straight off the page.
+   */
+  cacheHitPerMillionUsd: number;
 }
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   "deepseek-v4-flash": {
     inputPerMillionUsd: 0.44,
     outputPerMillionUsd: 1.32,
-    cacheHitDiscount: 0.031818, // cache-hit input: $0.014 / 1M
+    cacheHitPerMillionUsd: 0.014,
   },
   "deepseek-v4-pro": {
     inputPerMillionUsd: 1.32,
     outputPerMillionUsd: 3.96,
-    cacheHitDiscount: 0.033333, // cache-hit input: $0.044 / 1M
+    cacheHitPerMillionUsd: 0.044,
   },
   "gemini-3.6-flash": {
     inputPerMillionUsd: 0.75,
     outputPerMillionUsd: 3.75,
-    cacheHitDiscount: 0.1, // cache-hit input: $0.075 / 1M
+    cacheHitPerMillionUsd: 0.075,
   },
 };
 
@@ -91,7 +97,7 @@ export function resolveCostUsd(model: string, usage: Usage, logger: Logger): num
 
   const { missTokens, reasoningTokens } = deriveBilledTokens(usage);
   const inputCost = missTokens * pricing.inputPerMillionUsd;
-  const cacheHitCost = usage.cacheHitTokens * pricing.inputPerMillionUsd * pricing.cacheHitDiscount;
+  const cacheHitCost = usage.cacheHitTokens * pricing.cacheHitPerMillionUsd;
   const outputCost = (usage.completionTokens + reasoningTokens) * pricing.outputPerMillionUsd;
 
   return (inputCost + cacheHitCost + outputCost) / 1_000_000;
