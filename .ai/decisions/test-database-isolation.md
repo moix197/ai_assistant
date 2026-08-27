@@ -46,6 +46,29 @@ spend, and a row a test deletes is money they get to spend twice.
 - *Cleaning up stray rows after the fact* — requires someone to notice, and
   nothing reports the discrepancy.
 
+**Amendment — the scratch database provisions itself:** `db-env.ts` now
+creates the database named by `TEST_DATABASE_URL` if it does not already
+exist, connecting to Postgres's own `postgres` maintenance database on the
+same host/credentials (`CREATE DATABASE` cannot run on the connection being
+created). This runs only after `assertNotTheAppDatabase` passes, so it can
+only ever create a database whose name already ends in `_test`.
+
+- **Why here and not a compose init script.** `/docker-entrypoint-initdb.d/`
+  scripts run only when a Postgres data volume initializes for the first
+  time; every clone or worktree that reuses an existing `postgres-data`
+  volume (the common case — compose's volume is named, not per-worktree)
+  would still hit the original opaque connection error. Provisioning from
+  the seam every DB-gated suite already imports covers both a fresh volume
+  and a long-lived one identically, with no dependency on volume lifecycle.
+- **CI is unaffected.** `.github/workflows/ci.yml`'s service container sets
+  `POSTGRES_DB` directly to `hermes_ci_test`, so `ensureTestDatabaseExists`
+  finds it already present and is a no-op there — CI was never the broken
+  case.
+- **Failure is now actionable.** If Postgres itself is unreachable (compose
+  not running), the error names the host and says to start it, instead of
+  the opaque connection error a bare connect-with-no-database-created
+  attempt produced before.
+
 **Constraints it creates:**
 
 - The scratch database must be named `*_test`. Renaming it breaks the lane by

@@ -16,9 +16,14 @@
  * `pnpm test:db` is the lane that turns the same absence into a hard error, via
  * its own guard in `package.json`; without that guard the `skipIf` below would
  * make an empty run indistinguishable from a passing one.
+ *
+ * Also provisions the scratch database itself (`ensureTestDatabaseExists`)
+ * so a fresh worktree needs no manual `CREATE DATABASE`. See
+ * `.ai/decisions/test-database-isolation.md`.
  */
 
 import { fileURLToPath } from "node:url";
+import { Client } from "pg";
 
 /** The repo-root `.env`, four directories up from `src/__tests__/`. */
 const REPO_ENV_FILE = fileURLToPath(new URL("../../../../.env", import.meta.url));
@@ -71,7 +76,62 @@ function assertNotTheAppDatabase(url: string): void {
   }
 }
 
+/**
+ * Postgres's code for "database already exists" — raised if a concurrent
+ * `CREATE DATABASE` won the race against this one. Treated as success: the
+ * goal is the database existing, not this call being the one that made it.
+ */
+const DUPLICATE_DATABASE_ERROR_CODE = "42P04";
+
+/**
+ * Creates the scratch database named by `url` when it does not already
+ * exist, so a fresh worktree's `pnpm test:db` needs no manual `psql` step.
+ * Connects to Postgres's own `postgres` maintenance database on the same
+ * host/user/credentials as `url` — `CREATE DATABASE` cannot run on the
+ * connection being created, and every Postgres instance this project touches
+ * (compose's `postgres:16-alpine`, CI's `postgres:16` service container)
+ * keeps a `postgres` database regardless of what `POSTGRES_DB` names.
+ *
+ * CI is unaffected: its service container already sets `POSTGRES_DB` to the
+ * scratch name (see `.github/workflows/ci.yml`), so this finds the database
+ * already present and does nothing.
+ */
+async function ensureTestDatabaseExists(url: string): Promise<void> {
+  const target = new URL(url);
+  const databaseName = target.pathname.replace(/^\//, "");
+  const maintenanceUrl = new URL(url);
+  maintenanceUrl.pathname = "/postgres";
+
+  const client = new Client({ connectionString: maintenanceUrl.toString() });
+  try {
+    await client.connect();
+  } catch (error) {
+    throw new Error(
+      `Could not reach Postgres at ${maintenanceUrl.host} to provision scratch database "${databaseName}": ${(error as Error).message}. Start the compose stack (docker compose up -d postgres) and retry.`,
+    );
+  }
+  try {
+    const { rowCount } = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+      databaseName,
+    ]);
+    if (rowCount === 0) {
+      await client.query(`CREATE DATABASE "${databaseName}"`);
+    }
+  } catch (error) {
+    if ((error as { code?: string }).code !== DUPLICATE_DATABASE_ERROR_CODE) {
+      throw new Error(
+        `Could not provision scratch database "${databaseName}": ${(error as Error).message}`,
+      );
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 /** The scratch-database URL, or `undefined` when the lane should skip. */
 export const testDatabaseUrl = process.env.TEST_DATABASE_URL?.trim() || undefined;
 
-if (testDatabaseUrl) assertNotTheAppDatabase(testDatabaseUrl);
+if (testDatabaseUrl) {
+  assertNotTheAppDatabase(testDatabaseUrl);
+  await ensureTestDatabaseExists(testDatabaseUrl);
+}
