@@ -20,39 +20,45 @@ rather than replaces it:
 > superset of its native API — if tool calling is quirky there, the contained fix
 > is a small native adapter behind the same port. See §2.1.
 
-## ⚠ The measurement below is SUPERSEDED — the decision is not
+## The §8 measurement
 
-**DeepSeek retired `deepseek-chat`, the model every number in this document was
-measured against.** `GET /v1/models` on the live key now returns only
-`deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`; the
-configured `LLM_PRIMARY_MODEL` is `deepseek-v4-flash`. The tool-calling table,
-the contingency arithmetic, and the truncation observation therefore describe a
-model that can no longer be called.
+Live run via `pnpm test:live`, 10 sequential trials per provider, one 5-tool
+prompt, through the real adapter. Prompt: *"I'm about to pay a Japanese
+supplier. Convert 250 US dollars to Japanese yen for me."* Expected tool:
+`convert_currency`, offered alongside four others (`get_current_time`, `echo`,
+`search_web`, `create_calendar_event`). `maxTokens` ladder: 8192 → 32768 →
+65536. Denominators: accuracy over scorable trials, malformed-JSON over trials
+that actually attempted a tool call.
 
-The primary/fallback choice itself still stands and is not in question — nothing
-suggests the successor behaves worse. But **treat every number below as
-unverified against the model actually in production.** No replacement
-measurement has been taken: re-running `pnpm test:live` costs real money and
-20 billed calls, and has not been done. Do not quote these figures as current,
-and do not fabricate substitutes — re-run the check instead.
+| provider | model | accuracy | malformed-JSON | truncated | hard failures |
+|---|---|---|---|---|---|
+| primary / deepseek | `deepseek-v4-flash` | 10/10 (100%) | 0/10 (0%) | 0 | 0 |
+| fallback / gemini | `gemini-3.6-flash` | **not measured** | — | — | — |
 
-## The measured result (against the now-retired `deepseek-chat`)
+**The primary numbers are current.** `deepseek-chat`, the model the original
+run measured, was retired by DeepSeek mid-plan — `GET /v1/models` on the live
+key now returns only `deepseek-v4-flash`, `deepseek-v4-pro`,
+`deepseek-v4-flash-vision-exp`, and `LLM_PRIMARY_MODEL` is `deepseek-v4-flash`.
+The whole check was re-run against it. **Every `deepseek-chat` figure this
+document used to carry is superseded and has been removed** — do not
+resurrect it from git history to fill a gap; re-run the check instead.
 
-Live run via `pnpm test:live`, 10 sequential trials per provider, the same
-5-tool prompt, through the real adapter. Duration 128s.
+**The fallback row is empty on purpose, and that is the honest state.** The same
+re-run could not measure Gemini: 7 of 10 trials came back HTTP 429
+`RESOURCE_EXHAUSTED` against the free tier's limit of 20. The 3 trials that did
+complete were 3/3 clean, but 3 self-selected trials are not a measurement and
+this document does not report a Gemini verdict from that run. **Gemini's
+tool-calling quality is unmeasured on a live current run.** The standing
+evidence is the tracked `gemini-3.6-flash` recordings under
+`packages/llm/src/__tests__/live/fixtures/recorded/`, which were made against
+the same model still configured today.
 
-Prompt: *"I'm about to pay a Japanese supplier. Convert 250 US dollars to
-Japanese yen for me."* Expected tool: `convert_currency`, offered alongside four
-others (`get_current_time`, `echo`, `search_web`, `create_calendar_event`).
-`maxTokens` ladder: 8192 → 32768 → 65536.
-
-| provider | model | accuracy | malformed-JSON | truncated | hard failures | bigger-budget re-runs |
-|---|---|---|---|---|---|---|
-| primary / deepseek | `deepseek-chat` | 10/10 (100%) | 0/10 (0%) | 0 | 0 | 0 |
-| fallback / gemini | `gemini-3.6-flash` | 10/10 (100%) | 0/10 (0%) | 0 | 0 | 0 |
-
-Denominators: accuracy over scorable trials; malformed-JSON over trials that
-actually attempted a tool call.
+That asymmetry is why the primary fixtures were re-recorded against
+`deepseek-v4-flash` and the fallback fixtures deliberately were **not**
+(commit `b3669e5`): a stale primary recording was scoring a model no deployment
+can reach, while the fallback recording still matches the configured model.
+Overwriting the fallback fixtures with the quota-starved run would have
+destroyed the only valid Gemini evidence in the repo.
 
 ## The contingency did not trigger
 
@@ -60,13 +66,18 @@ The native-Gemini-adapter branch is gated on a concrete numeric trigger. The
 arithmetic, shown so nobody has to re-derive it:
 
 - Gemini malformed-JSON 0% ≥ 20%? **no.** Gemini accuracy 100% ≤ 70%? **no.**
-  → trigger **false**.
+  → trigger **false**. Evaluated on the tracked `gemini-3.6-flash` recording,
+  not on the quota-starved re-run.
 - DeepSeek malformed-JSON 0% < 10%? **yes.** DeepSeek accuracy 100% ≥ 90%?
-  **yes.** → primary healthy, so there is no "Gemini-only problem" to contain.
+  **yes** — on `deepseek-v4-flash`, the model actually configured. → primary
+  healthy, so there is no "Gemini-only problem" to contain.
 
 **Consequence:** `packages/llm/src/adapter/gemini-native.ts` is not created. The
 single OpenAI-compatible path serves both providers, which is the cheapest
-possible outcome and the one the roadmap bet on.
+possible outcome and the one the roadmap bet on. Nothing observed since
+suggests reopening it — but the Gemini half of that verdict rests on a
+recording, not on a live current run, so **a live Gemini re-measurement is the
+first thing to do if tool calling ever misbehaves there.**
 
 ## Caveats — read these before citing the numbers
 
@@ -90,17 +101,21 @@ possible outcome and the one the roadmap bet on.
   Phase 1 being marked complete. A green unit suite did not mean a working
   adapter.
 - **n = 10, one fixed prompt, one expected tool.** Roughly ±15pp of noise; the
-  20% / 70% thresholds could flip on one or two trials. A result this clean
-  (100% / 0% on both) is comfortably clear of the line, but this is a smoke
-  check, not a benchmark. Do not quote it as a provider quality ranking.
+  20% / 70% thresholds could flip on one or two trials. A clean 100% / 0% is
+  comfortably clear of the line, but this is a smoke check, not a benchmark.
+  Do not quote it as a provider quality ranking.
+- **A free-tier run is not guaranteed to produce a measurement at all.** The
+  fallback profile's 10 trials fit inside the free-tier limit only if nothing
+  else spent from the same quota that day; when they don't, the lane returns
+  quota errors rather than trials, and the correct reading is *no data*, not a
+  bad score. Budget the quota before re-running, and check the trial count
+  before believing a fallback number.
 - **The truncation ladder went unused.** `gemini-3.6-flash` is a reasoning model
   and the plan anticipated zero-content 200s with `finish_reason: "length"`;
   none occurred at 8192 `maxTokens`. The production per-turn guard is
   `MAX_TOKENS_PER_TURN = 1024`, which this check deliberately did **not**
   inherit — so the absence of truncation here does **not** prove 1024 is
   sufficient in production. That remains untested.
-- **Rate-limit and backoff pressure are invisible in these columns.** They show
-  up only as wall-clock (128s for 20 sequential calls).
 
 **Rejected** (settled by the roadmap, and this check gives no reason to reopen
 either):
@@ -122,13 +137,18 @@ either):
 - Adding a provider means adding a profile (base URL + key + model, moved
   together), not a code path. Anything that can't be expressed that way is a
   signal to revisit D5, not to special-case the adapter.
-- The models actually measured were `deepseek-chat` (since retired — see the
-  banner above) and `gemini-3.6-flash`, not the roadmap's directional
-  `V4-Flash` / `Gemini Flash` labels. Model IDs are config and providers retire
-  them without warning, so a stale id is a *breakage*, not just a mispricing:
+- The models measured are `deepseek-v4-flash` and `gemini-3.6-flash`, not the
+  roadmap's directional `V4-Flash` / `Gemini Flash` labels. **Providers retire
+  model ids without warning** — this document has already been invalidated once
+  that way — so a stale id is a *breakage*, not just a mispricing:
   `packages/llm/src/pricing.ts` must carry a key for every configured
   `LLM_*_MODEL`, verified against the provider's live pricing page. See
   [llm-cost-accounting](llm-cost-accounting.md).
+- **A tracked fixture is evidence only while it names a configured model.** The
+  offline replay lane will happily keep scoring a retired model at 100% forever;
+  nothing in the suite notices. On any model swap, re-record that provider's
+  fixtures — and if the re-run fails to produce trials, leave the old ones and
+  say so here rather than recording a void run over valid evidence.
 - The check is reproducible: `pnpm test:live` re-runs it, and the recorded
   responses are replayed offline by the default `pnpm test` lane. Re-run it
   before any provider swap; do not carry these numbers forward to a model this

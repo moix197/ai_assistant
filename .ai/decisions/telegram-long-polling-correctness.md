@@ -74,6 +74,34 @@ readable fatal `TelegramApiError`; `poller.ts` stops its loop and calls
 what the code originally shipped with — reintroduces exactly the silent
 mystery-failure mode this decision removes.
 
+## The at-least-once contract's first paid consumer
+
+The gap this doc originally flagged as future work is closed for the one handler
+that needed it. `apps/hermes/src/handlers/complete.ts` claims
+`telegram:<updateId>` in `llm_dedupe` *before* calling the provider and marks it
+completed *after* the reply is sent. Two cases, not equally covered:
+
+- **Exact-duplicate delivery of an already-completed update** — closed
+  deterministically. `llm_dedupe.dedupe_key` is a primary key, so uniqueness is a
+  Postgres guarantee, not an application check-then-insert race; the replay
+  resends the stored reply and makes zero provider calls.
+- **A crash between claim and complete** — *not* closed. **Named accepted risk.**
+  The row is left `pending`, and a `pending` row is claimable again: the retry
+  runs the call a second time. Fail-**open** on purpose. Fail-closed would wedge
+  that message permanently — no reply, no way to retry — and by construction it
+  is a message the user is waiting on. The cost of the chosen side is bounded
+  and one-shot: one duplicate completion, at development message volumes.
+
+Ordering is what makes both work: recording completion *before* the send would
+mark a turn done that the user never received, converting a rare double charge
+into a silently dropped answer.
+
+**Closing the crash window is a non-task, not a backlog item.** It needs
+`llm_dedupe` to tell "in flight" from "crashed mid-flight" — an `attempt` counter
+or a finer status, plus a rule for reclaiming a stale `pending` row — buying
+exactly-once *completion detection* at the price of the fail-closed mode above.
+Don't build it without a real incident.
+
 **Rejected:**
 
 - *Webhooks instead of long polling* — needs public ingress, which the roadmap
@@ -93,9 +121,12 @@ mystery-failure mode this decision removes.
 
 - **Every handler must tolerate being invoked twice for the same update.** Echo,
   `/ping` and `/start` are safe by inspection (a duplicate reply is visible and
-  harmless). Any future handler with an external side effect — `log_trade`,
-  `send_draft` — MUST carry its own idempotency key. This decision does not
-  solve idempotency generally, only for reply-only handlers.
+  harmless). Any handler with an external side effect MUST carry its own
+  idempotency key. This decision does not solve idempotency generally, only for
+  reply-only handlers.
+- **`InboundMessage` carries `updateId`** so a paid handler can derive one.
+  Required, not optional: an absent id would collapse every such message to the
+  same key and short-circuit unrelated messages with someone else's stored reply.
 - `telegram_offset` is a **singleton row** (`id smallint PRIMARY KEY DEFAULT 1`,
   `CHECK (id = 1)`, seeded to 0 by the migration). One token, one poll stream —
   there is no per-chat concept to key on, and the seed row means there is no

@@ -52,7 +52,13 @@ spend, and a row a test deletes is money they get to spend twice.
   design.
 - A new DB integration suite must take its URL from `db-env.ts`'s exported
   `testDatabaseUrl`, never from `process.env.TEST_DATABASE_URL` directly —
-  reading the env var directly opts out of both checks.
+  reading the env var directly opts out of both checks. Suites outside
+  `packages/store` import it through the `@hermes/store/testing` subpath export
+  (the package's only `exports` entry beyond `.`), which deliberately resolves to
+  `src/`, not `dist/`, so test-only code never ships in the built package.
+  One shared guard is the point: the resolver and `assertNotTheAppDatabase`
+  must travel together, and a suite that re-derives the URL privately keeps the
+  resolution while silently dropping the guard.
 - Do not drop `--no-file-parallelism` from the store scripts to speed the lane
   up.
 - Any future table the ceiling or `/stats` telemetry reads inherits this rule:

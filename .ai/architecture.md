@@ -84,7 +84,8 @@ Telegram getUpdates (long poll, 30s)
    ▼  packages/channels/src/telegram/client.ts   ← retry/backoff, token redaction
    ▼  .../poller.ts  normalizeTelegramUpdate     ← drops updates with no message.from
    │                                                (no user id ⇒ fail-open risk)
-   ▼  InboundMessage (provider-neutral)
+   ▼  InboundMessage (provider-neutral; carries updateId — the dedupe key's
+   │                   only source, hence required, not optional)
    │
    ▼  apps/hermes  withAllowlist( withPrivateChat( dispatchCommand ) )
    │                    │              │
@@ -94,6 +95,10 @@ Telegram getUpdates (long poll, 30s)
    │                    └─ unknown sender rejected before anything else looks at it
    ▼  handler: /ping | /start | else → completionHandler   ← the fallthrough is
    │                                    │                    PAID from here on
+   │                                    ▼  dedupe claim `telegram:<updateId>`
+   │                                    │     →  packages/store  →  llm_dedupe
+   │                                    │     already completed ⇒ resend the
+   │                                    │     stored reply, zero provider calls
    │                                    ▼  packages/llm adapter
    │                                    ▼  budget check: SUM(cost_usd) since the
    │                                    │     1st of this month, UTC (injected
@@ -107,6 +112,8 @@ Telegram getUpdates (long poll, 30s)
    │                                    │     →  packages/store  →  llm_usage
    │                                    ▼  result.text
    │                                 channel.send() → chunkText → sendMessage
+   │                                    ▼  dedupe complete, storing the reply —
+   │                                    │     AFTER the send, never before
    │
    ▼  offsetRepo.setOffset(update_id + 1)  →  packages/store  →  telegram_offset
        ^^ AFTER the handler resolves. Never before. See the polling decision doc.
@@ -120,6 +127,14 @@ usage row is written from the adapter's success path, so a failed call records
 nothing and a retried one still records exactly once; see
 [llm-cost-accounting](decisions/llm-cost-accounting.md). One `complete()` per
 message: no tool loop, no history persistence yet — that's `packages/agent`.
+
+Both gates on that path — the dedupe claim and the budget check — are only
+worth anything *before* `complete()`; run either after the call and it records
+the spend it existed to prevent. The two failure shapes are deliberately
+opposite: a breached ceiling **blocks** (fail closed, the operator asked it to
+stop), while a `pending` dedupe row **retries** (fail open, because a wedged
+message is worse than one bounded duplicate charge) — see
+[telegram-long-polling-correctness](decisions/telegram-long-polling-correctness.md).
 
 `llm_usage` is therefore read and written on the same path: the ceiling's
 read is what the previous calls' writes fed. That makes anything which
