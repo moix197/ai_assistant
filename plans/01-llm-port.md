@@ -157,18 +157,18 @@ silent-until-the-invoice-arrives failure mode, not a crash.
 
 **Mode:** hil
 
-- [ ] Sign up for a DeepSeek API key (`https://platform.deepseek.com`, or
+- [x] Sign up for a DeepSeek API key (`https://platform.deepseek.com`, or
       current signup URL) and record it. This is the primary provider per D5.
-- [ ] Sign up for a Gemini API key with access to the Gemini free tier
+- [x] Sign up for a Gemini API key with access to the Gemini free tier
       (`https://aistudio.google.com`, or current signup URL) and record its
       OpenAI-compatible base URL. This is the fallback provider per D5, and
       also the free-tier profile the roadmap directs all development traffic
       through ("Free-tier development discipline", ROADMAP §2.1).
-- [ ] Decide a starting `LLM_MONTHLY_BUDGET_USD` value for development — a
+- [x] Decide a starting `LLM_MONTHLY_BUDGET_USD` value for development — a
       small number (e.g. `1`) is recommended so Phase 4's budget-ceiling
       verification is cheap to trigger deliberately and so the ordering-tension
       risk above stays bounded during Phases 1–4.
-- [ ] Add all of the above to a local `.env` (never committed): during Phase 1
+- [x] Add all of the above to a local `.env` (never committed): during Phase 1
       development, set `LLM_PRIMARY_*` to the **Gemini** free-tier profile
       (cost-safe) and `LLM_FALLBACK_*` to the **DeepSeek** profile. Phase 2's
       §8 check exercises both regardless of which env slot holds which
@@ -190,10 +190,10 @@ sibling convention.
 
 **Steps:**
 
-- [ ] Confirm with the user: branch name `feat/01-llm-port`, base ref `main`
-- [ ] `git worktree add ../hermes-01-llm-port -b feat/01-llm-port main`
-- [ ] Verify worktree is active and on the correct branch: `git worktree list`
-- [ ] **Explicit step, do not skip:** copy `.env` from the repo root into the
+- [x] Confirm with the user: branch name `feat/01-llm-port`, base ref `main`
+- [x] `git worktree add ../hermes-01-llm-port -b feat/01-llm-port main`
+- [x] Verify worktree is active and on the correct branch: `git worktree list`
+- [x] **Explicit step, do not skip:** copy `.env` from the repo root into the
       new worktree (`../hermes-01-llm-port/.env`). `.env` is gitignored, so
       the worktree does not inherit it — the `00-skeleton` execution tripped
       on forgetting exactly this step (it left a `.env.worktree-backup` at the
@@ -484,8 +484,8 @@ only the orchestrator can supply.
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
@@ -1104,6 +1104,21 @@ which is `hil` regardless.
       Separately, `docker compose stop hermes` while a completion call is in
       flight → logs show the `fetch` aborting promptly via `LlmAbortedError`,
       clean exit within the grace period
+- [ ] **Re-measure D5 — its recorded numbers are against a model that no
+      longer exists.** `.ai/decisions/d5-deepseek-primary-gemini-fallback.md`
+      records the §8 tool-calling result as 10/10 for `deepseek-chat`, which
+      DeepSeek retired between Phase 2 and Phase 3 (`GET /v1/models` no longer
+      lists it; the configured `LLM_PRIMARY_MODEL` is now
+      `deepseek-v4-flash`). The decision to run DeepSeek primary therefore
+      rests on evidence that cannot be reproduced. This phase's `pnpm
+      test:live` re-fires that check against the models actually configured,
+      so record the new numbers in D5 and mark the old table as superseded
+      rather than leaving two results side by side. If the new measurement
+      does not reproduce the original verdict, D5 itself is what needs
+      revisiting — say so plainly instead of quietly keeping the conclusion.
+      Note that the live run also rewrites Phase 2's tracked fixtures under
+      `fixtures/recorded/`; decide deliberately whether to keep the new ones
+      (they match the models in use) or revert them, and say which
 - [ ] Overall success criteria met
 - [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact table below
 - [ ] All phase checkboxes above are ticked
