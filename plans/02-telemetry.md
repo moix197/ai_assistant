@@ -560,13 +560,13 @@ tools, error rate, cache hit rate").
 
 **Steps:**
 
-- [ ] `getLlmCallStatsSince`/`getTopToolsSince`: single aggregate query each,
+- [x] `getLlmCallStatsSince`/`getTopToolsSince`: single aggregate query each,
       not N+1 or application-side aggregation — the whole point of a wide
       event table with `fields` jsonb is that Postgres does this math, not
       Node. Confirm `getTopToolsSince` returns `[]` (not an error, not `null`)
       against today's empty `tool.call` population — this is the concrete
       case the handler's "no tool calls recorded yet" branch exists for
-- [ ] `computeStats`'s UTC-month-boundary logic must reuse the same
+- [x] `computeStats`'s UTC-month-boundary logic must reuse the same
       "midnight UTC on the first of the calendar month" definition
       `check-budget.ts`'s `startOfCurrentUtcMonth` already uses. Default:
       duplicate the (six-line) function rather than introduce a shared
@@ -575,11 +575,11 @@ tools, error rate, cache hit rate").
       `Dependencies & Risks`), and a shared abstraction for six lines isn't
       earned yet. Flag this duplication explicitly to code review rather
       than letting it be found and questioned cold
-- [ ] **Division-by-zero guards, explicit and tested:** zero calls this month
+- [x] **Division-by-zero guards, explicit and tested:** zero calls this month
       must render `0%` cache-hit rate and `0%` error rate, never `NaN` or a
       thrown error — a fresh deployment's first `/stats` call before any
       traffic is the concrete case this guards
-- [ ] **Prove the cost-source split can actually fail, not just that the two
+- [x] **Prove the cost-source split can actually fail, not just that the two
       functions were called.** The regression test for this (see Tests
       below) must feed `sumCostSince` and `getLlmCallStatsSince` **deliberately
       mismatched** numbers from a fake `StatsRepo` — e.g. `sumCostSince`
@@ -590,7 +590,7 @@ tools, error rate, cache hit rate").
       which line; this one proves the spend line's value traces to
       `sumCostSince` and nothing else, because there is no other number in
       the fixture it could have come from
-- [ ] `formatStatsMessage`: plain text only, matching the rest of the bot's
+- [x] `formatStatsMessage`: plain text only, matching the rest of the bot's
       replies (`packages/channels`' Telegram sender sets no `parse_mode`
       anywhere — confirmed, do not introduce Markdown formatting here that
       would render as literal asterisks/underscores in chat). Approximate
@@ -605,18 +605,18 @@ tools, error rate, cache hit rate").
       Error rate (month): NN%
       Top tools (month): <list, or "no tool calls recorded yet">
       ```
-- [ ] Dispatch wiring: `/stats` must be matched **before** the fallthrough to
+- [x] Dispatch wiring: `/stats` must be matched **before** the fallthrough to
       `completionHandler` in `createDispatchCommand` — verify this with a
       test in the same style as `01-llm-port`'s
       `dispatch-allowlist-gates-llm.test.ts`, since a routing mistake here
       turns every `/stats` call into a paid completion call answering "stats"
       as free text
-- [ ] `/stats` inherits the existing `withAllowlist`/`withPrivateChat`
+- [x] `/stats` inherits the existing `withAllowlist`/`withPrivateChat`
       composition automatically (it's wired the same way `/ping`/`/start`
       are, inside the same `dispatchCommand`) — do not add a second gating
       mechanism, per the codebase-surface research's explicit note that
       access control already exists and should not be duplicated
-- [ ] Reuse `apps/hermes/src/handlers/__tests__/complete.test.ts`'s existing
+- [x] Reuse `apps/hermes/src/handlers/__tests__/complete.test.ts`'s existing
       `createMockChannel`/`createMockLogger`-style helpers (or the file's own
       local equivalents) for the new handler test rather than writing fresh
       ones — same fixture shape, same project convention
@@ -633,8 +633,8 @@ tools, error rate, cache hit rate").
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm test:db` green — the two stats-repo aggregate queries proven
+- [x] `pnpm -r test` green
+- [x] `pnpm test:db` green — the two stats-repo aggregate queries proven
       against real rows
 - [ ] Manual: with a nonzero `llm_usage`/`telemetry_events` history from
       Phase 2's verification, message `/stats` → reply renders every section,
@@ -649,13 +649,30 @@ tools, error rate, cache hit rate").
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: /stats command with real spend, call, and cache-hit rollups`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: /stats command with real spend, call, and cache-hit rollups`
+
+**Post-review polish** (commit `74e4712`, on top of `60a46bd`; the review itself
+came back green with no blocking findings): rates now render to one decimal, so
+1 error in 500 calls reads `0.2%` rather than `0%`; the budget-percent line
+reuses `computeRate` + `formatPercent` instead of an inline unguarded
+`Math.round`; two test gaps closed (an unallowlisted sender's `/stats` gets no
+reply; `getTopToolsSince`'s time window and top-N `LIMIT` are both pinned);
+`.ai/architecture.md`'s dispatcher diagram now lists `/stats`; and
+`packages/telemetry/README.md` records that `created_at` is *flush* time, not
+event time, so an event near a day/month boundary can land in the adjacent
+bucket by up to one flush interval.
+
+**Deferred to Final Verification (Phase 6):** the two Manual bullets above
+(`/stats` from an allowlisted sender renders and reconciles against a direct
+`psql` sum; `/stats` from a non-allowlisted sender gets no reply) need a live
+bot and a real Telegram client. The allowlist half is additionally pinned by an
+automated dispatch test.
+- [x] Phase marked complete
 
 ---
 
