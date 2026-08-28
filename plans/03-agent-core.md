@@ -633,10 +633,10 @@ worst case 2 paid calls for one bad tool, not 8.
 
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
-- [ ] Manual: ask the bot "what time is it right now?" → reply includes a real
+- [x] Manual: ask the bot "what time is it right now?" → reply includes a real
       current time; `psql` shows a `tool.call` row with `tool_name =
       'get_current_time'`, `approved = true`, a small positive `duration_ms`
-- [ ] Manual: `/stats` → top-tools section now lists `get_current_time` instead
+- [x] Manual: `/stats` → top-tools section now lists `get_current_time` instead
       of "no tool calls recorded yet"
 
 **Deferred follow-up (raised in review, deliberately not fixed here):**
@@ -650,16 +650,16 @@ scope, not a Phase 2 nit. Worth its own card.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: tool registry, get_current_time, parallel execution with retry`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
@@ -742,16 +742,16 @@ shipped) actually true.
 
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
-- [ ] Manual: ask the bot to echo something → one message with Approve/Deny
+- [x] Manual: ask the bot to echo something → one message with Approve/Deny
       buttons naming the call appears; tap Deny → the message updates to a
       resolved state, the bot's next reply shows it did not run `echo`, and
       `psql` shows `approved = false`
-- [ ] Manual: ask again, tap Approve → `echo` runs, the reply contains the
+- [x] Manual: ask again, tap Approve → `echo` runs, the reply contains the
       echoed text, `psql` shows `approved = true`
-- [ ] Manual: ask a third time, tap nothing for 5 minutes → the prompt
+- [x] Manual: ask a third time, tap nothing for 5 minutes → the prompt
       resolves to an expired/denied state on its own, and the bot's reply
       reflects non-approval
-- [ ] Manual: tap an already-resolved prompt's button again → no second
+- [x] Manual: tap an already-resolved prompt's button again → no second
       execution, a "this approval has expired" (or equivalent) callback answer
 
 **Review-driven changes not anticipated by this phase's File changes table:**
@@ -785,18 +785,30 @@ shipped) actually true.
    CI runs lint before test. Cleared in `6a50040`; lint is now part of this
    plan's verification gate alongside test and typecheck.
 
+**Manual verification evidence (2026-08-28, live against DeepSeek):**
+`get_current_time` approved=true; six `echo` approvals; **Deny** approved=false at
+duration_ms=2262 with the turn still completing in 2 iterations (model answered from
+the "did not approve" result, handler never ran); 5-minute timeout approved=false at
+duration_ms=301723; combined two-call batch emitted two `tool.call` rows sharing one
+timestamp, from one prompt.
+
+_Open question raised by the evidence:_ `duration_ms` on a gated call measures the
+approval wait, not handler time (301723ms for a call that never ran), so it means two
+different things depending on whether a call was gated. Any aggregate over it is skewed
+by timed-out approvals. Not fixed here — worth a decision.
+
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: approval gate with Telegram inline keyboards, echo tool`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
