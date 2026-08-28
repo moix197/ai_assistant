@@ -9,6 +9,14 @@ import {
 } from "@hermes/channels";
 import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config";
 import { type Logger, createLogger, systemClock } from "@hermes/core";
+import {
+  type ConnectFlow,
+  type PendingConnectionStore,
+  createConnectFlow,
+  createGoogleRefreshAccessToken,
+  createPendingConnectionStore,
+  createRefreshCoordinator,
+} from "@hermes/google-auth";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
@@ -20,21 +28,38 @@ import {
   createPool,
   getDefaultMigrationsDir,
   getOffset,
+  listAccountsExpiringBefore,
+  markDisconnected,
   runMigrations,
   setOffset,
+  updateRefreshedTokens,
   waitForDatabase,
 } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { buildAgent } from "./agent/build-agent";
+import { buildGoogleOAuthClient } from "./google/build-google-oauth-client";
+import {
+  type OauthCallbackRoute,
+  createOauthCallbackRoute,
+} from "./google/build-oauth-callback-route";
+import {
+  REFRESH_SWEEP_INTERVAL_MS,
+  type RefreshSweep,
+  createRefreshSweep,
+} from "./google/refresh-sweep";
 import { createCompletionHandler } from "./handlers/complete";
+import { createConnectHandler } from "./handlers/connect";
+import { createDisconnectHandler } from "./handlers/disconnect";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
 import { createStatsHandler } from "./handlers/stats";
+import { createStatusHandler } from "./handlers/status";
 import { withAllowlist } from "./handlers/with-allowlist";
 import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
 import { buildLlmProvider } from "./llm/build-llm-provider";
 import { buildProviderProfiles } from "./llm/build-provider-profiles";
+import { buildGoogleAccountRepo } from "./store/build-google-account-repo";
 import { buildStatsRepo } from "./telemetry/build-stats-repo";
 import { buildTelemetryRecorder } from "./telemetry/build-telemetry-recorder";
 
@@ -64,44 +89,83 @@ const HARD_EXIT_TIMEOUT_MS = 8_000;
  * (5s) of the 8s ceiling, so this gets a deliberately short 1s of its own.
  */
 const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
+/**
+ * Bounds the shutdown-time refresh-sweep stop (`sweep.stop()`), run after
+ * `telemetryRecorder.stop()` and before `lock.release()`/`pool.end()`. A
+ * hung `stop()` (awaiting an in-flight `runOnce()` mid-refresh) degrades to
+ * "leave whatever accounts weren't reached this tick until the next boot's
+ * immediate sweep pass" rather than starving the rest of shutdown — the same
+ * tradeoff `TELEMETRY_FLUSH_TIMEOUT_MS` accepts. Sized the same 1s: with
+ * `DRAIN_TIMEOUT_MS` (5s) + `TELEMETRY_FLUSH_TIMEOUT_MS` (1s) already able to
+ * consume up to 6s of the 8s `HARD_EXIT_TIMEOUT_MS` ceiling, this leaves
+ * `lock.release()`/`pool.end()`/the final log at least 1s of margin before
+ * the hard-exit fallback fires.
+ */
+const SWEEP_STOP_TIMEOUT_MS = 1_000;
+
+/**
+ * Splits incoming text on the **first** whitespace only: the head becomes
+ * `command`, everything after that one separator becomes `args` verbatim
+ * (so `"/connect google extra text"` parses `args = "google extra text"` —
+ * the handler decides what to do with the rest). A bare command with no
+ * whitespace yields `args: ""`.
+ */
+export function splitCommand(text: string): { command: string; args: string } {
+  const whitespaceIndex = text.search(/\s/);
+  if (whitespaceIndex === -1) return { command: text, args: "" };
+  return { command: text.slice(0, whitespaceIndex), args: text.slice(whitespaceIndex + 1) };
+}
 
 /**
  * Matches a command allowing Telegram's optional `@botusername` suffix
  * (sent in groups, and by some clients even in DMs) — not a full command
- * parser, just this one allowance. `text` must otherwise equal `command`
- * exactly; no argument parsing.
+ * parser, just this one allowance. `text` (the head `splitCommand` produced)
+ * must otherwise equal `command` exactly.
  */
 export function matchesCommand(text: string, command: string): boolean {
   return text === command || text.startsWith(`${command}@`);
 }
 
 export interface DispatchCommandDeps {
-  pingHandler: (message: InboundMessage) => Promise<void>;
-  startHandler: (message: InboundMessage) => Promise<void>;
-  statsHandler: (message: InboundMessage) => Promise<void>;
-  completionHandler: (message: InboundMessage) => Promise<void>;
+  pingHandler: (message: InboundMessage, args: string) => Promise<void>;
+  startHandler: (message: InboundMessage, args: string) => Promise<void>;
+  statsHandler: (message: InboundMessage, args: string) => Promise<void>;
+  connectHandler: (message: InboundMessage, args: string) => Promise<void>;
+  statusHandler: (message: InboundMessage, args: string) => Promise<void>;
+  disconnectHandler: (message: InboundMessage, args: string) => Promise<void>;
+  completionHandler: (message: InboundMessage, args: string) => Promise<void>;
 }
 
 /**
  * Command dispatch, extracted to a factory (rather than left inline in
  * `boot()`) so it can be composed under `withAllowlist(withPrivateChat(...))`
  * in a test the same way `boot()` composes it for real — see
- * `__tests__/dispatch-allowlist-gates-llm.test.ts`. `/ping`, `/start`, and
- * `/stats` short-circuit; anything else falls through to `completionHandler`,
- * which replaced `echoHandler` here — `echo.ts` stays in the tree as a
- * documented reference/fallback but is no longer wired. `/stats` is matched
- * **before** the fallthrough for the same reason `/ping`/`/start` are: an
- * unmatched command falling through would otherwise trigger a real paid
- * completion call (see `__tests__/dispatch-stats-command.test.ts`).
+ * `__tests__/dispatch-allowlist-gates-llm.test.ts`. Text is split on the
+ * first whitespace into `{ command, args }` (`splitCommand`) before any
+ * matching happens — this closes a real paid-fallthrough hole: previously
+ * `/connect google` matched nothing and fell through to the paid
+ * `completionHandler`; now every command with an argument routes locally.
+ * `/ping`, `/start`, `/stats`, `/connect`, `/status`, and `/disconnect`
+ * short-circuit; anything else falls through to `completionHandler`, which
+ * replaced `echoHandler` here — `echo.ts` stays in the tree as a documented
+ * reference/fallback but is no longer wired. Each short-circuit is matched
+ * **before** the fallthrough for the same reason: an unmatched command
+ * falling through would otherwise trigger a real paid completion call (see
+ * `__tests__/dispatch-stats-command.test.ts`,
+ * `__tests__/dispatcher-argument-parsing.test.ts`).
  */
 export function createDispatchCommand(
   deps: DispatchCommandDeps,
 ): (message: InboundMessage) => Promise<void> {
   return function dispatchCommand(message: InboundMessage): Promise<void> {
-    if (matchesCommand(message.text, "/ping")) return deps.pingHandler(message);
-    if (matchesCommand(message.text, "/start")) return deps.startHandler(message);
-    if (matchesCommand(message.text, "/stats")) return deps.statsHandler(message);
-    return deps.completionHandler(message);
+    const { command, args } = splitCommand(message.text);
+    if (matchesCommand(command, "/ping")) return deps.pingHandler(message, args);
+    if (matchesCommand(command, "/start")) return deps.startHandler(message, args);
+    if (matchesCommand(command, "/stats")) return deps.statsHandler(message, args);
+    if (matchesCommand(command, "/connect")) return deps.connectHandler(message, args);
+    if (matchesCommand(command, "/status")) return deps.statusHandler(message, args);
+    if (matchesCommand(command, "/disconnect")) return deps.disconnectHandler(message, args);
+    return deps.completionHandler(message, args);
   };
 }
 
@@ -207,6 +271,16 @@ export interface ShutdownDeps {
    */
   telemetryRecorder: { stop(): Promise<void> };
   telemetryFlushTimeoutMs?: number;
+  /**
+   * The refresh sweep (Phase 4). Required, not optional, for the same reason
+   * `controller`/`telemetryRecorder` above are: an optional-with-a-silent-skip
+   * default would let `boot()`'s real registration drop this wire with
+   * nothing catching it. When Google's env group is unset, `boot()` passes a
+   * trivial `{ stop: async () => {} }` — the sweep itself never started, so
+   * there is nothing to stop, not a special case to thread through here.
+   */
+  sweep: { stop(): Promise<void> };
+  sweepStopTimeoutMs?: number;
 }
 
 /**
@@ -220,20 +294,25 @@ export interface ShutdownDeps {
  * buffer" instead of stalling the rest of shutdown — run after the drain (so
  * it can capture events from the in-flight work that just finished) and
  * before the pool closes (so its own write has a live pool to go through);
- * (3) release the advisory lock, only once no more DB work from this
- * instance is possible, so a restart-racing instance can't acquire it
- * mid-drain; (4) close the pool; (5) `process.exit(0)`. Each step is a
- * precondition for the next: releasing the lock before the drain finishes
- * would let a second instance start while we're still querying; closing the
- * pool before the telemetry flush or the drain finishes would crash an
+ * (3) stop the refresh sweep (`sweep.stop()`, Phase 4), bounded the same way,
+ * so an in-flight refresh tick doesn't block shutdown — must still run
+ * before the lock/pool close below, since a tick in progress is still
+ * issuing DB queries; (4) release the advisory lock, only once no more DB
+ * work from this instance is possible, so a restart-racing instance can't
+ * acquire it mid-drain; (5) close the pool; (6) `process.exit(0)`. Each step
+ * is a precondition for the next: releasing the lock before the drain or the
+ * sweep stop finishes would let a second instance start while we're still
+ * querying; closing the pool before any of them finishes would crash an
  * in-flight query.
  */
 export async function shutdown(deps: ShutdownDeps): Promise<void> {
   const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
   const telemetryFlushTimeoutMs = deps.telemetryFlushTimeoutMs ?? TELEMETRY_FLUSH_TIMEOUT_MS;
+  const sweepStopTimeoutMs = deps.sweepStopTimeoutMs ?? SWEEP_STOP_TIMEOUT_MS;
   deps.controller.abort();
   await withTimeout(deps.channel.stop(), drainTimeoutMs);
   await withTimeout(deps.telemetryRecorder.stop(), telemetryFlushTimeoutMs);
+  await withTimeout(deps.sweep.stop(), sweepStopTimeoutMs);
   await deps.lock.release();
   await deps.pool.end();
   deps.logger.info("shutdown complete");
@@ -300,15 +379,32 @@ async function createPollingTelegramClient(token: string): Promise<TelegramClien
   return client;
 }
 
-/** `/health` on the configured port, with boot-logger reporting for both outcomes. */
-function serveHealth(pool: Pool, port: number, logger: Logger): void {
-  startHealthServer(pool, port, {
-    onListening: () => logger.info("health server listening", { port }),
-    onError: (error) => {
-      logger.error("health server error", { error: error.message });
-      process.exit(1);
+/**
+ * `/health` and `/oauth/callback` on the configured port, with boot-logger
+ * reporting for both outcomes. `oauthCallbackRoute.handleRequest` is passed
+ * in unbound — it 503s until `wireRuntimeAndShutdown` calls `.bind()` once
+ * the Telegram channel and `connectFlow` exist (see Dependencies & Risks:
+ * the health server is constructed before the channel in `boot()`'s
+ * documented order, and this plan does not reorder that for one route).
+ */
+function serveHealth(
+  pool: Pool,
+  port: number,
+  logger: Logger,
+  oauthCallbackRoute: OauthCallbackRoute,
+): void {
+  startHealthServer(
+    pool,
+    port,
+    {
+      onListening: () => logger.info("health server listening", { port }),
+      onError: (error) => {
+        logger.error("health server error", { error: error.message });
+        process.exit(1);
+      },
     },
-  });
+    oauthCallbackRoute.handleRequest,
+  );
 }
 
 /**
@@ -352,10 +448,18 @@ export interface MessageHandlerDeps {
   signal: AbortSignal;
   /** Threaded through to the LLM adapter so every completion call emits an `llm.call` event. */
   telemetryRecorder: TelemetryRecorderHandle;
+  /**
+   * `undefined` when the Google OAuth env group is unset — Google features
+   * are cleanly absent, and `/connect google` replies accordingly instead of
+   * throwing. The *same* instance `wireRuntimeAndShutdown` binds to the
+   * OAuth callback route — its `pendingStore` map must be shared, or a state
+   * minted here would never resolve there.
+   */
+  connectFlow: ConnectFlow | undefined;
 }
 
 /**
- * The four handlers `dispatchCommand` routes between, each wired to real
+ * The seven handlers `dispatchCommand` routes between, each wired to real
  * infrastructure. echoHandler stays available (createEchoHandler,
  * "./handlers/echo") as a documented reference/fallback but is no longer
  * wired — completionHandler is dispatchCommand's fallthrough now.
@@ -369,7 +473,7 @@ interface MessageHandlerWiring {
 }
 
 function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
-  const { channel, pool, config, logger, signal, telemetryRecorder } = deps;
+  const { channel, pool, config, logger, signal, telemetryRecorder, connectFlow } = deps;
   const providerProfiles = buildProviderProfiles(config);
   const llmProvider = buildLlmProvider(
     pool,
@@ -398,6 +502,9 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
         systemClock,
         resolveBudgetCapUsd(config),
       ),
+      connectHandler: createConnectHandler(channel, connectFlow),
+      statusHandler: createStatusHandler(channel, buildGoogleAccountRepo(pool)),
+      disconnectHandler: createDisconnectHandler(channel, buildGoogleAccountRepo(pool)),
       completionHandler: createCompletionHandler({
         channel,
         agent,
@@ -459,6 +566,73 @@ async function acquireInstanceLockOrExit(
 }
 
 /**
+ * Builds the connect flow shared by the `/connect` command handler and the
+ * OAuth callback route — the **same** instance, since `pendingStore` is an
+ * in-memory map: a state minted by one instance would never resolve against
+ * another's. The store is returned alongside the flow because the callback
+ * route needs it directly for Google's denial redirect, which has no code to
+ * put through `completeConnect`. `undefined` when the Google all-or-none env
+ * group (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`TOKEN_ENCRYPTION_KEY`) is
+ * unset — Google features are then cleanly absent, not a boot failure.
+ */
+function buildConnectFlow(
+  pool: Pool,
+  config: Env,
+): { connectFlow: ConnectFlow; pendingStore: PendingConnectionStore } | undefined {
+  const googleOAuth = buildGoogleOAuthClient(config);
+  if (!googleOAuth) return undefined;
+
+  const pendingStore = createPendingConnectionStore(systemClock);
+  const connectFlow = createConnectFlow({
+    oauthClient: googleOAuth.oauthClient,
+    repo: buildGoogleAccountRepo(pool),
+    cryptoKey: googleOAuth.cryptoKey,
+    pendingStore,
+    clock: systemClock,
+  });
+  return { connectFlow, pendingStore };
+}
+
+/**
+ * Builds the boot-owned refresh sweep (Phase 4), or `undefined` when
+ * Google's all-or-none env group is unset — the same "cleanly absent, not a
+ * boot failure" contract `buildConnectFlow` follows. Constructs its own
+ * `OAuth2Client` via `buildGoogleOAuthClient` rather than sharing
+ * `buildConnectFlow`'s instance: the two are independent, stateless-per-call
+ * constructions (`getToken`/`refreshToken` take their own arguments; neither
+ * mutates the client), so there is no correctness reason to share one, and
+ * keeping each builder self-contained matches `buildConnectFlow`'s own
+ * shape.
+ */
+function buildRefreshSweep(
+  pool: Pool,
+  config: Env,
+  channel: Pick<TelegramPoller, "send">,
+  logger: Logger,
+): RefreshSweep | undefined {
+  const googleOAuth = buildGoogleOAuthClient(config);
+  if (!googleOAuth) return undefined;
+
+  const coordinator = createRefreshCoordinator({
+    refreshAccessToken: createGoogleRefreshAccessToken(googleOAuth.oauthClient),
+    cryptoKey: googleOAuth.cryptoKey,
+  });
+
+  return createRefreshSweep({
+    repo: {
+      listAccountsExpiringBefore: (cutoff) => listAccountsExpiringBefore(pool, cutoff),
+      updateRefreshedTokens: (account) => updateRefreshedTokens(pool, account),
+      markDisconnected: (channelName, channelUserId) =>
+        markDisconnected(pool, channelName, channelUserId),
+    },
+    coordinator,
+    channel,
+    clock: systemClock,
+    logger,
+  });
+}
+
+/**
  * Builds the telemetry recorder and subscribes the gated message-handler
  * dispatch to the channel, in that order. Split out of the boot-wiring
  * orchestrator below so each of its steps reads independently; returns the
@@ -470,6 +644,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
   config: Env,
   logger: Logger,
   signal: AbortSignal,
+  connectFlow: ConnectFlow | undefined,
 ): TelemetryRecorderHandle {
   const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
@@ -480,6 +655,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
     logger,
     signal,
     telemetryRecorder,
+    connectFlow,
   });
 
   return telemetryRecorder;
@@ -492,7 +668,10 @@ function buildTelemetryRecorderAndSubscribeHandlers(
  * the steps that only run once the instance lock is held and the health
  * server is serving. Order preserved exactly as it was inline in `boot()`:
  * controller -> channel -> telemetry recorder -> dispatch subscription ->
- * shutdown registration.
+ * shutdown registration. `connectFlow`/`oauthCallbackRoute.bind()` are
+ * constructed and wired here, once `telegramChannel` exists — see
+ * `serveHealth`'s doc comment for why the route itself is constructed
+ * earlier, in `boot()`, before the channel exists.
  */
 function wireRuntimeAndShutdown(
   telegramClient: TelegramClient,
@@ -500,6 +679,7 @@ function wireRuntimeAndShutdown(
   config: Env,
   logger: Logger,
   instanceLock: InstanceLock,
+  oauthCallbackRoute: OauthCallbackRoute,
 ): void {
   // Boot-lifetime, not per-request: message updates dispatch concurrently
   // (detached, not awaited by the poll loop — see
@@ -519,13 +699,34 @@ function wireRuntimeAndShutdown(
     shutdownController.signal,
   );
 
+  const google = buildConnectFlow(pool, config);
+  if (google) {
+    oauthCallbackRoute.bind({
+      connectFlow: google.connectFlow,
+      notify: async (chatId, text) => {
+        await telegramChannel.send(chatId, text);
+      },
+      pendingStore: google.pendingStore,
+    });
+  }
+
   const telemetryRecorder = buildTelemetryRecorderAndSubscribeHandlers(
     telegramChannel,
     pool,
     config,
     logger,
     shutdownController.signal,
+    google?.connectFlow,
   );
+
+  // Constructed and started here, strictly after acquireInstanceLockOrExit
+  // (boot()'s call order, below) — the sweep's in-process single-flight map
+  // is only correct because the advisory lock guarantees exactly one Hermes
+  // process per database (Dependencies & Risks). runOnce() fires immediately
+  // inside start(), which is what makes "survives a restart" true without
+  // waiting out a full REFRESH_SWEEP_INTERVAL_MS.
+  const refreshSweep = buildRefreshSweep(pool, config, telegramChannel, logger);
+  refreshSweep?.start(REFRESH_SWEEP_INTERVAL_MS, shutdownController.signal);
 
   registerShutdown({
     channel: telegramChannel,
@@ -534,6 +735,7 @@ function wireRuntimeAndShutdown(
     logger,
     controller: shutdownController,
     telemetryRecorder,
+    sweep: refreshSweep ?? { stop: async () => {} },
   });
 }
 
@@ -561,7 +763,11 @@ export async function boot(): Promise<void> {
   const instanceLock = await acquireInstanceLockOrExit(pool, config.DATABASE_URL, logger);
   if (!instanceLock) return;
 
-  serveHealth(pool, config.PORT, logger);
+  // Constructed before serveHealth so its (unbound) handleRequest can be
+  // wired into the health server's router immediately — see serveHealth's
+  // doc comment.
+  const oauthCallbackRoute = createOauthCallbackRoute({ logger });
+  serveHealth(pool, config.PORT, logger, oauthCallbackRoute);
 
-  wireRuntimeAndShutdown(telegramClient, pool, config, logger, instanceLock);
+  wireRuntimeAndShutdown(telegramClient, pool, config, logger, instanceLock, oauthCallbackRoute);
 }

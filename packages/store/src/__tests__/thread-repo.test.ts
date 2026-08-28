@@ -79,4 +79,18 @@ describe.skipIf(!testDatabaseUrl)("thread-repo (integration)", () => {
       before.rows[0]?.updated_at.getTime() ?? 0,
     );
   });
+
+  it("rejects a hand-corrupted messages row on read instead of silently returning cast garbage", async () => {
+    const thread = await getOrCreateThread(pool, "telegram", "555");
+
+    // A raw SQL edit, bypassing appendMessages entirely — simulates a manual
+    // `psql` edit breaking the `Message` shape (here: an unrecognized role,
+    // which messageSchema's discriminated union rejects).
+    await pool.query("UPDATE threads SET messages = $2::jsonb WHERE id = $1", [
+      thread.id,
+      JSON.stringify([{ role: "bogus", content: "corrupted" }]),
+    ]);
+
+    await expect(getOrCreateThread(pool, "telegram", "555")).rejects.toThrow(/threads\.messages/);
+  });
 });

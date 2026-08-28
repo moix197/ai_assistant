@@ -9,8 +9,8 @@ import { checkDbConnectivity } from "../health";
 export function createPingHandler(
   channel: Channel,
   pool: Pool,
-): (message: InboundMessage) => Promise<void> {
-  return async function handlePing(message: InboundMessage): Promise<void> {
+): (message: InboundMessage, args?: string) => Promise<void> {
+  return async function handlePing(message: InboundMessage, _args?: string): Promise<void> {
     const dbConnected = await checkDbConnectivity(pool);
     const uptimeSeconds = Math.floor(process.uptime());
     const text = `pong\nuptime: ${uptimeSeconds}s\ndb: ${dbConnected ? "connected" : "disconnected"}`;

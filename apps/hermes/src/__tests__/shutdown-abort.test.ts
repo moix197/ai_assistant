@@ -49,6 +49,11 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
         callOrder.push("telemetryRecorder.stop");
       }),
     };
+    const sweep = {
+      stop: vi.fn().mockImplementation(async () => {
+        callOrder.push("sweep.stop");
+      }),
+    };
 
     await shutdown({
       channel,
@@ -57,6 +62,7 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       drainTimeoutMs: 1000,
     });
 
@@ -64,6 +70,7 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
       "controller.abort",
       "channel.stop",
       "telemetryRecorder.stop",
+      "sweep.stop",
       "lock.release",
       "pool.end",
     ]);
@@ -100,6 +107,7 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
     const pool = { end: vi.fn().mockResolvedValue(undefined) };
     const logger = createMockLogger();
     const telemetryRecorder = { stop: vi.fn().mockResolvedValue(undefined) };
+    const sweep = { stop: vi.fn().mockResolvedValue(undefined) };
 
     const startedAt = Date.now();
     await shutdown({
@@ -109,6 +117,7 @@ describe("shutdown — boot-lifetime AbortController wiring (Phase 5)", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       // A large ceiling: this test's assertion is meaningless if the drain
       // just happens to still be racing a short timeout — it must resolve
       // because the abort woke it, well before this backstop would ever fire.
@@ -147,6 +156,11 @@ describe("shutdown — telemetry flush (Phase 2b)", () => {
       }),
     };
     const logger = createMockLogger();
+    const sweep = {
+      stop: vi.fn().mockImplementation(async () => {
+        callOrder.push("sweep.stop");
+      }),
+    };
 
     await shutdown({
       channel,
@@ -155,12 +169,14 @@ describe("shutdown — telemetry flush (Phase 2b)", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       drainTimeoutMs: 1000,
     });
 
     expect(callOrder).toEqual([
       "channel.stop",
       "telemetryRecorder.stop",
+      "sweep.stop",
       "lock.release",
       "pool.end",
     ]);
@@ -185,6 +201,7 @@ describe("shutdown — telemetry flush (Phase 2b)", () => {
       }),
     };
     const logger = createMockLogger();
+    const sweep = { stop: vi.fn().mockResolvedValue(undefined) };
 
     await shutdown({
       channel,
@@ -193,8 +210,47 @@ describe("shutdown — telemetry flush (Phase 2b)", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       drainTimeoutMs: 1000,
       telemetryFlushTimeoutMs: 20,
+    });
+
+    expect(callOrder).toEqual(["lock.release", "pool.end"]);
+  });
+});
+
+describe("shutdown — refresh sweep stop (Phase 4)", () => {
+  it("gives up on a stuck sweep.stop() after sweepStopTimeoutMs and still runs lock.release()/pool.end()", async () => {
+    const callOrder: string[] = [];
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    const controller = { abort: vi.fn() };
+    const channel = { stop: vi.fn().mockResolvedValue(undefined) };
+    const telemetryRecorder = { stop: vi.fn().mockResolvedValue(undefined) };
+    // Never resolves — the shutdown-time sweep stop must not hang waiting on it.
+    const sweep = { stop: vi.fn().mockImplementation(() => new Promise(() => {})) };
+    const lock = {
+      release: vi.fn().mockImplementation(async () => {
+        callOrder.push("lock.release");
+      }),
+    };
+    const pool = {
+      end: vi.fn().mockImplementation(async () => {
+        callOrder.push("pool.end");
+      }),
+    };
+    const logger = createMockLogger();
+
+    await shutdown({
+      channel,
+      lock,
+      pool,
+      logger,
+      controller,
+      telemetryRecorder,
+      sweep,
+      drainTimeoutMs: 1000,
+      sweepStopTimeoutMs: 20,
     });
 
     expect(callOrder).toEqual(["lock.release", "pool.end"]);

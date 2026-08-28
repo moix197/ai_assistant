@@ -26,9 +26,30 @@ async function handleHealthCheck(pool: Pool, res: ServerResponse): Promise<void>
   res.end(JSON.stringify(body));
 }
 
-function handleRequest(pool: Pool, req: IncomingMessage, res: ServerResponse): void {
-  if (req.url === "/health") {
+export type OauthCallbackHandler = (req: IncomingMessage, res: ServerResponse) => void;
+
+/**
+ * Path/query-aware since Phase 2 (`04-google-auth`) — previously a strict
+ * `req.url === "/health"` compare, which already 404'd `/health?x=1` and had
+ * no query-string handling at all. `new URL(req.url, "http://localhost")`
+ * gives a real `pathname` to switch on; `search` is ignored for `/health`
+ * (query strings there carry no meaning) and parsed by the OAuth callback
+ * route itself.
+ */
+function handleRequest(
+  pool: Pool,
+  handleOauthCallback: OauthCallbackHandler,
+  req: IncomingMessage,
+  res: ServerResponse,
+): void {
+  const { pathname } = new URL(req.url ?? "/", "http://localhost");
+
+  if (pathname === "/health") {
     void handleHealthCheck(pool, res);
+    return;
+  }
+  if (pathname === "/oauth/callback") {
+    handleOauthCallback(req, res);
     return;
   }
   res.writeHead(404, { "Content-Type": "application/json" });
@@ -44,8 +65,9 @@ export function startHealthServer(
   pool: Pool,
   port: number,
   callbacks: HealthServerCallbacks,
+  handleOauthCallback: OauthCallbackHandler,
 ): Server {
-  const server = createServer((req, res) => handleRequest(pool, req, res));
+  const server = createServer((req, res) => handleRequest(pool, handleOauthCallback, req, res));
   server.on("error", (error) => {
     callbacks.onError(error);
   });

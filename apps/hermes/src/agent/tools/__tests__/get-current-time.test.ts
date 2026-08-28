@@ -14,7 +14,10 @@ describe("getCurrentTimeTool", () => {
 
   it("returns a valid ISO-8601 string close to now", async () => {
     const before = Date.now();
-    const result = await getCurrentTimeTool.handler({}, { signal: new AbortController().signal });
+    const result = await getCurrentTimeTool.handler(
+      {},
+      { signal: new AbortController().signal, channel: "telegram", channelUserId: "123" },
+    );
     const after = Date.now();
 
     expect(typeof result).toBe("string");

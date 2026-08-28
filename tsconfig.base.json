@@ -14,7 +14,8 @@
       "@hermes/channels": ["packages/channels/src/index.ts"],
       "@hermes/llm": ["packages/llm/src/index.ts"],
       "@hermes/telemetry": ["packages/telemetry/src/index.ts"],
-      "@hermes/agent": ["packages/agent/src/index.ts"]
+      "@hermes/agent": ["packages/agent/src/index.ts"],
+      "@hermes/google-auth": ["packages/google-auth/src/index.ts"]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,

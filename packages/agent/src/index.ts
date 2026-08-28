@@ -2,7 +2,12 @@ import { type RunTurnDeps, runTurn } from "./loop";
 import type { AgentDefinition } from "./types";
 
 export interface Agent {
-  handleMessage(channel: string, chatId: string, text: string): Promise<string>;
+  handleMessage(
+    channel: string,
+    chatId: string,
+    channelUserId: string,
+    text: string,
+  ): Promise<string>;
 }
 
 /**
@@ -31,7 +36,8 @@ function assertApprovalGateConfigured(definition: AgentDefinition, deps: RunTurn
 export function createAgent(definition: AgentDefinition, deps: RunTurnDeps): Agent {
   assertApprovalGateConfigured(definition, deps);
   return {
-    handleMessage: (channel, chatId, text) => runTurn(definition, deps, channel, chatId, text),
+    handleMessage: (channel, chatId, channelUserId, text) =>
+      runTurn(definition, deps, channel, chatId, channelUserId, text),
   };
 }
 

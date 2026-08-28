@@ -91,6 +91,7 @@ async function replyWithCompletion(
   const resultText = await options.agent.handleMessage(
     CHANNEL_TELEGRAM,
     message.chatId,
+    message.channelUserId,
     message.text,
   );
   await options.channel.send(message.chatId, resultText);
@@ -146,10 +147,10 @@ async function replyWithFailureNotice(
  */
 export function createCompletionHandler(
   options: CreateCompletionHandlerOptions,
-): (message: InboundMessage) => Promise<void> {
+): (message: InboundMessage, args?: string) => Promise<void> {
   const { channel, logger, dedupeRepo } = options;
 
-  return async function handleCompletion(message: InboundMessage): Promise<void> {
+  return async function handleCompletion(message: InboundMessage, _args?: string): Promise<void> {
     const channelUserId = Number(message.channelUserId);
 
     if (message.kind === "edited_message") {

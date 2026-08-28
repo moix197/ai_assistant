@@ -57,6 +57,18 @@ services:
       # deployment that forgets this fails boot naming the key rather than
       # running with no ceiling.
       LLM_MONTHLY_BUDGET_USD: ${LLM_MONTHLY_BUDGET_USD:-}
+      # Google OAuth: all-or-none group, cleanly absent when unset (see
+      # packages/config/src/schema.ts). TOKEN_ENCRYPTION_KEY generated with
+      # the command in .env.example's Prerequisites cross-reference.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      # Has its own app-level default (see packages/config/src/schema.ts) —
+      # unlike the `:-` passthrough above, this bakes the same default in
+      # literally (matching PORT/LOG_LEVEL's pattern above) rather than
+      # passing through "", which would fail the schema's z.string().url()
+      # check instead of falling through to the default.
+      OAUTH_REDIRECT_BASE_URL: ${OAUTH_REDIRECT_BASE_URL:-http://localhost:3000}
     ports:
       - "3000:3000"
     # Telegram allows exactly one getUpdates consumer per bot token, so this

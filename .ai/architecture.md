@@ -20,6 +20,7 @@ packages/channels  Channel port + telegram/ adapter
 packages/llm       LlmProvider port + OpenAI-compatible adapter over fetch
 packages/telemetry buffered recorder behind core's port + /stats rollup math
 packages/agent     bounded turn loop + tool execution + ThreadRepo/ApprovalGate PORTS
+packages/google-auth OAuth connect flow + token crypto + refresh coordinator + GoogleAccountRepo PORT
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -32,16 +33,30 @@ Strictly downward; no package imports one above it.
 
 ```
                         apps/hermes
-                             │  (imports all seven; the ONLY place they are wired together)
-     ┌───────────┬───────────┼───────────┬───────────┬──────────┬──────────┐
-     ▼           ▼           ▼           ▼           ▼          ▼          ▼
-  config       store     channels       llm      telemetry    agent       core
-     │           │       (only dep)  (only dep)  (only dep)  (core+llm)
-     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────► core
+                             │  (imports all eight; the ONLY place they are wired together)
+     ┌───────────┬───────────┼───────────┬───────────┬──────────┬─────────────┬─────────┐
+     ▼           ▼           ▼           ▼           ▼          ▼             ▼         ▼
+  config       store     channels       llm      telemetry    agent     google-auth   core
+     │           │       (only dep)  (only dep)  (only dep)  (core+llm)  (only dep)
+     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────────┴───────► core
 ```
 
-- `packages/core` depends on nothing. It is where ports live so lower packages
-  can be depended on without depending on their implementations.
+The siblings on that row are siblings, not a chain: none of them may import
+another. `store → google-auth` existed briefly (for the `GoogleAccount` row
+shape) and was removed — see the `packages/google-auth` bullet below.
+
+- `packages/core` depends on no other `@hermes/*` package. It is where ports
+  live so lower packages can be depended on without depending on their
+  implementations. Its one exception is `zod`: `Message` and its four role
+  variants (`SystemMessage`/`UserMessage`/`AssistantMessage`/`ToolMessage`),
+  and likewise `GoogleAccount`/`TokenEnvelope`, are schema-first
+  (`04-google-auth` Phase 1), so `@hermes/store` can
+  validate a stored `threads.messages` or `google_accounts` row against the
+  exact same shape the rest of the codebase compiles against, instead of a
+  hand-mirrored copy that could silently drift. `zod` is a leaf, third-party validation
+  library already load-bearing in `packages/agent`/`packages/config`, not
+  another `@hermes/*` package's implementation `core` would be coupling to —
+  the zero-*internal*-dependency reasoning above is unaffected by it.
 - **`packages/channels` must not depend on `packages/store`.** It needs a
   persisted poll offset, but takes an injected `TelegramOffsetRepo` port
   (`{ getOffset, setOffset }`) instead of importing Postgres. `boot.ts` binds it
@@ -69,7 +84,8 @@ Strictly downward; no package imports one above it.
     silently disabling cost recording and the ceiling that reads from it.
   - The row's shape, `LlmUsageEntry`, lives in `@hermes/core` and is
     re-exported by both `llm` and `store`, so neither side can drift a field
-    apart without a type error.
+    apart without a type error. `GoogleAccount` follows the same rule for
+    `google_accounts` — see the `google-auth` bullet below.
 - **`packages/telemetry` depends on `packages/core` only at runtime** — never
   `@hermes/store` in shipped code, the same boundary `llm` holds and for the
   same reason. (`@hermes/store` is a devDependency solely for the DB
@@ -108,6 +124,20 @@ Strictly downward; no package imports one above it.
   multi-agent seam; nothing else for it is built, and
   [agent-multi-agent-seam](decisions/agent-multi-agent-seam.md) says what that
   does and does not buy.
+- **`packages/google-auth` depends on `packages/core` only** — never
+  `@hermes/store`, and `@hermes/store` never on it. Persistence is the
+  injected `GoogleAccountRepo` port (`{ getAccount, upsertAccount,
+  deleteAccount }`), bound in
+  `apps/hermes/src/store/build-google-account-repo.ts`, same shape as
+  `agent`'s `ThreadRepo`. The *row* shape both sides need —
+  `googleAccountSchema`/`GoogleAccount`, and the `tokenEnvelopeSchema` it
+  embeds — lives in `@hermes/core` (`google-types.ts`) and is re-exported by
+  both `google-auth` and `store`, the identical arrangement `LlmUsageEntry`
+  uses. It briefly lived in `google-auth` with `store` importing it, which
+  put a sibling edge in this row and re-exported another sibling's surface
+  through `store`'s public API; moving the shape down to `core` is what
+  removes it. Only the *port* (a consumer-defined interface) and the crypto
+  that seals and opens an envelope stay in `google-auth`.
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).

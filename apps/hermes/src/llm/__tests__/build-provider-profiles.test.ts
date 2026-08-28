@@ -12,6 +12,7 @@ const baseEnv: Env = {
   LLM_PRIMARY_API_KEY: "primary-key",
   LLM_PRIMARY_MODEL: "primary-model",
   LLM_MONTHLY_BUDGET_USD: 100,
+  OAUTH_REDIRECT_BASE_URL: "http://localhost:3000",
 };
 
 describe("buildProviderProfiles", () => {

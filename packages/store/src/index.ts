@@ -6,6 +6,15 @@ export { claim, complete, type LlmDedupeClaimResult } from "./llm-dedupe-repo";
 export { insertEvents } from "./telemetry-event-repo";
 export { appendMessages, getOrCreateThread, type Thread } from "./thread-repo";
 export {
+  deleteAccount,
+  getAccount,
+  type GoogleAccount,
+  listAccountsExpiringBefore,
+  markDisconnected,
+  updateRefreshedTokens,
+  upsertAccount,
+} from "./google-account-repo";
+export {
   getLlmCallStatsSince,
   getTopToolsSince,
   type LlmCallStats,

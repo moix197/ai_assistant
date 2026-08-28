@@ -70,7 +70,7 @@ describe("createCompletionHandler", () => {
     expect(channel.send).toHaveBeenCalledWith("555", "a real agent reply");
   });
 
-  it("calls agent.handleMessage with the telegram channel identifier, the chatId, and the message text", async () => {
+  it("calls agent.handleMessage with the telegram channel identifier, the chatId, the sender's channelUserId, and the message text", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
     const agent = createMockAgent();
@@ -81,11 +81,18 @@ describe("createCompletionHandler", () => {
       dedupeRepo: createPermissiveDedupeRepo(),
     });
 
-    await handler(inboundMessage({ chatId: "555", text: "what is the capital of France?" }));
+    await handler(
+      inboundMessage({
+        chatId: "555",
+        channelUserId: "111",
+        text: "what is the capital of France?",
+      }),
+    );
 
     expect(agent.handleMessage).toHaveBeenCalledWith(
       "telegram",
       "555",
+      "111",
       "what is the capital of France?",
     );
   });

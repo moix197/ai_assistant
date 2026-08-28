@@ -14,7 +14,19 @@ export interface ToolSpec {
   name: string;
   description: string;
   schema: z.ZodTypeAny;
-  handler: (args: unknown, ctx: { signal: AbortSignal }) => Promise<unknown>;
+  /**
+   * `ctx.channel`/`ctx.channelUserId` identify who is asking — threaded
+   * through from `runTurn`'s own `channel`/`channelUserId` parameters (the
+   * latter itself threaded from `Agent.handleMessage`). `whoami`
+   * (`apps/hermes/src/agent/tools/whoami.ts`, `04-google-auth` Phase 3) is
+   * the first tool that needs this: a required-field widening of this
+   * contract, not an additive one, so every existing `ctx` literal
+   * (including in tests that invoke a handler directly) must supply both.
+   */
+  handler: (
+    args: unknown,
+    ctx: { signal: AbortSignal; channel: string; channelUserId: string },
+  ) => Promise<unknown>;
   /**
    * Gates this tool behind the approval flow: `true` routes the call through
    * `runGatedToolCalls`, which requires `RunTurnDeps.approvalGate` (enforced
