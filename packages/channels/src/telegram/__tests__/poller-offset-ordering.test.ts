@@ -12,15 +12,18 @@ function createMockLogger(): Logger {
   };
 }
 
-function makeUpdate(updateId: number, userId = 111): TelegramUpdate {
+function makeCallbackUpdate(updateId: number): TelegramUpdate {
   return {
     update_id: updateId,
-    message: {
-      message_id: updateId,
-      from: { id: userId, is_bot: false },
-      chat: { id: 555, type: "private" },
-      date: 0,
-      text: `text-${updateId}`,
+    callback_query: {
+      id: `cbq-${updateId}`,
+      from: { id: 111, is_bot: false },
+      message: {
+        message_id: 7,
+        chat: { id: 555, type: "private" },
+        date: 0,
+      },
+      data: "approval-1:approve",
     },
   };
 }
@@ -34,9 +37,17 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("createTelegramPoller — offset persistence ordering", () => {
-  it("calls offsetRepo.setOffset only after the handler resolves for the update", async () => {
-    const update = makeUpdate(40);
+// This file's guarantee — offset persisted only once the handler has
+// actually resolved — used to hold for every update kind. It's now
+// callback-only: a message update's offset advances immediately, without
+// waiting on its handler (see poller-crash-replay.test.ts and
+// packages/channels/README.md for the deadlock that forced the narrowing).
+// callback_query stays on the old, stricter contract because its handler
+// (the approval gate acking a tap) is fast and its replay-on-crash behavior
+// is still load-bearing.
+describe("createTelegramPoller — offset persistence ordering (callback_query)", () => {
+  it("calls offsetRepo.setOffset only after the callback handler resolves for the update", async () => {
+    const update = makeCallbackUpdate(40);
     const getUpdates = vi
       .fn()
       .mockResolvedValueOnce([update])
@@ -54,7 +65,7 @@ describe("createTelegramPoller — offset persistence ordering", () => {
     const handlerPromise = new Promise<void>((resolve) => {
       resolveHandler = resolve;
     });
-    const handler = vi.fn().mockReturnValue(handlerPromise);
+    const callbackHandler = vi.fn().mockReturnValue(handlerPromise);
 
     const setOffset = vi.fn().mockResolvedValue(undefined);
     const offsetRepo: TelegramOffsetRepo = {
@@ -62,9 +73,11 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       setOffset,
     };
 
-    createTelegramPoller({ client, logger, offsetRepo }).subscribe(handler);
+    const poller = createTelegramPoller({ client, logger, offsetRepo });
+    poller.subscribe(vi.fn());
+    poller.subscribeCallback(callbackHandler);
 
-    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(callbackHandler).toHaveBeenCalledTimes(1));
 
     // Handler is still pending: the offset must not have been persisted yet.
     expect(setOffset).not.toHaveBeenCalled();
@@ -75,8 +88,8 @@ describe("createTelegramPoller — offset persistence ordering", () => {
     expect(setOffset).toHaveBeenCalledWith(41);
   });
 
-  it("does not advance the persisted offset past an update whose handler throws", async () => {
-    const update = makeUpdate(50);
+  it("does not advance the persisted offset past a callback_query update whose handler throws", async () => {
+    const update = makeCallbackUpdate(50);
     const getUpdates = vi
       .fn()
       .mockResolvedValueOnce([update])
@@ -89,7 +102,7 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       editMessageText: vi.fn(),
     };
     const logger = createMockLogger();
-    const handler = vi.fn().mockRejectedValue(new Error("boom"));
+    const callbackHandler = vi.fn().mockRejectedValue(new Error("boom"));
 
     const setOffset = vi.fn().mockResolvedValue(undefined);
     const offsetRepo: TelegramOffsetRepo = {
@@ -97,11 +110,13 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       setOffset,
     };
 
-    createTelegramPoller({ client, logger, offsetRepo, retryDelayMs: 1 }).subscribe(handler);
+    const poller = createTelegramPoller({ client, logger, offsetRepo, retryDelayMs: 1 });
+    poller.subscribe(vi.fn());
+    poller.subscribeCallback(callbackHandler);
 
     await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
 
-    expect(handler).toHaveBeenCalledTimes(1);
+    expect(callbackHandler).toHaveBeenCalledTimes(1);
     expect(setOffset).not.toHaveBeenCalled();
   });
 });

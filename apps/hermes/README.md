@@ -181,9 +181,14 @@ order:
    burning its full bound. `controller` is a required `ShutdownDeps` field,
    not optional.
 2. `channel.stop()` — flips the poller's `stopping` flag so no new
-   `getUpdates` call starts, then awaits the in-flight handler. Bounded to
-   ~5s (`DRAIN_TIMEOUT_MS`) regardless of the abort, so a genuinely stuck
-   drain still can't block the rest of shutdown indefinitely.
+   `getUpdates` call starts, awaits any in-flight `callback_query` handler
+   (still processed inline), then drains every message dispatch left
+   detached from the poll loop (see `packages/channels/README.md`'s "Offset
+   persistence and the idempotency contract" — a message handler is no
+   longer awaited by the loop itself, only by this drain). Bounded to ~5s
+   (`DRAIN_TIMEOUT_MS`) regardless of the abort, so a genuinely stuck drain
+   still can't block the rest of shutdown indefinitely; a message dispatch
+   still running past that bound is abandoned when the process exits.
 3. `telemetryRecorder.stop()` — flushes any buffered `llm.call` events.
    Bounded independently to ~1s (`TELEMETRY_FLUSH_TIMEOUT_MS`) so a hung
    flush degrades to "lose the unflushed buffer" instead of stalling the

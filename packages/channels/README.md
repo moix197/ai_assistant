@@ -95,20 +95,24 @@ messages in and out of Telegram."
   update: `null` when there's no `callback_query`, or one missing its
   `message`/`data` (fail-closed, logged at debug, mirroring
   `normalizeTelegramUpdate`'s own guard); otherwise an `InboundCallback`
-  dispatched to the single handler `subscribeCallback` registers, alongside
-  (never instead of) the existing message dispatch — a raw update is either a
-  message or a `callback_query`, never both, so only one handler ever fires
-  per update. The
-  offset is loaded once at start via a `TelegramOffsetRepo` port (injected —
-  `boot.ts` wires it to `@hermes/store`'s `getOffset`/`setOffset`, keeping
-  this package decoupled from Postgres) and persisted after each update is
-  fully handled. `TelegramPollerOptions.retryDelayMs` overrides the fixed
-  delay used after a transient failure (tests inject a short value instead
-  of waiting out the real one). `createTelegramPoller` returns a
-  `TelegramPoller` — a `Channel` plus `stop(): Promise<void>`, which flips a
-  `stopping` flag read by the loop's condition (so no new `getUpdates` call
-  starts) and resolves once the loop has actually exited, in-flight handler
-  included. In the normal shutdown path, `boot.ts` aborts the shared
+  dispatched to the single handler `subscribeCallback` registers — a raw
+  update is either a message or a `callback_query`, never both, so only one
+  handler ever fires per update. The offset is loaded once at start via a
+  `TelegramOffsetRepo` port (injected — `boot.ts` wires it to
+  `@hermes/store`'s `getOffset`/`setOffset`, keeping this package decoupled
+  from Postgres). **A `callback_query` is awaited inline** by the poll loop
+  and its offset persisted only once its handler completes — see "Offset
+  persistence and the idempotency contract" below for why, and why **a
+  message update is not**: it's dispatched without the loop waiting on it,
+  and its offset advances immediately. `TelegramPollerOptions.retryDelayMs`
+  overrides the fixed delay used after a transient failure (tests inject a
+  short value instead of waiting out the real one). `createTelegramPoller`
+  returns a `TelegramPoller` — a `Channel` plus `stop(): Promise<void>`,
+  which flips a `stopping` flag read by the loop's condition (so no new
+  `getUpdates` call starts), resolves once the loop has actually exited
+  (in-flight `callback_query` handler included), and then drains every
+  message dispatch still detached from that last iteration before settling.
+  In the normal shutdown path, `boot.ts` aborts the shared
   `TelegramPollerOptions.signal` before calling `stop()`, which aborts the
   in-flight `getUpdates` call immediately (see `client.ts`'s abort handling);
   the loop detects this and exits on that same iteration, logging `"poll
@@ -157,35 +161,56 @@ that were never actually stuck, causing reconnect storms.
 
 ### Offset persistence and the idempotency contract
 
-The poller persists `update_id + 1` **after** each individual update is
-fully handled — never before, and never batched across a whole `getUpdates`
-response. This ordering is load-bearing: Telegram permanently deletes an
-update once its `update_id` has been acked via `offset` on a later
-`getUpdates` call, so persisting earlier risks losing that update forever if
-the process crashes mid-handling. Persisting later (or per-batch instead of
-per-update) means an *already-handled* update can also be replayed, which is
-harmless here but would not be for a handler with an external side effect.
+**For a `callback_query` update**, the poller persists `update_id + 1`
+**after** its handler is fully awaited — never before, and never batched
+across a whole `getUpdates` response. This ordering is load-bearing:
+Telegram permanently deletes an update once its `update_id` has been acked
+via `offset` on a later `getUpdates` call, so persisting earlier risks
+losing that update forever if the process crashes mid-handling.
 
-This creates an explicit contract: **a crash between "handler completed" and
-"offset persisted" replays exactly the one in-flight update on restart.**
-`poller-crash-replay.test.ts` simulates this concretely — persistence fails
-once, a fresh poller instance is built against the same (unchanged)
-persisted offset, and the same update is shown to be re-delivered and
-re-handled.
+This creates an explicit contract for callbacks: **a crash between "handler
+completed" and "offset persisted" replays exactly the one in-flight callback
+on restart.** `poller-crash-replay.test.ts` simulates this concretely —
+persistence fails once, a fresh poller instance is built against the same
+(unchanged) persisted offset, and the same `callback_query` is shown to be
+re-delivered and re-handled.
 
-The echo handler is safe under this replay by inspection: send-and-reply has
-no side effect beyond a second, user-visible duplicate message, so there is
-no dedupe key here. **Any future handler with an external side effect**
-(e.g. a later `log_trade`-style handler) **must add its own idempotency key**
-per the project's at-least-once-delivery invariant — this phase solves
-replay-safety only for echo, not generally.
+**For a message update, this guarantee was deliberately narrowed away in
+Phase 3.** The poll loop no longer awaits a message handler before looping
+back to the next `getUpdates` call — a completion handler can be blocked for
+minutes awaiting a Telegram approval tap (`apps/hermes/src/agent/
+telegram-approval-gate.ts`), and awaiting it inline meant `getUpdates` never
+ran again to fetch the very `callback_query` that would unblock it,
+deadlocking the bot on every gated tool call. Instead, a message is
+dispatched without the loop waiting on it, and **its offset advances
+immediately**, before its handler has even started. The accepted trade-off:
+**a message update in flight when the process dies is not redelivered on
+restart** — the crash-replay guarantee above now applies only to
+`callback_query`. `poller-crash-replay.test.ts` also pins this narrower
+message-side behavior directly (offset advances while the handler is still
+pending). A message handler that throws is also no longer retried by
+redelivery: it's logged loudly (`"message handler failed after its offset
+was already advanced, not retried"`) instead, since there is no redelivery
+left to fall back on for that update.
+
+The echo handler is safe under (callback) replay and under a lost message by
+inspection: send-and-reply has no side effect beyond, at most, a missing or
+duplicate user-visible message, so there is no dedupe key here. **Any future
+handler with an external side effect** (e.g. a later `log_trade`-style
+handler) **must add its own idempotency key**, since neither "replayed" nor
+"silently dropped" can be assumed away by this package — this phase solves
+safety only for echo, not generally.
 
 The completion handler (`apps/hermes/src/handlers/complete.ts`, added
 02-llm-port) is the first handler with such a side effect — a real, paid LLM
-call — and it closes exactly this gap using `InboundMessage.updateId`: see
-the field's own doc comment on `channel.ts` and `packages/store/README.md`'s
-`llm_dedupe` section for the deterministic exact-duplicate proof and the
-narrower, accepted claim-to-complete crash-window risk.
+call — and it closes the redelivery-side (duplicate) half of this gap using
+`InboundMessage.updateId`: see the field's own doc comment on `channel.ts`
+and `packages/store/README.md`'s `llm_dedupe` section for the deterministic
+exact-duplicate proof and the narrower, accepted claim-to-complete
+crash-window risk. It does not (and cannot) recover a message whose handler
+never ran at all because the process died mid-dispatch — that is the
+explicit trade-off this section documents, accepted so the approval gate
+never deadlocks the poller.
 
 ### Single-instance constraint
 

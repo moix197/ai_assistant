@@ -144,19 +144,32 @@ export interface TelegramPoller extends Channel {
   /**
    * Flips the loop's stopping flag so no new `getUpdates` call starts, then
    * resolves once the loop has actually exited — including any in-flight
-   * `pollOnce()` iteration. Does not itself impose a timeout; callers
-   * (boot.ts) bound how long they wait for this to settle.
+   * `pollOnce()` iteration — and every message dispatch still detached from
+   * that iteration (see `dispatchMessage`) has settled. Does not itself
+   * impose a timeout; callers (boot.ts) bound how long they wait for this to
+   * settle.
    */
   stop(): Promise<void>;
 }
 
+/** True for a raw update carrying a `callback_query`, false for a message/edited_message one. */
+function isCallbackUpdate(update: TelegramUpdate): boolean {
+  return update.callback_query !== undefined;
+}
+
 /**
  * Long-poll loop against `getUpdates`. The offset is loaded from
- * `offsetRepo` once at start and persisted after each update is fully
- * handled. On a transient fetch error this logs and retries after a fixed
- * delay rather than re-throwing, since a crashed poller silently stops the
- * bot; `client.ts` already absorbs most transient failures via structured
- * backoff before one reaches here.
+ * `offsetRepo` once at start. A `callback_query` update is still awaited
+ * inline and its offset persisted only after its handler completes (see
+ * `handleCallback`) — those are fast and must keep crash-replay semantics.
+ * A message update is dispatched without the loop awaiting it, and its
+ * offset advances immediately (see `dispatchMessage`): a completion handler
+ * can await a Telegram approval tap for minutes, and if the loop awaited
+ * that inline, `getUpdates` would never run again to fetch the very
+ * `callback_query` that unblocks it. On a transient fetch error this logs
+ * and retries after a fixed delay rather than re-throwing, since a crashed
+ * poller silently stops the bot; `client.ts` already absorbs most transient
+ * failures via structured backoff before one reaches here.
  */
 export function createTelegramPoller(options: TelegramPollerOptions): TelegramPoller {
   const { client, logger, offsetRepo, onFatalError, signal } = options;
@@ -166,25 +179,50 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
   let offset: number | undefined;
   let stopping = false;
   let loopPromise: Promise<void> = Promise.resolve();
+  // Message dispatches detached from the poll loop (see `dispatchMessage`),
+  // tracked here purely so `stop()` can drain them before resolving —
+  // nothing else ever awaits this set.
+  const inFlightDispatches = new Set<Promise<void>>();
 
-  async function handleUpdate(update: TelegramUpdate): Promise<void> {
-    const message = normalizeTelegramUpdate(update, logger);
-    if (message && handler) {
-      await handler(message);
-    }
+  async function handleCallback(update: TelegramUpdate): Promise<void> {
     const callback = normalizeTelegramCallback(update, logger);
     if (callback && callbackHandler) {
       await callbackHandler(callback);
     }
-    const nextOffset = update.update_id + 1;
-    // Persisted only *after* the handler has fully completed: Telegram
-    // permanently deletes an update once its id is acked via `offset`, so
-    // persisting before (or without) handling it risks losing that update
-    // forever if the process crashes in between. A crash between the
-    // handler resolving and this line replays exactly this one update on
-    // restart — see poller-crash-replay.test.ts and packages/channels/README.md.
-    await offsetRepo.setOffset(nextOffset);
-    offset = nextOffset;
+  }
+
+  /**
+   * Runs a message update's handler WITHOUT the poll loop awaiting it — see
+   * this function's rationale on `createTelegramPoller`'s own doc comment.
+   * Declared `async` (rather than chaining `.catch` around a direct call) so
+   * even a *synchronous* throw from `handler` becomes a rejection this
+   * function catches itself, instead of escaping to `pollOnce`'s loop as an
+   * exception that would (wrongly, under this model) stop the batch.
+   *
+   * By the time this settles, `pollOnce` has already advanced the offset
+   * past this update (see the main loop below) — there is no redelivery to
+   * fall back on the way there is for a `callback_query` failure, so a
+   * rejection here is terminal for this update: logged loudly rather than
+   * silently swallowed. `apps/hermes/src/handlers/complete.ts`'s dedupe
+   * machinery is what now guards the redelivery side; see
+   * `packages/channels/README.md`.
+   */
+  async function dispatchMessage(update: TelegramUpdate): Promise<void> {
+    const message = normalizeTelegramUpdate(update, logger);
+    if (!message || !handler) return;
+    try {
+      await handler(message);
+    } catch (error) {
+      logger.error("message handler failed after its offset was already advanced, not retried", {
+        updateId: update.update_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function trackDispatch(dispatched: Promise<void>): void {
+    inFlightDispatches.add(dispatched);
+    void dispatched.finally(() => inFlightDispatches.delete(dispatched));
   }
 
   async function pollOnce(): Promise<void> {
@@ -236,13 +274,31 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
 
     for (const update of updates) {
       try {
-        await handleUpdate(update);
+        // A callback_query is still awaited inline — it's fast, and the
+        // approval gate's replay-on-crash behavior depends on its offset
+        // only advancing once its handler has actually run. A message is
+        // dispatched without waiting (see `dispatchMessage`): the offset
+        // below advances immediately, before its handler even starts,
+        // deliberately trading message crash-replay for never blocking this
+        // loop on a handler that itself waits on a Telegram reply (the
+        // approval gate) — see packages/channels/README.md.
+        if (isCallbackUpdate(update)) {
+          await handleCallback(update);
+        } else {
+          trackDispatch(dispatchMessage(update));
+        }
+        const nextOffset = update.update_id + 1;
+        await offsetRepo.setOffset(nextOffset);
+        offset = nextOffset;
       } catch (error) {
-        // Offset was not advanced for this update, so it (and every update
-        // after it in this batch) is re-delivered by the next getUpdates
-        // call rather than silently skipped — stop this batch here instead
-        // of continuing on to updates whose offset advance would leapfrog
-        // the one that just failed.
+        // Only a callback_query's handleCallback (or offsetRepo.setOffset
+        // itself) can land here now — dispatchMessage never rethrows, it
+        // logs its own failures (see above). Offset was not advanced for
+        // this update, so it (and every update after it in this batch) is
+        // re-delivered by the next getUpdates call rather than silently
+        // skipped — stop this batch here instead of continuing on to
+        // updates whose offset advance would leapfrog the one that just
+        // failed.
         logger.warn("handler failed, will retry this update", {
           updateId: update.update_id,
           error: error instanceof Error ? error.message : String(error),
@@ -254,7 +310,9 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
   }
 
   // Runs until stop() flips `stopping`; the in-flight pollOnce() iteration
-  // (including its handler) is still awaited before the loop exits.
+  // is still awaited before the loop exits — a pending callback_query
+  // handler included, a detached message dispatch not (see `stop()`, which
+  // drains those separately).
   async function loop(): Promise<void> {
     offset = await offsetRepo.getOffset();
     while (!stopping) {
@@ -295,6 +353,14 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
     async stop() {
       stopping = true;
       await loopPromise;
+      // Drains dispatches detached by the current (now-finished) loop
+      // iteration. `dispatchMessage` never rejects (it catches its own
+      // errors), so `Promise.all` is safe here — nothing to `allSettled`
+      // against. Snapshot the set before awaiting: `trackDispatch`'s
+      // `.finally` mutates it as each one settles, and iterating a Set
+      // that's being deleted from while iterating is fine in JS but would
+      // otherwise make the intent read as more fragile than it is.
+      await Promise.all([...inFlightDispatches]);
     },
   };
 }

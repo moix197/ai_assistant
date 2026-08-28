@@ -41,11 +41,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("createTelegramPoller — offset ordering", () => {
-  // In-memory only: proves sequential backpressure (handler awaited before the next
-  // getUpdates call). The crash-before-persist offset guarantee is owned by Phase 3's
-  // poller-crash-replay.test.ts, once the offset is actually persisted.
-  it("awaits the handler before requesting the next batch (sequential backpressure, happy path)", async () => {
+describe("createTelegramPoller — message dispatch concurrency (approval-gate deadlock fix)", () => {
+  // Regression test for the Phase 3 deadlock: a completion handler can await
+  // a Telegram approval tap for minutes. If the poll loop awaited a message
+  // handler inline the way it used to, getUpdates would never run again to
+  // fetch the very callback_query that unblocks it. This must fail against
+  // the pre-fix code (which awaited the handler before looping back).
+  it("issues a subsequent getUpdates call while a message handler is still pending", async () => {
     const update = makeUpdate(10);
     const getUpdates = vi
       .fn()
@@ -59,11 +61,9 @@ describe("createTelegramPoller — offset ordering", () => {
       editMessageText: vi.fn(),
     };
     const logger = createMockLogger();
-    let resolveHandler: () => void = () => {};
-    const handlerPromise = new Promise<void>((resolve) => {
-      resolveHandler = resolve;
-    });
-    const handler = vi.fn().mockReturnValue(handlerPromise);
+    // Never resolves within this test — models a handler stuck awaiting an
+    // approval tap.
+    const handler = vi.fn().mockReturnValue(new Promise<void>(() => {}));
 
     createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() }).subscribe(handler);
 
@@ -72,21 +72,62 @@ describe("createTelegramPoller — offset ordering", () => {
       expect.objectContaining({ channelUserId: "111", text: "text-10" }),
     );
 
-    // While the handler is still pending, the poll loop must not have looped
-    // back to request the next batch — proves the loop awaits each handler
-    // before issuing the next getUpdates call (sequential backpressure).
-    expect(getUpdates).toHaveBeenCalledTimes(1);
-    expect(getUpdates).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 11 }));
-
-    resolveHandler();
-
+    // The handler above is still pending, yet the loop issues its next
+    // getUpdates call anyway, from the already-advanced offset — proving the
+    // loop no longer blocks on a message handler.
     await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
     expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 11 }));
   });
+
+  it("delivers a callback_query to the callback handler while an earlier message handler is still pending", async () => {
+    const messageUpdate = makeUpdate(11);
+    const callbackUpdate: TelegramUpdate = {
+      update_id: 12,
+      callback_query: {
+        id: "cbq-12",
+        from: { id: 111, is_bot: false },
+        message: { message_id: 7, chat: { id: 555, type: "private" }, date: 0 },
+        data: "approval-1:approve",
+      },
+    };
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([messageUpdate])
+      .mockResolvedValueOnce([callbackUpdate])
+      .mockImplementation(() => pendingForever());
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    const logger = createMockLogger();
+    // Never resolves — this is exactly the shape of the deadlock: an
+    // approval-gated completion handler awaiting the tap that follows.
+    const handler = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const callbackHandler = vi.fn().mockResolvedValue(undefined);
+
+    const poller = createTelegramPoller({ client, logger, offsetRepo: createMockOffsetRepo() });
+    poller.subscribe(handler);
+    poller.subscribeCallback(callbackHandler);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    // The approval tap arrives and is delivered even though the message
+    // handler it's meant to unblock never resolved.
+    await vi.waitFor(() => expect(callbackHandler).toHaveBeenCalledTimes(1));
+    expect(callbackHandler).toHaveBeenCalledWith(expect.objectContaining({ callbackId: "cbq-12" }));
+  });
 });
 
-describe("createTelegramPoller — handler failure", () => {
-  it("does not advance the offset when the handler throws, and the loop survives to the next iteration", async () => {
+describe("createTelegramPoller — message handler failure (no redelivery under detached dispatch)", () => {
+  // A message handler failure can no longer stop the batch or hold back the
+  // offset the way it used to (see poller-offset-ordering.test.ts and
+  // poller-crash-replay.test.ts for the callback_query behavior that still
+  // works this way) — the loop already moved on before the handler even
+  // settles. The failure is logged loudly instead, per
+  // packages/channels/README.md's narrowed idempotency contract.
+  it("still advances the offset when a message handler throws, and logs the failure without retrying", async () => {
     const update = makeUpdate(20);
     const getUpdates = vi
       .fn()
@@ -101,28 +142,31 @@ describe("createTelegramPoller — handler failure", () => {
     };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("transient send failure"));
+    const setOffset = vi.fn().mockResolvedValue(undefined);
 
     createTelegramPoller({
       client,
       logger,
-      offsetRepo: createMockOffsetRepo(),
+      offsetRepo: { getOffset: vi.fn().mockResolvedValue(0), setOffset },
       retryDelayMs: 1,
     }).subscribe(handler);
 
-    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
-
-    expect(handler).toHaveBeenCalledTimes(1);
-    // Second poll re-requests from the same (unadvanced) offset — update 20
-    // is redelivered by Telegram rather than silently skipped, and the loop
-    // is still running (a second getUpdates call happened at all).
-    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
-    expect(logger.warn).toHaveBeenCalledWith(
+    // The offset advances past update 20 despite the handler's eventual
+    // rejection — there is no redelivery to fall back on any more.
+    await vi.waitFor(() => expect(setOffset).toHaveBeenCalledWith(21));
+    await vi.waitFor(() =>
+      expect(logger.error).toHaveBeenCalledWith(
+        "message handler failed after its offset was already advanced, not retried",
+        expect.objectContaining({ updateId: 20 }),
+      ),
+    );
+    expect(logger.warn).not.toHaveBeenCalledWith(
       "handler failed, will retry this update",
-      expect.objectContaining({ updateId: 20 }),
+      expect.anything(),
     );
   });
 
-  it("stops processing the rest of a batch after a handler failure, instead of skipping past it", async () => {
+  it("keeps processing the rest of a batch after a message handler throws, instead of stopping", async () => {
     const first = makeUpdate(30);
     const second = makeUpdate(31);
     const getUpdates = vi
@@ -137,7 +181,7 @@ describe("createTelegramPoller — handler failure", () => {
       editMessageText: vi.fn(),
     };
     const logger = createMockLogger();
-    const handler = vi.fn().mockRejectedValueOnce(new Error("boom"));
+    const handler = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(undefined);
 
     createTelegramPoller({
       client,
@@ -146,12 +190,84 @@ describe("createTelegramPoller — handler failure", () => {
       retryDelayMs: 1,
     }).subscribe(handler);
 
+    // Update 31 is dispatched too, in the same batch, despite update 30's
+    // handler having failed — detached dispatch never leapfrogs or skips
+    // the rest of the batch, it just doesn't wait.
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "text-31" }));
+  });
+});
+
+describe("createTelegramPoller — graceful shutdown drains in-flight message dispatch", () => {
+  it("stop() awaits a detached message dispatch instead of dropping it or hanging", async () => {
+    const update = makeUpdate(90);
+    // Mirrors the "abort signal wiring" describe below (and boot.ts's real
+    // shutdown sequence: controller.abort() then channel.stop()) so the
+    // second, in-flight getUpdates() call settles promptly once aborted,
+    // instead of a pendingForever() call making the loop itself un-exitable
+    // (nothing in this test's job is to prove getUpdates behavior — only
+    // that stop() drains the detached dispatch once the loop has exited).
+    const controller = new AbortController();
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([update])
+      .mockImplementation(
+        (params: { signal?: AbortSignal }) =>
+          new Promise<TelegramUpdate[]>((_resolve, reject) => {
+            params.signal?.addEventListener(
+              "abort",
+              () => {
+                const error = new Error("aborted");
+                error.name = "AbortError";
+                reject(error);
+              },
+              { once: true },
+            );
+          }),
+      );
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    const logger = createMockLogger();
+
+    let resolveHandler: () => void = () => {};
+    const handlerPromise = new Promise<void>((resolve) => {
+      resolveHandler = resolve;
+    });
+    const handler = vi.fn().mockReturnValue(handlerPromise);
+
+    const poller = createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      signal: controller.signal,
+    });
+    poller.subscribe(handler);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    // The loop has already moved on to its next getUpdates call, in flight,
+    // while the message handler above is still pending — this is the fix
+    // being proven, not an incidental setup detail.
     await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
 
-    // Update 31 was never attempted this batch — advancing past update 30
-    // despite its failure would leapfrog the offset and lose it forever.
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
+    controller.abort();
+    let stopResolved = false;
+    const stopPromise = poller.stop().then(() => {
+      stopResolved = true;
+    });
+
+    // The dispatch is still pending: stop() must not resolve out from under it.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stopResolved).toBe(false);
+
+    resolveHandler();
+
+    await stopPromise;
+    expect(stopResolved).toBe(true);
   });
 });
 
@@ -280,6 +396,85 @@ describe("createTelegramPoller — callback_query inbound (Phase 3)", () => {
       channelUserId: "111",
     });
     expect(messageHandler).not.toHaveBeenCalled();
+  });
+
+  // Unlike a message update (see the "no redelivery under detached
+  // dispatch" describe above), a callback_query is still awaited inline by
+  // pollOnce, so it keeps the pre-fix batch-stop-and-retry behavior in full.
+  it("awaits the callback handler before requesting the next batch (sequential backpressure preserved for callbacks)", async () => {
+    const update = makeCallbackUpdate(71);
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([update])
+      .mockImplementation(() => pendingForever());
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    let resolveHandler: () => void = () => {};
+    const handlerPromise = new Promise<void>((resolve) => {
+      resolveHandler = resolve;
+    });
+    const callbackHandler = vi.fn().mockReturnValue(handlerPromise);
+
+    const poller = createTelegramPoller({
+      client,
+      logger: createMockLogger(),
+      offsetRepo: createMockOffsetRepo(),
+    });
+    poller.subscribe(vi.fn());
+    poller.subscribeCallback(callbackHandler);
+
+    await vi.waitFor(() => expect(callbackHandler).toHaveBeenCalledTimes(1));
+
+    expect(getUpdates).toHaveBeenCalledTimes(1);
+    expect(getUpdates).not.toHaveBeenCalledWith(expect.objectContaining({ offset: 72 }));
+
+    resolveHandler();
+
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
+    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 72 }));
+  });
+
+  it("does not advance the offset when a callback handler throws, and stops processing the rest of the batch", async () => {
+    const first = makeCallbackUpdate(72);
+    const second = makeCallbackUpdate(73);
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([first, second])
+      .mockImplementation(() => pendingForever());
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    const logger = createMockLogger();
+    const callbackHandler = vi.fn().mockRejectedValueOnce(new Error("boom"));
+
+    const poller = createTelegramPoller({
+      client,
+      logger,
+      offsetRepo: createMockOffsetRepo(),
+      retryDelayMs: 1,
+    });
+    poller.subscribe(vi.fn());
+    poller.subscribeCallback(callbackHandler);
+
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(2));
+
+    // The second callback in the batch was never attempted — advancing past
+    // the first despite its failure would leapfrog the offset and lose it.
+    expect(callbackHandler).toHaveBeenCalledTimes(1);
+    expect(getUpdates).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 0 }));
+    expect(logger.warn).toHaveBeenCalledWith(
+      "handler failed, will retry this update",
+      expect.objectContaining({ updateId: 72 }),
+    );
   });
 });
 
