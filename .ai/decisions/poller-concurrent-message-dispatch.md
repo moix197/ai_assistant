@@ -72,13 +72,29 @@ at all. Two things bound the damage:
   the two turns' appends can interleave and each turn reads a history snapshot
   taken before the other's append. Per-chat turn serialization does not exist
   and was not built.
-- **`dispatchMessage` must never rethrow.** `pollOnce`'s catch block now means
-  "a callback handler or `setOffset` failed, do not advance, stop this batch" —
-  a message-handler throw reaching it would abort the batch over an update whose
-  offset already advanced.
+- **`dispatchMessage` must never rethrow, and everything it does must sit inside
+  its own `try`.** `pollOnce`'s catch block now means "a callback handler or
+  `setOffset` failed, do not advance, stop this batch" — a message-handler throw
+  reaching it would abort the batch over an update whose offset already
+  advanced. The subtler half is that nothing awaits the returned promise on the
+  happy path, so anything that escapes becomes an *unhandled rejection*, which
+  Node kills the process over. `normalizeTelegramUpdate` dereferences
+  `message.chat.id`/`message.from.id` unguarded and therefore throws on a
+  malformed payload; it sat above the `try` until `6a50040` moved it inside.
+  A future edit that adds a line before the `try` reopens exactly that hole.
 - **`stop()` must keep draining `inFlightDispatches`**, or shutdown reports the
   channel drained while a paid turn is still running against a pool that is
-  about to close.
+  about to close. It drains with `Promise.allSettled`, not `Promise.all`, so
+  that one rejecting dispatch cannot cut the drain short and leave the rest
+  running into `pool.end()` — belt-and-braces on top of the bullet above.
+  The drain shares `channel.stop()`'s single 5s shutdown bound with the loop
+  exit; nothing gives it a budget of its own.
+- **Nothing bounds how many dispatches are in flight.** `inFlightDispatches` is
+  read only by `stop()` — there is no semaphore, queue or cap, and the loop
+  issues the next `getUpdates` as soon as it has launched the current batch (up
+  to `POLL_LIMIT = 100` updates). With the approval gate a dispatch can be
+  parked for five minutes, so in-flight turns accumulate freely. Acceptable at
+  one allowlisted user; the place to fix it is here, not in a handler.
 - Pinned by `packages/channels/src/telegram/__tests__/poller.test.ts`'s
   "message dispatch concurrency (approval-gate deadlock fix)", "message handler
   failure (no redelivery under detached dispatch)" and "graceful shutdown drains

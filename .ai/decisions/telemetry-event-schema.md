@@ -95,6 +95,17 @@ never the reverse.
 - **`approved` is a `fields` key, not a column** — nothing aggregates on it
   today. A rollup that wants "denied tool calls per week" needs the column and
   the migration, per the first constraint above.
+- **`is_error` is derived per event kind, and only `llm.call`'s is ever read.**
+  `llm.call` and `tool.call` set it from the presence of their optional `error`
+  string; `turn` carries no `error` field at all and derives it from the
+  outcome instead — `"error"`/`"aborted"` are true, `"completed"`/
+  `"max_iterations"` are not. That third case shipped hardcoded `false` for
+  most of 03-agent-core, which made every failed turn read as a successful one
+  in the table. `getLlmCallStatsSince` is the only query that reads the column
+  and it filters `name = 'llm.call'` first, so the definition above is
+  currently unobservable for the other two kinds — widening that filter without
+  first deciding what a `turn`'s or a `tool.call`'s error *means* silently
+  changes the number `/stats` labels "error rate".
 
 **Open items (accepted, not solved here):**
 
@@ -106,3 +117,15 @@ never the reverse.
   occurring within one flush interval of a UTC day/month boundary can land in
   the adjacent bucket. Accepted for an instrument; it would not be for a
   ledger.
+- **A denied gated `tool.call`'s `duration_ms` is the approval wait, not handler
+  time.** `runGatedToolCalls` (`packages/agent/src/loop.ts`) starts its clock
+  *before* `requestApproval`, so a batch that was denied, timed out, or swept up
+  by a shutdown abort emits rows measuring how long the human took — one
+  observed row reads `301723` (the 5-minute window) for a call whose handler
+  never ran. Only `approved: false` rows are affected: an approved batch falls
+  through to `resolveToolCall`, which starts a fresh clock, so it measures the
+  handler alone. Left as a follow-up rather than fixed because nothing reads
+  `duration_ms` at all today — `getTopToolsSince` is a `COUNT(*)` grouped by
+  `tool_name`. Whoever first aggregates tool durations has to separate the wait
+  from the handler time (two timestamps, or an event field) before the column
+  means anything.

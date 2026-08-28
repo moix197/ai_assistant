@@ -103,7 +103,11 @@ Strictly downward; no package imports one above it.
     `threadId → chatId` stopgap that boundary forces on `apps/hermes`.
   `apps/hermes/src/agent/build-agent.ts` is the one place allowed to construct
   the `AgentDefinition` and bind both ports, and the only place a tool
-  definition lives — `packages/agent` never imports a feature package.
+  definition lives — `packages/agent` never imports a feature package. That
+  rule plus `AgentDefinition` itself *are* the whole of the reserved D4
+  multi-agent seam; nothing else for it is built, and
+  [agent-multi-agent-seam](decisions/agent-multi-agent-seam.md) says what that
+  does and does not buy.
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
@@ -191,11 +195,12 @@ allowlist gate stays outermost precisely because that fallthrough now spends
 money — an unknown sender is rejected before it can reach `complete()`. The
 usage row is written from the adapter's success path, so a failed call records
 nothing and a retried one still records exactly once; see
-[llm-cost-accounting](decisions/llm-cost-accounting.md). Up to `MAX_ITERATIONS`
-calls to `complete()` per message now — Phase 2's tool-execution loop — all
-routed through `packages/agent`'s `runTurn`, which loads the conversation
-before the loop starts and appends the user and final assistant messages
-after it. History lives in `threads`,
+[llm-cost-accounting](decisions/llm-cost-accounting.md). One message now costs
+up to `MAX_ITERATIONS` (8) calls to `complete()`, all routed through
+`packages/agent`'s `runTurn`, which loads the conversation before the loop
+starts and appends the user and final assistant messages after it — why the
+loop is bounded there, and why a failed tool call feeds back instead of ending
+the turn, is [agent-loop-design](decisions/agent-loop-design.md). History lives in `threads`,
 one row per `(channel, chat_id)`, written by `packages/store`'s
 `thread-repo.ts` and reached only through an injected `ThreadRepo` port, so
 `packages/agent` never imports `@hermes/store` and the dependency direction

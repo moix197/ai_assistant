@@ -35,7 +35,17 @@ is persisted.
   its `tool.call` event is emitted with `approved: false`, and no handler ever
   runs. The turn is *not* aborted and the per-tool retry counter is not touched
   — a denial is information fed back to the model, not an error, which is why
-  `TurnOutcome` has no approval-denial member.
+  `TurnOutcome` has no approval-denial member (see
+  [agent-loop-design](agent-loop-design.md)). Those `approved: false` rows carry
+  a `duration_ms` measuring the *wait*, not any handler — a known, accepted
+  wart recorded in
+  [telemetry-event-schema](telemetry-event-schema.md).
+- **A turn that is already aborted never sends a prompt.**
+  `runGatedToolCalls` calls `assertToolInvocationAllowed(deps.signal)` before
+  building the batch, mirroring the per-call check the ungated path makes.
+  Without it, a shutdown landing between the model's response and the gate would
+  push an Approve/Deny message into the user's chat that nothing is left alive
+  to answer.
 - **Gated and ungated calls in the same response run concurrently.**
   `executeToolCalls` splits the batch and `Promise.all`s both halves, so a
   five-minute approval wait never delays an ungated `get_current_time` in the
