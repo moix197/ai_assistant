@@ -8,11 +8,12 @@ export { appendMessages, getOrCreateThread, type Thread } from "./thread-repo";
 export {
   deleteAccount,
   getAccount,
+  type GoogleAccount,
   listAccountsExpiringBefore,
   markDisconnected,
+  updateRefreshedTokens,
   upsertAccount,
 } from "./google-account-repo";
-export type { GoogleAccount } from "@hermes/google-auth";
 export {
   getLlmCallStatsSince,
   getTopToolsSince,

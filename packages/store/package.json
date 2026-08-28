@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@hermes/core": "workspace:*",
-    "@hermes/google-auth": "workspace:*",
     "pg": "^8.13.1"
   },
   "devDependencies": {

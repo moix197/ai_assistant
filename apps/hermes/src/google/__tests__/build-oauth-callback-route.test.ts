@@ -1,13 +1,27 @@
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Logger } from "@hermes/core";
 import type { ConnectFlow } from "@hermes/google-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createOauthCallbackRoute } from "../build-oauth-callback-route";
+import { type OauthCallbackBinding, createOauthCallbackRoute } from "../build-oauth-callback-route";
+
+function createMockLogger(): Logger {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
 
 function fakeConnectFlow(completeConnect: ConnectFlow["completeConnect"]): ConnectFlow {
   return {
     startConnect: vi.fn(),
     completeConnect,
+  };
+}
+
+function binding(overrides: Partial<OauthCallbackBinding> = {}): OauthCallbackBinding {
+  return {
+    connectFlow: fakeConnectFlow(vi.fn()),
+    notify: vi.fn().mockResolvedValue(undefined),
+    pendingStore: { consumePendingConnection: vi.fn() },
+    ...overrides,
   };
 }
 
@@ -40,7 +54,7 @@ describe("createOauthCallbackRoute", () => {
   }
 
   it("returns 503 before bind() is called", async () => {
-    const route = createOauthCallbackRoute();
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
     await listen(route.handleRequest);
 
     const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`);
@@ -49,12 +63,16 @@ describe("createOauthCallbackRoute", () => {
   });
 
   it("after bind(), a successful completeConnect serves the close-tab page and calls notify with the email", async () => {
-    const route = createOauthCallbackRoute();
-    const connectFlow = fakeConnectFlow(
-      vi.fn().mockResolvedValue({ ok: true, email: "person@example.com", chatId: "chat-1" }),
-    );
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
     const notify = vi.fn().mockResolvedValue(undefined);
-    route.bind(connectFlow, notify);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(
+          vi.fn().mockResolvedValue({ ok: true, email: "person@example.com", chatId: "chat-1" }),
+        ),
+        notify,
+      }),
+    );
     await listen(route.handleRequest);
 
     const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`);
@@ -68,12 +86,16 @@ describe("createOauthCallbackRoute", () => {
   });
 
   it("a failed completeConnect serves a generic failure page and never calls notify", async () => {
-    const route = createOauthCallbackRoute();
-    const connectFlow = fakeConnectFlow(
-      vi.fn().mockResolvedValue({ ok: false, reason: "invalid_state" }),
-    );
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
     const notify = vi.fn().mockResolvedValue(undefined);
-    route.bind(connectFlow, notify);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(
+          vi.fn().mockResolvedValue({ ok: false, reason: "invalid_state" }),
+        ),
+        notify,
+      }),
+    );
     await listen(route.handleRequest);
 
     const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=bad`);
@@ -87,14 +109,111 @@ describe("createOauthCallbackRoute", () => {
   });
 
   it("missing code/state query params serves the failure page without calling completeConnect", async () => {
-    const route = createOauthCallbackRoute();
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
     const completeConnect = vi.fn();
-    route.bind(fakeConnectFlow(completeConnect), vi.fn());
+    route.bind(binding({ connectFlow: fakeConnectFlow(completeConnect) }));
     await listen(route.handleRequest);
 
     const response = await fetch(`${baseUrl}/oauth/callback`);
 
     expect(response.status).toBe(400);
     expect(completeConnect).not.toHaveBeenCalled();
+  });
+
+  it("logs a thrown completeConnect failure server-side while the response body stays the static failure page", async () => {
+    const logger = createMockLogger();
+    const route = createOauthCallbackRoute({ logger });
+    const notify = vi.fn().mockResolvedValue(undefined);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(
+          vi.fn().mockRejectedValue(new Error("response carried no refresh_token")),
+        ),
+        notify,
+      }),
+    );
+    await listen(route.handleRequest);
+
+    const response = await fetch(`${baseUrl}/oauth/callback?code=secret-code&state=st4te`);
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(logger.error).toHaveBeenCalledWith("oauth callback failed", {
+      error: "response carried no refresh_token",
+    });
+    expect(html).not.toContain("refresh_token");
+    expect(html).not.toContain("secret-code");
+    expect(html).not.toContain("st4te");
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("logs only the error message, never the error object whose cause can carry the client secret", async () => {
+    const logger = createMockLogger();
+    const route = createOauthCallbackRoute({ logger });
+    const rejection = new Error("invalid_client", {
+      cause: { config: { data: "client_secret=super-secret" } },
+    });
+    route.bind(binding({ connectFlow: fakeConnectFlow(vi.fn().mockRejectedValue(rejection)) }));
+    await listen(route.handleRequest);
+
+    const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`);
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("super-secret");
+  });
+
+  it("rejects a non-GET request without consuming the state", async () => {
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
+    const completeConnect = vi.fn();
+    const consumePendingConnection = vi.fn();
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(completeConnect),
+        pendingStore: { consumePendingConnection },
+      }),
+    );
+    await listen(route.handleRequest);
+
+    const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`, {
+      method: "POST",
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET");
+    expect(completeConnect).not.toHaveBeenCalled();
+    expect(consumePendingConnection).not.toHaveBeenCalled();
+    expect(html).not.toContain("abc");
+    expect(html).not.toContain("def");
+  });
+
+  it("handles Google's denial redirect by consuming the pending state and never exchanging a code", async () => {
+    const logger = createMockLogger();
+    const route = createOauthCallbackRoute({ logger });
+    const completeConnect = vi.fn();
+    const consumePendingConnection = vi.fn();
+    const notify = vi.fn().mockResolvedValue(undefined);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(completeConnect),
+        notify,
+        pendingStore: { consumePendingConnection },
+      }),
+    );
+    await listen(route.handleRequest);
+
+    const response = await fetch(`${baseUrl}/oauth/callback?error=access_denied&state=st4te`);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(consumePendingConnection).toHaveBeenCalledWith("st4te");
+    expect(completeConnect).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith("oauth callback: authorization was not granted", {
+      error: "access_denied",
+    });
+    expect(html).toContain("not approved");
+    expect(html).not.toContain("access_denied");
+    expect(html).not.toContain("st4te");
   });
 });

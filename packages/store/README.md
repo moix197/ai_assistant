@@ -51,6 +51,16 @@ poller and exits `1` with a readable message
 (`"another Hermes instance is already running against this database"`) if
 the lock is already held, instead of Telegram's ambiguous 409.
 
+The dedicated client carries an `'error'` listener, so a lock connection that
+dies mid-run logs `"instance lock connection lost, exiting"` and exits `1`
+instead of surfacing as an uncaught exception. Fail-closed on purpose:
+Postgres frees a session-level lock the instant its connection drops, so
+continuing to run would be exactly the two-instances state the lock exists to
+prevent — single-flight token refresh depends on it (see
+[google-token-refresh](../../.ai/decisions/google-token-refresh.md)).
+`acquireInstanceLock`'s optional third argument overrides that handler and
+exists only so a test can observe it without exiting the runner.
+
 `acquireInstanceLock` returns `{ acquired, release }`. `release()` explicitly
 calls `pg_advisory_unlock` then closes the dedicated client; `apps/hermes/src/boot.ts`'s
 ordered shutdown sequence calls it as one step. Any process exit still frees
@@ -282,6 +292,12 @@ package persists and reads it back byte-for-byte and never decrypts it;
   deliberate exception to the `DO NOTHING`-only precedent `thread-repo.ts`/
   `llm-dedupe-repo.ts` set: reconnecting the same identity must overwrite the
   old token, chat id, scopes, and expiry — not silently keep the stale row.
+- `updateRefreshedTokens(pool, account)` — UPDATE-only, deliberately *not* an
+  upsert: the refresh sweep's write. It sets `token_envelope`/`expires_at`/
+  `updated_at` and nothing else, so a `/disconnect` that landed while the
+  refresh HTTP call was in flight is not undone by re-creating the row, and a
+  `/connect` that landed mid-tick keeps its freshly granted `scopes`/`chat_id`
+  instead of the sweep's stale snapshot's. A missing row is a no-op.
 - `deleteAccount(pool, channel, channelUserId)` — removes the row (Phase 3's
   `/disconnect`, and Phase 4's disconnect-on-refresh-failure path).
 - `packages/google-auth`'s `GoogleAccountRepo` port is what `packages/agent`
@@ -290,10 +306,12 @@ package persists and reads it back byte-for-byte and never decrypts it;
   functions to that port.
 
 Row reads go through the same `parseValidatedJson` helper `thread-repo.ts`
-uses, validated against `@hermes/google-auth`'s own schema-first
-`googleAccountSchema` — one generic helper, two schema-first types each
-declared in the package that owns them, no second hand-mirrored copy in this
-package.
+uses, validated against `@hermes/core`'s schema-first `googleAccountSchema`
+— one generic helper, two schema-first types both declared in `@hermes/core`
+and re-exported here, no second hand-mirrored copy in this package. The row
+shape lives in `core` rather than in `@hermes/google-auth` for the same
+reason `LlmUsageEntry` does: this package and `google-auth` are siblings, so
+neither may import the other.
 
 ## Row validation
 
@@ -312,7 +330,7 @@ silently-returned best-effort value.
 
 `thread-repo.ts`'s `toThread` validates `row.messages` against `@hermes/core`'s
 `messagesArraySchema`; `google-account-repo.ts`'s `toGoogleAccount` validates
-the whole mapped row against `@hermes/google-auth`'s `googleAccountSchema`.
+the whole mapped row against `@hermes/core`'s `googleAccountSchema`.
 The helper is deliberately schema-agnostic — it takes any matching schema —
 so both reuse the one implementation unmodified, each against its own
 schema-first type.
@@ -347,6 +365,9 @@ credentials.
 `src/__tests__/advisory-lock.test.ts` are integration-only, gated the same
 way: get/set round-tripping for the offset repo, and lock
 acquire/contend/crash-release/re-acquire semantics for the advisory lock.
+`src/__tests__/advisory-lock-connection-error.test.ts` needs no database — it
+mocks `pg` so it can emit the `'error'` event a dropped lock connection
+raises, which no integration test can provoke deterministically.
 
 `src/__tests__/llm-usage-repo.test.ts` is integration-only, gated the same
 way: the migration applies cleanly, a recorded row round-trips with

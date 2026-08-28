@@ -1,6 +1,8 @@
-import { type GoogleAccount, googleAccountSchema } from "@hermes/google-auth";
+import { type GoogleAccount, googleAccountSchema } from "@hermes/core";
 import type { Pool } from "pg";
 import { parseValidatedJson } from "./validate-row";
+
+export type { GoogleAccount };
 
 interface GoogleAccountRow {
   channel: string;
@@ -64,6 +66,28 @@ export async function upsertAccount(pool: Pool, account: GoogleAccount): Promise
       account.chatId,
       account.googleEmail,
       account.scopes,
+      JSON.stringify(account.tokenEnvelope),
+      account.expiresAt,
+    ],
+  );
+}
+
+/**
+ * UPDATE-only, deliberately *not* an upsert: a token refresh must never create
+ * a row. If `/disconnect` deleted the row while the refresh HTTP call was in
+ * flight, this matches nothing and the disconnect stands, instead of the sweep
+ * resurrecting the account with a live refresh token. Writing only the token
+ * columns likewise keeps a `/connect` that landed mid-sweep from having its
+ * freshly-granted `scopes`/`chat_id` clobbered by the sweep's stale snapshot.
+ */
+export async function updateRefreshedTokens(pool: Pool, account: GoogleAccount): Promise<void> {
+  await pool.query(
+    `UPDATE google_accounts
+        SET token_envelope = $3, expires_at = $4, updated_at = now()
+      WHERE channel = $1 AND channel_user_id = $2`,
+    [
+      account.channel,
+      account.channelUserId,
       JSON.stringify(account.tokenEnvelope),
       account.expiresAt,
     ],

@@ -4,6 +4,7 @@ import type { GoogleAccount, GoogleAccountRepo } from "./account-repo-port";
 import { buildAuthUrl, exchangeCode } from "./oauth-client";
 import type { PendingConnection, PendingConnectionStore } from "./pending-connections";
 import { generatePkcePair } from "./pkce";
+import { IDENTITY_SCOPES, hasRequiredScopes } from "./scopes";
 import { type TokenEnvelope, sealToken } from "./token-crypto";
 
 export interface ConnectFlowDeps {
@@ -21,12 +22,14 @@ export interface StartConnectResult {
 
 export type CompleteConnectResult =
   | { ok: true; email: string; chatId: string }
-  | { ok: false; reason: "invalid_state" };
+  | { ok: false; reason: "invalid_state" }
+  | { ok: false; reason: "missing_scopes" };
 
 interface SealedTokens {
   envelope: TokenEnvelope;
   expiresAt: Date;
   email: string;
+  grantedScopes: string[];
 }
 
 export interface ConnectFlow {
@@ -86,7 +89,12 @@ export function createConnectFlow(deps: ConnectFlowDeps): ConnectFlow {
       }),
       deps.cryptoKey,
     );
-    return { envelope, expiresAt: exchanged.expiresAt, email };
+    return {
+      envelope,
+      expiresAt: exchanged.expiresAt,
+      email,
+      grantedScopes: exchanged.grantedScopes,
+    };
   }
 
   async function persistAccount(pending: PendingConnection, sealed: SealedTokens): Promise<void> {
@@ -95,7 +103,7 @@ export function createConnectFlow(deps: ConnectFlowDeps): ConnectFlow {
       channelUserId: pending.channelUserId,
       chatId: pending.chatId,
       googleEmail: sealed.email,
-      scopes: pending.scopes,
+      scopes: sealed.grantedScopes,
       tokenEnvelope: sealed.envelope,
       expiresAt: sealed.expiresAt,
     };
@@ -107,6 +115,15 @@ export function createConnectFlow(deps: ConnectFlowDeps): ConnectFlow {
     if (!pending) return { ok: false, reason: "invalid_state" };
 
     const sealed = await exchangeAndSealTokens(pending, code);
+    // Google's granular-consent screen lets a user deselect individual
+    // checkboxes, so a grant narrower than `IDENTITY_SCOPES` is a real
+    // outcome — and one no row should be written for: a half-connected
+    // account would pass every later `hasRequiredScopes` check and only fail
+    // as a 403 from Google at tool-call time.
+    if (!hasRequiredScopes(sealed.grantedScopes, IDENTITY_SCOPES)) {
+      return { ok: false, reason: "missing_scopes" };
+    }
+
     await persistAccount(pending, sealed);
     return { ok: true, email: sealed.email, chatId: pending.chatId };
   }

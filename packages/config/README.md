@@ -31,14 +31,19 @@ succeeds; set a partial set and boot fails, naming the missing key(s).
 - `TOKEN_ENCRYPTION_KEY` — a base64-encoded 32-byte key, validated to decode
   to exactly 32 bytes (AES-256's key size) — a malformed key fails boot with
   a named error instead of failing silently at the first token write, weeks
-  later. Generate one with:
+  later. Either alphabet is accepted — standard (`+`/`/`, padded) or base64url
+  (`-`/`_`, unpadded) — since both are what common generator commands emit; a
+  value mixing the two is rejected. Generate one with:
   `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
   Secret.
 
 `OAUTH_REDIRECT_BASE_URL` (default `http://localhost:3000`) is validated
 **independently** of the group above — it has a default and is meaningful
 even before any Google var is set. It must match the redirect URI registered
-in the Google Cloud console, with `/oauth/callback` appended.
+in the Google Cloud console, with `/oauth/callback` appended, and must use
+`https` unless the host is `localhost`/`127.0.0.1` — Google's own rule,
+enforced at boot so a plain-`http` production value fails there instead of as
+an opaque `redirect_uri_mismatch` on the first `/connect`.
 
 ## Redaction rule
 

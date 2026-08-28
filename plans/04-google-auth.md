@@ -431,8 +431,8 @@ menu path, and toggle below as **verify at execution time**, and the
 underlying requirement (Web application client type, Production publishing
 status, these exact scopes pre-listed) as fixed.
 
-- [ ] Create (or choose) a GCP project for Hermes.
-- [ ] Configure the OAuth consent screen: **External** user type, publish
+- [x] Create (or choose) a GCP project for Hermes.
+- [x] Configure the OAuth consent screen: **External** user type, publish
       to **Production** (not Testing) — settled decision 15: because this
       phase requests only non-sensitive scopes (`openid`, `userinfo.email`),
       no Google verification review is required to publish, and refresh
@@ -442,18 +442,18 @@ status, these exact scopes pre-listed) as fixed.
       (Gmail), that phase either submits for verification or drops back to
       Testing and accepts ~7-day refresh-token expiry — this plan names the
       consequence, that phase decides it.
-- [ ] Create an OAuth 2.0 Client ID of type **Web application** (not
+- [x] Create an OAuth 2.0 Client ID of type **Web application** (not
       "Desktop app") — required for the exact-match redirect URI settled
       decision 1 depends on.
-- [ ] Register the authorized redirect URI: `http://localhost:3000/oauth/callback`
+- [x] Register the authorized redirect URI: `http://localhost:3000/oauth/callback`
       (matches `OAUTH_REDIRECT_BASE_URL`'s default plus the new route added
       in Phase 2).
-- [ ] Enable the Gmail API and the Calendar API now, and note their scope
+- [x] Enable the Gmail API and the Calendar API now, and note their scope
       strings, even though no code calls them this phase — so a later phase
       needs only a browser re-consent (incremental consent), not a second
       console trip.
-- [ ] Generate the token-encryption key: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
-- [ ] Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`
+- [x] Generate the token-encryption key: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+- [x] Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`
       to the repo-root `.env` (gitignored). `OAUTH_REDIRECT_BASE_URL` may be
       left unset — it defaults to `http://localhost:3000`.
 
@@ -488,7 +488,7 @@ existing `get_current_time` tool), then ask a follow-up that depends on
 having seen that answer — the model can actually reference the tool result
 in a later turn, because it's now in stored history, not just discarded at
 the end of the turn it ran in. `psql` shows the thread's `messages` jsonb
-containing the assistant's `tool_calls` and the matching `role:"tool"`
+containing the assistant's `toolCalls` and the matching `role:"tool"`
 result, not just a bare user/assistant text pair. A long, tool-heavy
 conversation that exceeds `HISTORY_BUDGET_CHARS` trims without ever
 orphaning a `role:"tool"` message from its assistant `toolCalls` — verified
@@ -584,13 +584,16 @@ unit-tested only, which this plan states rather than implies otherwise.
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
-- [ ] Manual: ask the bot "what time is it?", then in the same chat ask "what
+- [x] Manual: ask the bot "what time is it?", then in the same chat ask "what
       did that tool just tell you?" → the reply demonstrates the model
       actually has the tool result in context, not just a restated guess
-- [ ] Manual: `psql` into the app database after that exchange → the
+- [x] Manual: `psql` into the app database after that exchange → the
       thread's `messages` jsonb contains an assistant message with
-      `tool_calls` and a following `role: "tool"` entry with a matching
-      `tool_call_id`, not a bare two-message pair
+      `toolCalls` and a following `role: "tool"` entry with a matching
+      `toolCallId`, not a bare two-message pair — **corrected at execution
+      time**: the persisted `Message` shape is camelCase (`toolCalls` /
+      `toolCallId`), not the provider wire format's snake_case this plan
+      originally wrote
 
 **Phase review:**
 
@@ -601,7 +604,7 @@ unit-tested only, which this plan states rather than implies otherwise.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `fix: persist full tool-call history, group-aware trim, validated thread reads`
 - [x] Phase marked complete
 
@@ -736,14 +739,14 @@ locally with a usage message and never reaches the paid completion handler.
 - [x] `pnpm test:db` green — migration `007` applies cleanly, repo round-trips
 - [x] `pnpm lint` green
 - [x] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
-- [ ] Manual: `/connect google` in Telegram → tap the link → complete Google
+- [x] Manual: `/connect google` in Telegram → tap the link → complete Google
       consent (email only) → browser shows the closing-tab page with no
       code visible in its HTML source → Telegram receives "Connected as
       `<email>`"
-- [ ] Manual: `psql` → one `google_accounts` row for that `(channel,
+- [x] Manual: `psql` → one `google_accounts` row for that `(channel,
       channel_user_id)`, `token_envelope` is unreadable JSON, `google_email`
       matches the connected account
-- [ ] Manual: `/connect bogus` → local usage-help reply, no LLM call (check
+- [x] Manual: `/connect bogus` → local usage-help reply, no LLM call (check
       no new `llm.call` telemetry row lands for that message)
 
 **Phase review:**
@@ -755,7 +758,7 @@ locally with a usage message and never reaches the paid completion handler.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: google OAuth connect flow, encrypted token store, oauth callback route`
 - [x] Phase marked complete
 
@@ -850,14 +853,14 @@ connected, same email, no re-consent needed.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
 - [x] `pnpm lint` green
-- [ ] Manual: `/connect google` → ask "who am I connected as?" → real email
+- [x] Manual: `/connect google` → ask "who am I connected as?" → real email
       in the reply; `psql` shows a `tool.call` row, `tool_name = 'whoami'`,
       `approved = true`
-- [ ] Manual: `/status` → shows connected email + scopes
-- [ ] Manual: `/disconnect` → confirmation; `/status` immediately after →
+- [x] Manual: `/status` → shows connected email + scopes
+- [x] Manual: `/disconnect` → confirmation; `/status` immediately after →
       "not connected"; `whoami` immediately after → model relays
       "not connected, run /connect google"
-- [ ] Manual: `/connect google` again, then `docker compose up -d --build`
+- [x] Manual: `/connect google` again, then `docker compose up -d --build`
       (not `restart` — see Steps), then ask `whoami` in the same chat →
       still connected, same email, no re-consent prompt — **this is the
       plan's exit criterion**
@@ -871,7 +874,7 @@ connected, same email, no re-consent needed.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: /status, /disconnect, whoami tool — Google identity exit criterion`
 - [x] Phase marked complete
 
@@ -963,11 +966,11 @@ Google connection needs to be re-established, and `/status` afterward shows
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
 - [x] `pnpm lint` green
-- [ ] Manual: `psql` force-expire a connected account's `expires_at`,
+- [x] Manual: `psql` force-expire a connected account's `expires_at`,
       `docker compose up -d --build`, wait for the immediate boot-time sweep
       pass, `psql` → `expires_at` and `token_envelope` have changed, no
       Telegram message was sent (this was a success, not a failure)
-- [ ] Manual: force a refresh failure (revoke the app's access from
+- [x] Manual: force a refresh failure (revoke the app's access from
       Google's account permissions page, or corrupt the stored envelope so
       decryption fails at refresh time), wait for the next sweep tick →
       Telegram receives the reconnect alert in the original chat; `/status`
@@ -982,7 +985,7 @@ Google connection needs to be re-established, and `/status` afterward shows
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: proactive token refresh sweep, single-flight coordinator, refresh-failure alert`
 - [x] Phase marked complete
 
@@ -1037,27 +1040,95 @@ Google connection needs to be re-established, and `/status` afterward shows
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–4 together
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–4 together
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] `pnpm lint` — zero errors (named explicitly: `03-agent-core` shipped a
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] `pnpm lint` — zero errors (named explicitly: `03-agent-core` shipped a
       phase with this red because nothing named it until review caught it)
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] No CLAUDE.md invariants violated
-- [ ] Feature tested manually end to end: golden path (`/connect` → consent
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] No CLAUDE.md invariants violated
+- [x] Feature tested manually end to end: golden path (`/connect` → consent
       → confirmation → `whoami` → restart → still connected → `/status` →
       `/disconnect` → reconnect), plus edge cases (unknown/expired/replayed
       OAuth state, malformed thread row rejected on read, forced token
       expiry refreshed automatically, forced refresh failure alerts and
       disconnects, `/connect bogus` handled locally with no paid call)
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
+- [x] Overall success criteria met
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
       table below
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
+
+**Final review findings (all fixed):** the end-to-end review of Phases 1–4
+together raised **10 issues — 3 critical/high, 7 warnings** — every one of
+them fixed before closeout:
+
+1. **critical — the sweep resurrected disconnected accounts.** A successful
+   refresh persisted via an unconditional `upsertAccount`, so an account
+   `/disconnect` (or `markDisconnected`) had already removed could be
+   re-inserted by an in-flight tick. Fixed with a new **UPDATE-only**
+   `updateRefreshedTokens` in `packages/store/src/google-account-repo.ts`,
+   used by the sweep instead of the upsert: a deleted row stays deleted.
+2. **critical — one `channel.send` failure aborted the whole tick.** An
+   alert that failed to deliver rejected out of `runOnce`, so every account
+   after it in the list went unprocessed that pass. Fixed with **per-account
+   failure isolation**: each account's work is caught individually, one bad
+   account can no longer starve the rest.
+3. **high — `scopes` recorded what was *requested*, not what Google
+   *granted*.** A user who unticked a scope on the consent screen was stored
+   as if they had granted it, so a later `hasRequiredScopes` check would pass
+   and the API call fail. Fixed: `exchangeCode` now returns
+   `grantedScopes`, and the connect flow rejects the connection with
+   `missing_scopes` when the grant is short of what was asked for.
+4. **warning — silent terminal disconnect.** An `invalid_grant` deleted the
+   row with nothing in the log. Now **logs before the mutation**, so the
+   record survives even if the delete or the alert then fails.
+5. **warning — the OAuth callback swallowed errors in a bare `catch {}`.**
+   Now **logs server-side** — the message only, never the `cause`, which can
+   carry credential material (see finding 10).
+6. **warning — `store → google-auth` sibling dependency edge.**
+   `packages/store` imported `GoogleAccount`/`TokenEnvelope` from
+   `packages/google-auth`, a sibling-to-sibling edge the architecture
+   forbids. **Both schemas moved to `@hermes/core`** (`packages/core/src/google-types.ts`);
+   the edge is gone, dependencies flow one way again.
+7. **warning — `.ai/` was out of sync** with the shipped code. Synced.
+8. **warning — `refreshAccessToken` reached around `OAuth2Client`'s
+   `protected refreshToken()` via a cast** (the item Phase 4 deferred).
+   Replaced with an injected **`RefreshAccessTokenPort`**, which also removes
+   the test coupling that was the original reason for deferring. The
+   decision doc's rationale was **corrected**: it had claimed `protected`
+   was not a documented boundary, which is false — the SDK carries a literal
+   `@private` JSDoc on that member.
+9. **warning — overlapping sweep ticks.** A tick slower than the interval
+   could overlap the next one. Fixed with a **re-entrancy guard**.
+10. **warning — `GaxiosError` attached as `cause` carried `client_secret`.**
+    Re-throwing the raw error embedded the outgoing request body, secret
+    included, in anything that serialized the cause chain. Fixed with a
+    **typed whitelist extract** — only known-safe fields are carried
+    forward.
+
+**Deferred, decided by the orchestrator, not blocking merge:**
+
+- **GCM AAD binding on the token envelope.** `sealToken`/`openToken` pass no
+  additional authenticated data, so an envelope copied from one
+  `google_accounts` row into another still decrypts. Deferred deliberately:
+  exploiting it already requires **write** access to the database (at which
+  point the attacker has easier paths), and adding AAD **changes the
+  envelope format** — every stored token becomes undecryptable and every
+  connected user is forced to re-consent. Revisit at the **next envelope
+  version bump** (`v: 2`), where the re-consent cost is already being paid.
+  Recorded in `.ai/decisions/google-token-encryption.md`.
+- **`/disconnect` does not revoke the grant at Google.** It deletes the
+  local row, so Hermes forgets the account, but the authorization stays live
+  in the user's Google account permissions page until they remove it there.
+  Deferred as **out of this plan's scope**: a `revoke` call also needs a
+  decided fallback for the revoke itself failing (leave the row? delete
+  anyway and strand a live grant? retry?), and that decision is a design
+  question this plan did not take up. Recorded in
+  `.ai/decisions/google-oauth-flow.md`.
 
 ## Documentation
 

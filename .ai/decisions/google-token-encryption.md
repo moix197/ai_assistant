@@ -24,13 +24,18 @@ exactly 32 bytes at boot, not at first token write. `packages/store` persists
   re-raised as a typed `TokenDecryptError`. A wrong key produces the same
   failure. This is what lets Phase 4's refresh sweep treat a decrypt failure
   as "this account needs reconnecting," not as a token to blindly retry with.
+  The tag authenticates the *contents*, not which row the envelope came from
+  — see **Deferred: GCM AAD binding** below for the limit of that guarantee.
 - **The envelope is self-describing and versioned (`v: 1`) from day one.**
   A future two-key rotation or re-envelope scheme needs no migration to add a
   version field retroactively — it's already there, unread by anything today,
-  costing nothing until it's needed.
+  costing nothing until it's needed. It is also what makes the deferred AAD
+  binding addable later without a migration.
 - **The key is validated at boot with a named error, not discovered at first
   write weeks later.** `packages/config`'s schema decodes and length-checks
-  `TOKEN_ENCRYPTION_KEY` (base64, exactly 32 bytes for AES-256) as part of
+  `TOKEN_ENCRYPTION_KEY` (base64 or base64url — both alphabets are what real
+  generator commands emit, checked separately so a mixed-alphabet value is
+  still rejected — decoding to exactly 32 bytes for AES-256) as part of
   `envSchema`, alongside the three-key all-or-none group
   (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`TOKEN_ENCRYPTION_KEY` —
   `checkFallbackAllOrNone`'s idiom, reused for a second group). A malformed
@@ -40,8 +45,11 @@ exactly 32 bytes at boot, not at first token write. `packages/store` persists
   `GoogleAccountRepo`'s `upsertAccount`/`getAccount` pass `token_envelope`
   through as opaque JSON — persisted and read back byte-for-byte, validated
   on read via the same generic `parseValidatedJson` helper Phase 1 introduced
-  for `Message`, pointed at `@hermes/google-auth`'s schema-first
-  `googleAccountSchema`. This is what keeps a Postgres compromise from also
+  for `Message`, pointed at `@hermes/core`'s schema-first
+  `googleAccountSchema` (the shape and the `tokenEnvelopeSchema` it embeds
+  live in `core` and are re-exported by both `store` and `google-auth`, so
+  those two siblings never import each other; only `sealToken`/`openToken`
+  stay in `google-auth`). This is what keeps a Postgres compromise from also
   being a plaintext-token leak: the ciphertext sits in the database, the key
   sits only in `packages/config`'s validated env, read only by
   `packages/google-auth`.
@@ -68,6 +76,32 @@ exactly 32 bytes at boot, not at first token write. `packages/store` persists
   rejected in favor of a loud, named boot failure; a key that looks present
   but doesn't actually validate is a configuration bug, not a legitimate
   "Google features off" state (that's the all-or-none-unset case instead).
+
+**Deferred (decided, not an oversight): GCM AAD binding.**
+
+`sealToken`/`openToken` pass no additional authenticated data, so an envelope
+is bound to nothing but the key. An envelope copied from one
+`google_accounts` row into another therefore still decrypts, and that second
+account would refresh with the first account's Google credentials. Binding
+the seal to `channel:channelUserId` as AAD would make such a copy fail the
+tag check.
+
+Deliberately deferred, because:
+
+- **Exploiting it already requires database *write* access.** An attacker
+  who can `UPDATE google_accounts` has strictly easier paths available;
+  AAD raises the floor on an attacker who is already past the interesting
+  wall.
+- **AAD changes the envelope format.** Every envelope stored today was
+  sealed without AAD and would fail to open under an AAD-verifying
+  `openToken` — every connected user is force-disconnected and must
+  re-consent. That is the same one-time cost as a key rotation, paid here
+  for a defense-in-depth improvement rather than a live threat.
+
+**Revisit at the next envelope version bump** (`v: 2`): a rotation or
+re-envelope scheme already pays the re-consent/re-seal cost, so AAD rides
+along for free at that point. The `v` field exists precisely so that change
+needs no migration.
 
 **Constraints it creates:**
 

@@ -1,24 +1,13 @@
-import { z } from "zod";
-import { tokenEnvelopeSchema } from "./token-crypto";
+import { type GoogleAccount, googleAccountSchema } from "@hermes/core";
 
 /**
- * Schema-first, matching the idiom `packages/core`'s `Message` uses
- * (Phase 1): a `z.object`, the TS type derived via `z.infer` rather than
- * hand-written. This is what lets `packages/store`'s generic
- * `parseValidatedJson` (`validate-row.ts`) validate a `google_accounts` row
- * against the exact shape this package (and `apps/hermes`) compile against,
- * with no second, hand-synced schema in `packages/store` to drift.
+ * The row shape itself lives in `@hermes/core` (`google-types.ts`) and is
+ * re-exported both here and by `@hermes/store`, exactly as `LlmUsageEntry`
+ * is shared between `@hermes/llm` and `@hermes/store`: the two sides of the
+ * persistence boundary compile against one declaration without either
+ * importing the other.
  */
-export const googleAccountSchema = z.object({
-  channel: z.string(),
-  channelUserId: z.string(),
-  chatId: z.string(),
-  googleEmail: z.string(),
-  scopes: z.array(z.string()),
-  tokenEnvelope: tokenEnvelopeSchema,
-  expiresAt: z.date(),
-});
-export type GoogleAccount = z.infer<typeof googleAccountSchema>;
+export { type GoogleAccount, googleAccountSchema };
 
 /**
  * The injected persistence port — `packages/google-auth` never imports

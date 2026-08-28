@@ -10,7 +10,13 @@ export {
   type StartConnectResult,
   createConnectFlow,
 } from "./connect-flow";
-export { buildAuthUrl, exchangeCode } from "./oauth-client";
+export {
+  buildAuthUrl,
+  createGoogleRefreshAccessToken,
+  exchangeCode,
+  type RefreshAccessTokenPort,
+  type RefreshedAccessToken,
+} from "./oauth-client";
 export { generatePkcePair, type PkcePair } from "./pkce";
 export {
   createPendingConnectionStore,
@@ -21,6 +27,7 @@ export {
   createRefreshCoordinator,
   type GetValidAccessTokenResult,
   REFRESH_SKEW_MS,
+  type RefreshErrorDetail,
   RefreshFailedError,
   type RefreshCoordinator,
   type RefreshCoordinatorDeps,

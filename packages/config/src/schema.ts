@@ -102,6 +102,26 @@ function checkGoogleOAuthAllOrNone(
 }
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+={0,2}$/;
+
+/**
+ * Decoded byte length of `value` under whichever base64 alphabet it is
+ * well-formed in, or -1 under neither. Both alphabets are accepted because
+ * both are what real generator commands emit: `randomBytes(32).toString
+ * ("base64")` and `openssl rand -base64 32` produce `+`/`/` with padding,
+ * while `toString("base64url")` and `openssl rand -base64url 32` produce
+ * `-`/`_` with none. The alphabets are checked separately, not merged into
+ * one permissive pattern, so a value mixing them — a sign of a mangled
+ * copy/paste — is still rejected rather than silently accepted by Buffer's
+ * lenient decoder.
+ */
+function decodedKeyByteLength(value: string): number {
+  if (BASE64_PATTERN.test(value) && value.length % 4 === 0) {
+    return Buffer.from(value, "base64").length;
+  }
+  if (BASE64URL_PATTERN.test(value)) return Buffer.from(value, "base64url").length;
+  return -1;
+}
 
 /**
  * `optionalLlmString`, plus a shape check: when present, the value must be
@@ -111,9 +131,7 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
  */
 const tokenEncryptionKeySchema = optionalLlmString.superRefine((value, ctx) => {
   if (value === undefined) return;
-  const isWellFormedBase64 = BASE64_PATTERN.test(value) && value.length % 4 === 0;
-  const decodedLength = isWellFormedBase64 ? Buffer.from(value, "base64").length : -1;
-  if (decodedLength !== 32) {
+  if (decodedKeyByteLength(value) !== 32) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message:
@@ -121,6 +139,28 @@ const tokenEncryptionKeySchema = optionalLlmString.superRefine((value, ctx) => {
     });
   }
 });
+
+/** The only hosts Google exempts from its HTTPS-only redirect URI rule. */
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
+
+/**
+ * Google rejects a plain-`http` redirect URI for every host except the
+ * loopback ones, so an `http://` production value fails at Google's consent
+ * screen with an opaque `redirect_uri_mismatch` on the first `/connect`
+ * instead of at boot — this moves that failure to boot, naming the key.
+ * A value that isn't a URL at all is left to the `.url()` check above, which
+ * already reports it; reporting it twice adds nothing.
+ */
+function isHttpsOrLoopbackUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return true;
+  }
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname);
+}
 
 /**
  * Defaults to a de-facto-unlimited cap (rather than failing boot) when the
@@ -159,6 +199,10 @@ export const envSchema = z
     OAUTH_REDIRECT_BASE_URL: z
       .string()
       .url({ message: "OAUTH_REDIRECT_BASE_URL must be a valid URL" })
+      .refine(isHttpsOrLoopbackUrl, {
+        message:
+          "OAUTH_REDIRECT_BASE_URL must use https (Google only accepts http for localhost/127.0.0.1)",
+      })
       .default("http://localhost:3000"),
   })
   .superRefine(checkFallbackAllOrNone)

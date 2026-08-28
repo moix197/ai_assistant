@@ -178,9 +178,14 @@ needing to trigger a refresh itself.
   is the only caller today, and any future request-path tool needing a live
   Google client would call the exact same function — never a second "force
   refresh" path.
-- **`buildRefreshSweep` (`src/boot.ts`)** builds the coordinator plus a
-  narrow `RefreshSweepRepo` (`listAccountsExpiringBefore`/`upsertAccount`/
-  `markDisconnected`, bound to `@hermes/store`'s pool-taking functions) and
+- **`buildRefreshSweep` (`src/boot.ts`)** builds the coordinator — passing
+  `createGoogleRefreshAccessToken(oauthClient)` as its **required**
+  `RefreshAccessTokenPort`, since the coordinator itself never imports
+  `google-auth-library` — plus a
+  narrow `RefreshSweepRepo` (`listAccountsExpiringBefore`/
+  `updateRefreshedTokens`/`markDisconnected`, bound to `@hermes/store`'s
+  pool-taking functions — the write is UPDATE-only, never `upsertAccount`, so
+  a refresh can never re-create a row `/disconnect` just deleted) and
   returns `undefined` when Google's env group is unset — the same "cleanly
   absent, not a boot failure" contract `buildConnectFlow` follows.
 - **Construction is gated by the single-instance advisory lock, by
@@ -203,9 +208,20 @@ needing to trigger a refresh itself.
   fails to decrypt) calls `markDisconnected` — the same `DELETE` `/disconnect`
   uses, so `whoami`/`/status` land on the identical "not connected" path with
   no separate disconnected-but-present state — then sends a reconnect prompt
-  to `account.chatId`. `reason: "transient"` (network failure, a Google 5xx)
-  is logged and the row is left untouched for the next tick; zero expiring
-  accounts is a no-op.
+  to `account.chatId`. The disconnect is logged (warn, with
+  channel/channelUserId/reason) before the mutation, since it needs human
+  action. `reason: "transient"` (network failure, a Google 5xx) is logged and
+  the row is left untouched for the next tick; zero expiring accounts is a
+  no-op.
+- **Per-account isolation.** Failure handling is wrapped inside
+  `refreshOneAccount`, and the reconnect alert is isolated from
+  `markDisconnected`, so a blocked bot (Telegram 403) or any other throwing
+  alert/handler is logged rather than unwinding `runOnce`'s loop and skipping
+  every remaining account in the tick.
+- **No overlapping ticks.** A tick that fires while the previous `runOnce()`
+  is still in flight is skipped and logged — which is also what keeps
+  `stop()` honest, since it awaits the single in-flight run rather than
+  whichever tick started last.
 - **Shutdown**: `sweep.stop()` clears the interval and awaits any in-flight
   `runOnce()` call, bounded by `SWEEP_STOP_TIMEOUT_MS` (1s, see "Graceful
   shutdown" below) so a stuck refresh mid-tick can't stall the rest of

@@ -18,6 +18,8 @@ export type {
 } from "./telemetry";
 export { nextDelay } from "./backoff";
 export { delay } from "./delay";
+export { googleAccountSchema, tokenEnvelopeSchema } from "./google-types";
+export type { GoogleAccount, TokenEnvelope } from "./google-types";
 export { messageSchema, messagesArraySchema } from "./llm-types";
 export type {
   LlmUsageEntry,

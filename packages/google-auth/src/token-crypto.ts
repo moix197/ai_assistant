@@ -1,19 +1,14 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { z } from "zod";
+import { type TokenEnvelope, tokenEnvelopeSchema } from "@hermes/core";
 
 /**
  * A sealed token, opaque to every caller except this file — `packages/store`
  * persists it as-is (`jsonb`) and never decrypts it (Dependencies & Risks:
- * "`packages/store` never sees a plaintext token"). `v` is carried so a
- * future key-rotation/re-envelope scheme needs no migration to add it.
+ * "`packages/store` never sees a plaintext token"). Its schema lives in
+ * `@hermes/core` because `googleAccountSchema` embeds it; only the crypto
+ * that produces and opens an envelope belongs here.
  */
-export const tokenEnvelopeSchema = z.object({
-  v: z.literal(1),
-  iv: z.string(),
-  tag: z.string(),
-  ct: z.string(),
-});
-export type TokenEnvelope = z.infer<typeof tokenEnvelopeSchema>;
+export { type TokenEnvelope, tokenEnvelopeSchema };
 
 const ALGORITHM = "aes-256-gcm";
 /** 96-bit IV, the size GCM is defined and optimized for. */

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { GoogleAccount, GoogleAccountRepo } from "../account-repo-port";
 import { createConnectFlow } from "../connect-flow";
 import { createPendingConnectionStore } from "../pending-connections";
+import { IDENTITY_SCOPES } from "../scopes";
 import { openToken } from "../token-crypto";
 
 const CRYPTO_KEY = Buffer.alloc(32, 7);
@@ -15,8 +16,11 @@ function fakeIdToken(claims: Record<string, unknown>): string {
   return `${header}.${payload}.signature`;
 }
 
+const GRANTED_ALL = IDENTITY_SCOPES.join(" ");
+
 function fakeOAuthClient(overrides?: {
   getToken?: OAuth2Client["getToken"];
+  grantedScope?: string;
 }): OAuth2Client {
   return {
     generateAuthUrl: vi.fn(() => "https://accounts.google.com/o/oauth2/v2/auth?fake=1"),
@@ -28,6 +32,7 @@ function fakeOAuthClient(overrides?: {
           refresh_token: "fake-refresh-token",
           expiry_date: Date.now() + 3600_000,
           id_token: fakeIdToken({ email: "person@example.com" }),
+          scope: overrides?.grantedScope ?? GRANTED_ALL,
         },
         res: null,
       })),
@@ -72,6 +77,8 @@ describe("createConnectFlow", () => {
     expect(persisted.channel).toBe("telegram");
     expect(persisted.channelUserId).toBe("user-1");
     expect(persisted.googleEmail).toBe("person@example.com");
+    // Granted, not requested: `startConnect` asked for `["openid"]` alone.
+    expect(persisted.scopes).toEqual(IDENTITY_SCOPES);
 
     // Sealed, never plaintext.
     expect(JSON.stringify(persisted.tokenEnvelope)).not.toContain("fake-access-token");
@@ -81,6 +88,62 @@ describe("createConnectFlow", () => {
       accessToken: "fake-access-token",
       refreshToken: "fake-refresh-token",
     });
+  });
+
+  it("persists only what Google granted, even when it is narrower than the request", async () => {
+    const repo = fakeRepo();
+    const flow = createConnectFlow({
+      oauthClient: fakeOAuthClient({
+        grantedScope: `${GRANTED_ALL} https://www.googleapis.com/auth/gmail.readonly`,
+      }),
+      repo,
+      cryptoKey: CRYPTO_KEY,
+      pendingStore: createPendingConnectionStore(FIXED_CLOCK),
+      clock: FIXED_CLOCK,
+    });
+
+    const { state } = flow.startConnect("telegram", "user-1", "chat-1", IDENTITY_SCOPES);
+    await flow.completeConnect(state, "code");
+
+    const [persisted] = repo.accounts;
+    expect(persisted?.scopes).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ]);
+  });
+
+  it("rejects a grant missing an identity scope and persists nothing", async () => {
+    const repo = fakeRepo();
+    const flow = createConnectFlow({
+      oauthClient: fakeOAuthClient({ grantedScope: "openid" }),
+      repo,
+      cryptoKey: CRYPTO_KEY,
+      pendingStore: createPendingConnectionStore(FIXED_CLOCK),
+      clock: FIXED_CLOCK,
+    });
+
+    const { state } = flow.startConnect("telegram", "user-1", "chat-1", IDENTITY_SCOPES);
+    const result = await flow.completeConnect(state, "code");
+
+    expect(result).toEqual({ ok: false, reason: "missing_scopes" });
+    expect(repo.upsertAccount).not.toHaveBeenCalled();
+  });
+
+  it("treats a token response carrying no scope at all as missing_scopes", async () => {
+    const repo = fakeRepo();
+    const flow = createConnectFlow({
+      oauthClient: fakeOAuthClient({ grantedScope: "" }),
+      repo,
+      cryptoKey: CRYPTO_KEY,
+      pendingStore: createPendingConnectionStore(FIXED_CLOCK),
+      clock: FIXED_CLOCK,
+    });
+
+    const { state } = flow.startConnect("telegram", "user-1", "chat-1", IDENTITY_SCOPES);
+    const result = await flow.completeConnect(state, "code");
+
+    expect(result).toEqual({ ok: false, reason: "missing_scopes" });
+    expect(repo.upsertAccount).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown state with invalid_state", async () => {

@@ -11,7 +11,9 @@ import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config
 import { type Logger, createLogger, systemClock } from "@hermes/core";
 import {
   type ConnectFlow,
+  type PendingConnectionStore,
   createConnectFlow,
+  createGoogleRefreshAccessToken,
   createPendingConnectionStore,
   createRefreshCoordinator,
 } from "@hermes/google-auth";
@@ -30,6 +32,7 @@ import {
   markDisconnected,
   runMigrations,
   setOffset,
+  updateRefreshedTokens,
   waitForDatabase,
 } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
@@ -566,21 +569,28 @@ async function acquireInstanceLockOrExit(
  * Builds the connect flow shared by the `/connect` command handler and the
  * OAuth callback route — the **same** instance, since `pendingStore` is an
  * in-memory map: a state minted by one instance would never resolve against
- * another's. `undefined` when the Google all-or-none env group
- * (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`TOKEN_ENCRYPTION_KEY`) is
+ * another's. The store is returned alongside the flow because the callback
+ * route needs it directly for Google's denial redirect, which has no code to
+ * put through `completeConnect`. `undefined` when the Google all-or-none env
+ * group (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`TOKEN_ENCRYPTION_KEY`) is
  * unset — Google features are then cleanly absent, not a boot failure.
  */
-function buildConnectFlow(pool: Pool, config: Env): ConnectFlow | undefined {
+function buildConnectFlow(
+  pool: Pool,
+  config: Env,
+): { connectFlow: ConnectFlow; pendingStore: PendingConnectionStore } | undefined {
   const googleOAuth = buildGoogleOAuthClient(config);
   if (!googleOAuth) return undefined;
 
-  return createConnectFlow({
+  const pendingStore = createPendingConnectionStore(systemClock);
+  const connectFlow = createConnectFlow({
     oauthClient: googleOAuth.oauthClient,
     repo: buildGoogleAccountRepo(pool),
     cryptoKey: googleOAuth.cryptoKey,
-    pendingStore: createPendingConnectionStore(systemClock),
+    pendingStore,
     clock: systemClock,
   });
+  return { connectFlow, pendingStore };
 }
 
 /**
@@ -604,15 +614,14 @@ function buildRefreshSweep(
   if (!googleOAuth) return undefined;
 
   const coordinator = createRefreshCoordinator({
-    oauthClient: googleOAuth.oauthClient,
+    refreshAccessToken: createGoogleRefreshAccessToken(googleOAuth.oauthClient),
     cryptoKey: googleOAuth.cryptoKey,
   });
-  const { upsertAccount } = buildGoogleAccountRepo(pool);
 
   return createRefreshSweep({
     repo: {
       listAccountsExpiringBefore: (cutoff) => listAccountsExpiringBefore(pool, cutoff),
-      upsertAccount,
+      updateRefreshedTokens: (account) => updateRefreshedTokens(pool, account),
       markDisconnected: (channelName, channelUserId) =>
         markDisconnected(pool, channelName, channelUserId),
     },
@@ -690,10 +699,14 @@ function wireRuntimeAndShutdown(
     shutdownController.signal,
   );
 
-  const connectFlow = buildConnectFlow(pool, config);
-  if (connectFlow) {
-    oauthCallbackRoute.bind(connectFlow, async (chatId, text) => {
-      await telegramChannel.send(chatId, text);
+  const google = buildConnectFlow(pool, config);
+  if (google) {
+    oauthCallbackRoute.bind({
+      connectFlow: google.connectFlow,
+      notify: async (chatId, text) => {
+        await telegramChannel.send(chatId, text);
+      },
+      pendingStore: google.pendingStore,
     });
   }
 
@@ -703,7 +716,7 @@ function wireRuntimeAndShutdown(
     config,
     logger,
     shutdownController.signal,
-    connectFlow,
+    google?.connectFlow,
   );
 
   // Constructed and started here, strictly after acquireInstanceLockOrExit
@@ -753,7 +766,7 @@ export async function boot(): Promise<void> {
   // Constructed before serveHealth so its (unbound) handleRequest can be
   // wired into the health server's router immediately — see serveHealth's
   // doc comment.
-  const oauthCallbackRoute = createOauthCallbackRoute();
+  const oauthCallbackRoute = createOauthCallbackRoute({ logger });
   serveHealth(pool, config.PORT, logger, oauthCallbackRoute);
 
   wireRuntimeAndShutdown(telegramClient, pool, config, logger, instanceLock, oauthCallbackRoute);

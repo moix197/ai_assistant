@@ -113,9 +113,6 @@ importers:
       '@hermes/core':
         specifier: workspace:*
         version: link:../core
-      '@hermes/google-auth':
-        specifier: workspace:*
-        version: link:../google-auth
       pg:
         specifier: ^8.13.1
         version: 8.23.0

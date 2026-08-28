@@ -8,8 +8,9 @@ const NOT_CONNECTED_TEXT = "Not connected. Run /connect google to connect.";
  * `/status` — thin wiring only, per CLAUDE.md's thin-entry-points rule and
  * `stats.ts`'s shape: no LLM call, just a read and a reply. Scopes are read
  * from the stored `google_accounts` row (`account.scopes`), not from
- * `TOOL_REQUIRED_SCOPES` — the row is what was actually granted, the
- * registry is only what a given tool requires.
+ * `TOOL_REQUIRED_SCOPES` — the row holds the `scope` list Google returned
+ * with the token exchange (`connect-flow.ts` persists the granted set, never
+ * the requested one), while the registry is only what a given tool requires.
  */
 export function createStatusHandler(
   channel: Channel,

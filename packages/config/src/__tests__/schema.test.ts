@@ -202,6 +202,26 @@ describe("loadConfig — Google OAuth", () => {
     expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
   });
 
+  it("accepts a base64url-encoded 32-byte TOKEN_ENCRYPTION_KEY", () => {
+    const key = Buffer.alloc(32, 0xfb).toString("base64url");
+    expect(key).toMatch(/[-_]/);
+    const config = loadConfig({ ...validEnvWithGoogle, TOKEN_ENCRYPTION_KEY: key });
+    expect(config.TOKEN_ENCRYPTION_KEY).toBe(key);
+  });
+
+  it("fails naming TOKEN_ENCRYPTION_KEY when a base64url value decodes to the wrong byte length", () => {
+    const env = {
+      ...validEnvWithGoogle,
+      TOKEN_ENCRYPTION_KEY: Buffer.alloc(16, 0xfb).toString("base64url"),
+    };
+    expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
+  });
+
+  it("fails naming TOKEN_ENCRYPTION_KEY when the two base64 alphabets are mixed", () => {
+    const env = { ...validEnvWithGoogle, TOKEN_ENCRYPTION_KEY: "-/v7+_v7-/v7+_v7-/v7+_v7-/v7+_v7" };
+    expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
+  });
+
   it("defaults OAUTH_REDIRECT_BASE_URL to http://localhost:3000 when unset", () => {
     const config = loadConfig(validEnv);
     expect(config.OAUTH_REDIRECT_BASE_URL).toBe("http://localhost:3000");
@@ -210,6 +230,26 @@ describe("loadConfig — Google OAuth", () => {
   it("validates OAUTH_REDIRECT_BASE_URL independently of the Google key group", () => {
     const env = { ...validEnv, OAUTH_REDIRECT_BASE_URL: "not-a-url" };
     expect(() => loadConfig(env)).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+
+  it("accepts an https OAUTH_REDIRECT_BASE_URL", () => {
+    const config = loadConfig({ ...validEnv, OAUTH_REDIRECT_BASE_URL: "https://example.com" });
+    expect(config.OAUTH_REDIRECT_BASE_URL).toBe("https://example.com");
+  });
+
+  it("accepts an http OAUTH_REDIRECT_BASE_URL on localhost and 127.0.0.1", () => {
+    for (const url of ["http://localhost:3000", "http://127.0.0.1:3000"]) {
+      expect(
+        loadConfig({ ...validEnv, OAUTH_REDIRECT_BASE_URL: url }).OAUTH_REDIRECT_BASE_URL,
+      ).toBe(url);
+    }
+  });
+
+  it("fails naming OAUTH_REDIRECT_BASE_URL when http is used for a non-loopback host", () => {
+    const env = { ...validEnv, OAUTH_REDIRECT_BASE_URL: "http://example.com" };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+    expect(() => loadConfig(env)).toThrow(/https/);
   });
 });
 

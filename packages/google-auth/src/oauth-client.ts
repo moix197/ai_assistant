@@ -1,4 +1,4 @@
-import { CodeChallengeMethod, type OAuth2Client } from "google-auth-library";
+import { CodeChallengeMethod, OAuth2Client } from "google-auth-library";
 
 export interface BuildAuthUrlOptions {
   scopes: string[];
@@ -35,6 +35,14 @@ export interface ExchangeCodeResult {
   refreshToken: string;
   expiresAt: Date;
   idTokenClaims: Record<string, unknown>;
+  /**
+   * What Google actually **granted**, parsed from the token response's
+   * space-delimited `scope` — never the list Hermes asked for. Google's
+   * granular-consent screen lets a user deselect individual checkboxes, so
+   * the requested set is only a request; this is the authoritative answer,
+   * and the only thing worth persisting on the account row.
+   */
+  grantedScopes: string[];
 }
 
 /**
@@ -79,6 +87,7 @@ export async function exchangeCode(
     refreshToken: tokens.refresh_token,
     expiresAt: new Date(tokens.expiry_date),
     idTokenClaims: decodeIdTokenClaims(tokens.id_token),
+    grantedScopes: tokens.scope?.split(" ").filter((scope) => scope !== "") ?? [],
   };
 }
 
@@ -88,32 +97,41 @@ export interface RefreshedAccessToken {
 }
 
 /**
- * `OAuth2Client.refreshToken(refreshToken)` is the one SDK call that takes an
- * explicit refresh token and returns fresh credentials **without** mutating
- * the client's own `credentials` field — unlike the public
- * `refreshAccessToken()`/`getAccessToken()`, which read/write `this.credentials`
- * on the shared client instance and would race if `refresh.ts`'s single-flight
- * coordinator (keyed per-account, not per-client) ever refreshed two accounts
- * through the same `OAuth2Client` concurrently. It's typed `protected` in
- * `google-auth-library` — an SDK-internal visibility marker, not a documented
- * public/private API boundary (`refreshTokenNoCache`, which it delegates to,
- * performs no `this.credentials` read or write) — so this narrow, documented
- * reach-around is safer than the shared-mutable-state alternative the public
- * methods force.
+ * The port `refresh.ts`'s coordinator depends on: a refresh token in, a fresh
+ * access token out. A function type this package owns, so the coordinator is
+ * decoupled from `google-auth-library` entirely and its tests fake *this*
+ * rather than standing in for an SDK-internal method — the same
+ * ports-and-injection idiom `GoogleAccountRepo`/`ThreadRepo`/`LlmUsageRepo`
+ * already follow.
  */
-export async function refreshAccessToken(
-  client: OAuth2Client,
-  refreshToken: string,
-): Promise<RefreshedAccessToken> {
-  const refreshable = client as unknown as {
-    refreshToken(refreshToken?: string | null): Promise<{
-      tokens: { access_token?: string | null; expiry_date?: number | null };
-    }>;
+export type RefreshAccessTokenPort = (refreshToken: string) => Promise<RefreshedAccessToken>;
+
+/**
+ * The production adapter. Builds a throwaway `OAuth2Client` per call and uses
+ * the public `refreshAccessToken()` on it: that method reads and writes
+ * `this.credentials`, which is exactly why it must not be called on a client
+ * shared between accounts — a per-call instance has no shared state to race
+ * on. Constructing one is field assignment plus `super(opts)`, no I/O.
+ *
+ * This replaces an earlier cast that reached around `OAuth2Client`'s
+ * `protected refreshToken()`; the SDK marks that method `@private` in its own
+ * JSDoc, so it is a real API boundary, not a mere visibility annotation.
+ */
+export function createGoogleRefreshAccessToken(client: OAuth2Client): RefreshAccessTokenPort {
+  const clientId = client._clientId;
+  const clientSecret = client._clientSecret;
+
+  return async function refreshAccessToken(refreshToken: string): Promise<RefreshedAccessToken> {
+    const perCallClient = new OAuth2Client({ clientId, clientSecret });
+    perCallClient.setCredentials({ refresh_token: refreshToken });
+    const { credentials } = await perCallClient.refreshAccessToken();
+
+    if (!credentials.access_token) {
+      throw new Error("refreshAccessToken: response carried no access_token");
+    }
+    if (!credentials.expiry_date) {
+      throw new Error("refreshAccessToken: response carried no expiry_date");
+    }
+    return { accessToken: credentials.access_token, expiresAt: new Date(credentials.expiry_date) };
   };
-  const { tokens } = await refreshable.refreshToken(refreshToken);
-
-  if (!tokens.access_token) throw new Error("refreshAccessToken: response carried no access_token");
-  if (!tokens.expiry_date) throw new Error("refreshAccessToken: response carried no expiry_date");
-
-  return { accessToken: tokens.access_token, expiresAt: new Date(tokens.expiry_date) };
 }

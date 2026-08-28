@@ -36,7 +36,12 @@ a transient failure is logged and retried next tick.
 - **Single-flight is sufficient, not merely convenient, specifically because
   of the advisory lock.** `packages/store/src/advisory-lock.ts`'s
   `pg_try_advisory_lock` plus `boot.ts`'s non-zero exit on a lost race
-  guarantee exactly one Hermes process per database. Verified by inspection,
+  guarantee exactly one Hermes process per database — for the whole process
+  lifetime, not just at boot: the dedicated lock client carries an `'error'`
+  listener that logs and exits non-zero when that connection dies, since
+  Postgres frees a session-level lock the instant its connection drops and a
+  surviving process would then be racing whoever acquires it next.
+  Verified by inspection,
   not merely assumed: `boot()` calls `acquireInstanceLockOrExit` and returns
   early when the lock isn't held; `wireRuntimeAndShutdown` — the only place
   the sweep is constructed and `start()`ed — is called strictly after that
@@ -45,17 +50,50 @@ a transient failure is logged and retried next tick.
   script, a second worker process) — such an entrypoint would share neither
   this in-process map nor the lock's protection, silently reintroducing the
   race the lock exists to prevent, with no test catching it.
-- **`refreshAccessToken` (`oauth-client.ts`) reaches around `OAuth2Client`'s
-  `protected refreshToken(refreshToken)`, deliberately not the public
-  `refreshAccessToken()`/`getAccessToken()`.** Both public methods read and
-  write the client instance's own `credentials` field; this coordinator may
-  refresh several accounts through one shared `OAuth2Client`, and mutating
-  shared state per refresh would race across concurrent, different-account
-  calls. `refreshToken`/its `refreshTokenNoCache` delegate take the refresh
-  token as an explicit argument and touch no shared state — `protected` here
-  is an SDK-internal visibility marker, not a documented public/private
-  boundary, so this narrow, documented reach-around is safer than the
-  alternative.
+- **The coordinator depends on a `RefreshAccessTokenPort`, not on an
+  `OAuth2Client`.** `oauth-client.ts` declares
+  `type RefreshAccessTokenPort = (refreshToken: string) =>
+  Promise<RefreshedAccessToken>` — a function type this package owns — and
+  `createRefreshCoordinator` takes an implementation of it as its single
+  **required** dependency, exactly the
+  injection idiom `GoogleAccountRepo`/`ThreadRepo`/`LlmUsageRepo` already use.
+  Required, not an optional port beside an optional `oauthClient` the
+  coordinator would wrap itself: that shape briefly existed, and it made an
+  invalid combination (neither supplied) representable and deferred it to a
+  runtime throw. `apps/hermes/src/boot.ts`'s `buildRefreshSweep` calls
+  `createGoogleRefreshAccessToken(oauthClient)` and passes the port, which
+  also keeps `google-auth-library` out of the coordinator's own imports
+  entirely. That production adapter
+  builds a **throwaway `OAuth2Client` per call** and uses the public
+  `refreshAccessToken()` on it. The shared-state hazard that shaped the
+  earlier design is real — `refreshAccessToken()`/`getAccessToken()` read and
+  write `this.credentials` — but it is a property of *sharing a client*, not
+  of the public API, and a per-call instance has none of it to race on.
+  Constructing one is field assignment plus `super(opts)`, no I/O.
+  `refresh.test.ts` fakes the port; nothing in this package's tests stands in
+  for an SDK internal any more.
+- **Correcting the earlier rationale, which was wrong on the facts.** A prior
+  version of this document justified casting to reach `OAuth2Client`'s
+  `protected refreshToken()` on the grounds that `protected` there is "an
+  SDK-internal visibility marker, not a documented public/private API
+  boundary." That is false: the compiled SDK
+  (`google-auth-library@9.15.1`, `build/src/auth/oauth2client.d.ts`) carries a
+  literal `@private` JSDoc tag on that method. It is a declared private API,
+  and depending on it was a real (if small) upgrade hazard. The document also
+  presented the clean alternative as *rejected on correctness grounds*; it was
+  not — it was rejected because `__tests__/refresh.test.ts` mocked
+  `OAuth2Client.refreshToken` directly, so the swap could not reach the mock.
+  A test's mocking seam was dictating production design. The fix was to change
+  the seam: the tests now mock our own port, and the cast is gone.
+- **The SDK has a de-duplication layer of its own; ours is not redundant, but
+  it is also not the whole story.** `OAuth2Client.refreshToken()` keeps a
+  `refreshTokenPromises` map keyed on the refresh-token string, so under the
+  *old* shared-client design our single-flight map was a second layer rather
+  than the sole defense. Under the per-call-client port it is the only
+  in-process de-duplication, since that map is per-client. Either way our map
+  earns its place: it is keyed on `(channel, channelUserId)` and short-circuits
+  before the envelope decrypt, so concurrent callers skip a redundant AES
+  open as well as a redundant HTTP round-trip.
 - **Failure classification collapses two causes into one action.** Both
   Google reporting `invalid_grant` (a revoked or expired refresh token) and
   the stored envelope failing to decrypt leave an account equally unusable —
@@ -74,9 +112,31 @@ a transient failure is logged and retried next tick.
   disconnected-but-present state to reason about.
 - **The coordinator never persists.** `getValidAccessToken` returns the
   updated `GoogleAccount` (fresh `token_envelope`/`expiresAt`) but leaves the
-  write to the caller — `refresh-sweep.ts`'s `repo.upsertAccount` — keeping
-  `packages/google-auth`'s "never imports `@hermes/store`" boundary intact
-  even for a write that happens mid-refresh.
+  write to the caller — `refresh-sweep.ts`'s `repo.updateRefreshedTokens` —
+  keeping `packages/google-auth`'s "never imports `@hermes/store`" boundary
+  intact even for a write that happens mid-refresh.
+- **The sweep's write is UPDATE-only (`updateRefreshedTokens`), never the
+  connect path's `upsertAccount`.** The sweep acts on a row snapshot read one
+  HTTP round-trip ago, so an upsert would re-INSERT a row `/disconnect`
+  deleted while the refresh was in flight — resurrecting the account with a
+  live refresh token, and every later tick keeping it alive — and would
+  overwrite `scopes`/`chat_id` a `/connect` granted mid-tick with the stale
+  snapshot's values. `updateRefreshedTokens` writes only `token_envelope`/
+  `expires_at`/`updated_at`, and matches zero rows when the account is gone.
+- **One account's failure never costs the rest of the tick.** Failure
+  handling is wrapped where `refreshOneAccount` catches, and the reconnect
+  alert is isolated from `markDisconnected`, so a blocked bot (Telegram 403)
+  or a throwing handler is logged rather than unwinding `runOnce`'s loop and
+  silently skipping every account after it. A terminal `invalid_grant`
+  disconnect is logged (warn, with channel/channelUserId/reason) *before* the
+  mutation — it needs human action, so it must not be the one branch that
+  deletes a row and messages a user while leaving no trace in the log.
+- **Ticks never overlap.** `tick()` skips (and logs) while a previous
+  `runOnce()` is still in flight. Beyond avoiding concurrent refreshes of the
+  same account, this is what makes `stop()` correct: `inFlight` was otherwise
+  overwritten by each new tick, so `stop()` could await only the newest one
+  and return while an older tick still had queries out — after which `boot.ts`
+  releases the advisory lock and ends the pool.
 - **Shutdown budget: `sweep.stop()` gets its own 1s bound
   (`SWEEP_STOP_TIMEOUT_MS`), the same size as `TELEMETRY_FLUSH_TIMEOUT_MS`.**
   `DRAIN_TIMEOUT_MS` (5s) + `TELEMETRY_FLUSH_TIMEOUT_MS` (1s) can already
@@ -98,42 +158,33 @@ a transient failure is logged and retried next tick.
   single-instance guarantee, reintroducing the concurrent-refresh race this
   design depends on the lock to prevent.
 - *Refreshing via the public `OAuth2Client.refreshAccessToken()`/
-  `getAccessToken()`* — both mutate the shared client's own `credentials`
-  field; concurrent refreshes for different accounts through one client
-  instance would race on that shared state.
+  `getAccessToken()` **on a shared client*** — both mutate that client's own
+  `credentials` field; concurrent refreshes for different accounts through one
+  instance would race on that shared state. (The same public method on a
+  per-call throwaway client is what the production port now uses — the hazard
+  was the sharing, not the method.)
 - *Reusing `buildConnectFlow`'s `OAuth2Client` instance for the sweep's
   coordinator* — no correctness reason to share one (`getToken`/`refreshToken`
   are both stateless-per-call), and a shared instance would only couple two
   otherwise-independent construction sites for no benefit.
-- *A throwaway `OAuth2Client` constructed per refresh call, calling the
-  public `refreshAccessToken()` on that isolated instance instead of reaching
-  around the shared client's protected `refreshToken()`.* Re-examined during
-  Phase 4 code review specifically to see whether the protected-API cast
-  could be dropped. Verified against the installed
-  `google-auth-library@9.15.1` source
-  (`node_modules/.pnpm/google-auth-library@9.15.1/node_modules/google-auth-library/build/src/auth/oauth2client.js`):
-  the constructor (line ~45) is indeed cheap — field assignment plus a
-  `super(opts)` call, no I/O — and the public `refreshAccessToken()`
-  (line ~238, no callback given) delegates to `refreshAccessTokenAsync()`
-  (line ~246), which itself calls
-  `this.refreshToken(this.credentials.refresh_token)` — the very protected
-  method the cast reaches around, just invoked internally by the SDK on the
-  throwaway instance instead of externally by our code on the shared one.
-  Behaviorally sound in principle, but rejected because it breaks
-  `__tests__/refresh.test.ts` without editing it: every test there builds
-  `oauthClient` as `{ refreshToken } as unknown as OAuth2Client`
-  (`fakeOAuthClient`) and asserts directly against that mock function (call
-  count, call args, single-flight de-duplication). A per-call
-  throwaway-client implementation cannot reach that mock at all — it would
-  have to construct a brand-new *real* `OAuth2Client` and invoke its own
-  real `refreshToken`, which for a fake object carrying no
-  `_clientId`/`_clientSecret` would either throw building the request or
-  attempt a genuine `POST` to `https://oauth2.googleapis.com/token`, never
-  the injected fake. Making the swap pass would require rewriting
-  `refresh.test.ts` to mock HTTP transport instead of the client method —
-  exactly the "requires editing the tests to pass" condition this cleanup
-  was scoped to avoid. The cast-based implementation in `oauth-client.ts`
-  was left unchanged.
+- *Keeping the cast to `OAuth2Client`'s `protected refreshToken()`, on the
+  grounds that swapping it out would break `__tests__/refresh.test.ts`.* This
+  was the standing position for one review cycle and it was the wrong call:
+  those tests built `oauthClient` as `{ refreshToken } as unknown as
+  OAuth2Client` and asserted against that mock, so a per-call-client
+  implementation could not reach it — but "the tests mock a third-party
+  internal" is a reason to fix the tests, not to keep production code bound to
+  a `@private` SDK method. The seam moved to a port we own; the tests now fake
+  that port and assert the same things (call count, call args, single-flight
+  de-duplication) without naming `google-auth-library` at all.
+- *Attaching the raw refresh rejection as `RefreshFailedError`'s `cause`.* A
+  gaxios error carries the whole outgoing token request on `config.data` —
+  form-encoded `client_secret` and refresh token — and `util.inspect` prints
+  `[cause]` recursively, so one `logger.error(err)`, `unhandledRejection`
+  handler, or error-reporting SDK would publish the secret. `cause` is now
+  typed as `RefreshErrorDetail` (`message`, `status`, `error`,
+  `errorDescription`), built by a whitelist extractor, which makes attaching
+  the raw error a compile error rather than something review has to catch.
 
 **Constraints it creates:**
 

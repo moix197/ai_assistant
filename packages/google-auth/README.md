@@ -5,7 +5,15 @@ an AES-256-GCM token envelope. Never imports `@hermes/store` — persistence is
 an injected `GoogleAccountRepo` port, bound in
 `apps/hermes/src/store/build-google-account-repo.ts`. Never imports
 `@hermes/channels` — command handlers and the OAuth callback route in
-`apps/hermes` are the only callers.
+`apps/hermes` are the only callers. Depends on `@hermes/core` only.
+
+The `GoogleAccount` row shape itself (`googleAccountSchema`, and the
+`tokenEnvelopeSchema` it embeds) lives in `@hermes/core` and is re-exported
+from here — exactly how `LlmUsageEntry` is shared between `@hermes/llm` and
+`@hermes/store`. `@hermes/store` reads it from `core` too, so the two
+siblings never import each other. What stays here is the *port*
+(`GoogleAccountRepo`, a consumer-defined interface) and the crypto that
+seals and opens an envelope.
 
 ## Flow shape
 
@@ -23,9 +31,13 @@ an injected `GoogleAccountRepo` port, bound in
   entry (invalid/expired/replayed state all return `{ ok: false, reason:
   "invalid_state" }`), exchanges `code` for tokens using the stored PKCE
   verifier, seals both tokens into one envelope, and upserts the account via
-  the injected `GoogleAccountRepo`. The authorization `code` and the raw
-  tokens never appear in a log line or a return value anywhere in this
-  package.
+  the injected `GoogleAccountRepo`. The account's `scopes` are the ones
+  Google's token response **granted** (its space-delimited `scope`), never the
+  ones `startConnect` requested — granular consent lets a user deselect
+  individual checkboxes. A grant that doesn't cover `IDENTITY_SCOPES` returns
+  `{ ok: false, reason: "missing_scopes" }` and writes no row. The
+  authorization `code` and the raw tokens never appear in a log line or a
+  return value anywhere in this package.
 
 ## Token envelope
 
@@ -73,19 +85,28 @@ second "force refresh" function.
   cutoff imports this same `REFRESH_SKEW_MS` rather than hardcoding its own
   duration — the sweep's "expiring soon" and this function's "needs
   refresh" can never drift into two independently-tuned numbers.
-- **`refreshAccessToken` (`oauth-client.ts`)** wraps `OAuth2Client`'s
-  `protected refreshToken(refreshToken)` — the one SDK call that takes an
-  explicit refresh token and returns fresh credentials without mutating the
-  client's own `credentials` field, unlike the public
-  `refreshAccessToken()`/`getAccessToken()`. That matters because a single
-  `OAuth2Client` instance may refresh several accounts through this
-  coordinator; a call that reads/writes shared client state would race.
+- **The refresh call is an injected port, not an SDK client.**
+  `RefreshAccessTokenPort` (`oauth-client.ts`) is
+  `(refreshToken: string) => Promise<RefreshedAccessToken>` — a function type
+  this package owns, so the coordinator never touches `google-auth-library`
+  and its tests fake the port rather than an SDK internal.
+  `createGoogleRefreshAccessToken(oauthClient)` is the production
+  implementation: it builds a throwaway `OAuth2Client` per call and uses the
+  public `refreshAccessToken()` on it, so nothing is shared between concurrent
+  refreshes of different accounts. `createRefreshCoordinator` takes the port
+  and only the port — **required**, not an optional field with an
+  `oauthClient` fallback beside it, which made "neither supplied"
+  representable and turned it into a runtime throw. `boot.ts` calls
+  `createGoogleRefreshAccessToken` itself and passes the result.
 - **`RefreshFailedError`** carries a `reason`: `"invalid_grant"` (Google
   reports the refresh token revoked/expired, or the stored envelope fails to
   decrypt — both leave the account equally unusable) drives
   `refresh-sweep.ts`'s disconnect-and-alert branch; `"transient"` (network
   failure, a Google 5xx) is retried on the next sweep tick with the stored
-  row untouched.
+  row untouched. Its `cause` is typed `RefreshErrorDetail` (`message`,
+  `status`, `error`, `errorDescription`) — a whitelist extract, because the
+  raw gaxios rejection carries the form-encoded token request, client secret
+  included, on `config.data`.
 - **Never persists.** `getValidAccessToken` returns the updated `GoogleAccount`
   (a fresh `token_envelope`/`expiresAt`) but does not write it —
   `refresh-sweep.ts` persists via the injected `repo.upsertAccount`, keeping

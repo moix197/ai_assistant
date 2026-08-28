@@ -1,4 +1,4 @@
-import type { GoogleAccount } from "@hermes/google-auth";
+import type { GoogleAccount } from "@hermes/core";
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -6,6 +6,7 @@ import {
   getAccount,
   listAccountsExpiringBefore,
   markDisconnected,
+  updateRefreshedTokens,
   upsertAccount,
 } from "../google-account-repo";
 import { getDefaultMigrationsDir, runMigrations } from "../migrate";
@@ -101,6 +102,56 @@ describe.skipIf(!testDatabaseUrl)("google-account-repo (integration)", () => {
     expect(after.rows[0]?.updated_at.getTime()).toBeGreaterThan(
       before.rows[0]?.updated_at.getTime() ?? 0,
     );
+  });
+
+  it("updateRefreshedTokens writes only the token columns, leaving scopes/chat_id/created_at alone", async () => {
+    await upsertAccount(pool, account());
+    const before = await pool.query<{ created_at: Date; updated_at: Date }>(
+      "SELECT created_at, updated_at FROM google_accounts WHERE channel_user_id = $1",
+      ["user-1"],
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const refreshed = account({
+      chatId: "stale-chat",
+      googleEmail: "stale@example.com",
+      scopes: ["openid"],
+      tokenEnvelope: { v: 1, iv: "bmV3", tag: "dGFnMg==", ct: "Y3Qy" },
+      expiresAt: new Date("2026-12-01T00:00:00.000Z"),
+    });
+    await updateRefreshedTokens(pool, refreshed);
+
+    const fetched = await getAccount(pool, "telegram", "user-1");
+    expect(fetched?.tokenEnvelope).toEqual(refreshed.tokenEnvelope);
+    expect(fetched?.expiresAt).toEqual(refreshed.expiresAt);
+    expect(fetched?.chatId).toBe("chat-1");
+    expect(fetched?.googleEmail).toBe("person@example.com");
+    expect(fetched?.scopes).toEqual(account().scopes);
+
+    const after = await pool.query<{ created_at: Date; updated_at: Date }>(
+      "SELECT created_at, updated_at FROM google_accounts WHERE channel_user_id = $1",
+      ["user-1"],
+    );
+    expect(after.rows[0]?.created_at).toEqual(before.rows[0]?.created_at);
+    expect(after.rows[0]?.updated_at.getTime()).toBeGreaterThan(
+      before.rows[0]?.updated_at.getTime() ?? 0,
+    );
+  });
+
+  it("updateRefreshedTokens does not resurrect a row deleted mid-refresh", async () => {
+    await upsertAccount(pool, account());
+    await deleteAccount(pool, "telegram", "user-1");
+
+    await updateRefreshedTokens(
+      pool,
+      account({ tokenEnvelope: { v: 1, iv: "bmV3", tag: "dGFnMg==", ct: "Y3Qy" } }),
+    );
+
+    await expect(getAccount(pool, "telegram", "user-1")).resolves.toBeUndefined();
+    const countResult = await pool.query<{ count: string }>(
+      "SELECT COUNT(*) AS count FROM google_accounts",
+    );
+    expect(countResult.rows[0]?.count).toBe("0");
   });
 
   it("deleteAccount removes the row", async () => {
