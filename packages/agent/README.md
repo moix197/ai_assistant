@@ -64,11 +64,26 @@ ships, not the top-level `zod` classic export) specifically because
 
 `src/context-trim.ts`'s `trimHistory(messages, budgetChars)` implements the
 "crude" chars/4 token estimate (settled decision 9, ROADMAP §2c) — a
-tokenizer-accurate budget is Phase 8, explicitly out of scope here. Each
-message's estimated size is `content.length / 4`; the oldest messages are
-dropped first until the running total fits `budgetChars`. `HISTORY_BUDGET_CHARS`
-is a package-internal constant, not env-configurable — the same posture
-`@hermes/telemetry`'s `maxBufferSize` has.
+tokenizer-accurate budget is Phase 8, explicitly out of scope here.
+`HISTORY_BUDGET_CHARS` is a package-internal constant, not env-configurable —
+the same posture `@hermes/telemetry`'s `maxBufferSize` has.
+
+Trimming is **group-aware**: a `role: "assistant"` message carrying
+`toolCalls` and every immediately following `role: "tool"` message answering
+it are treated as one atomic unit for trim purposes, dropped together and
+never split — orphaning a `role: "tool"` message from the assistant
+`toolCalls` message it answers would make it meaningless on replay (every
+OpenAI-compatible provider rejects it). Every other message is its own
+single-message group. Groups are dropped oldest-first, exactly like the
+message-level trim it replaced, just at group granularity; at least one
+group always survives, even if it alone exceeds the whole budget.
+
+Each message's estimated size (`estimateSize`) is `content.length / 4` plus,
+for an assistant message carrying `toolCalls`, its requested arguments'
+serialized length — an assistant tool-call message's own `content` is often
+empty, so without this a tool-heavy turn could stay invisible to
+`HISTORY_BUDGET_CHARS` regardless of how much argument payload it actually
+carries.
 
 This function **never touches the prefix** and **never sees the turn's newest
 user message** — `loop.ts` calls it only on stored history, then appends the
@@ -107,11 +122,17 @@ a given call; the full, untrimmed history is always what gets persisted.
 5. Reaching `MAX_ITERATIONS` without ever getting an empty `toolCalls`
    throws an internal `MaxIterationsReachedError` carrying the real
    accumulated `costUsd` and iteration count from the calls that did happen.
-6. On success: persist the user message and the assistant reply together in
-   **one** `appendMessages` call, emit a `turn` telemetry event
-   (`iterations` = however many calls it took, `outcome: "completed"`,
-   `totalCostUsd` = the sum of every iteration's `costUsd`), and return the
-   reply text.
+6. On success: persist the **real conversation tail** this turn produced in
+   **one** `appendMessages` call — the seed user message plus every
+   assistant/tool message `converse()`'s internal `conversation` array
+   accumulated, in wire order, ending with the final assistant reply. This is
+   a slice of that one array, not a re-derived two-message shape: a
+   tool-calling turn persists the assistant's `tool_calls` message and the
+   matching `role: "tool"` result(s) it produced, not just a flattened
+   user/assistant pair — `psql`ing `threads.messages` after such a turn shows
+   the real shape. Then emit a `turn` telemetry event (`iterations` =
+   however many calls it took, `outcome: "completed"`, `totalCostUsd` = the
+   sum of every iteration's `costUsd`), and return the reply text.
 7. On any thrown error: emit a `turn` event and **rethrow the original error
    unchanged** — no new error-handling branch, so the existing completion
    handler's generic-failure reply still applies.
@@ -166,10 +187,18 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
    event-loop gap between calls for an abort to land "between" them.
 6. Each call — regardless of outcome — emits its own `tool.call` telemetry
    event: `{ name: "tool.call", threadId, turnId, tool, durationMs, approved,
-   error? }`. `error`, when present, is truncated to 500 characters — the
-   same bound `02-telemetry`'s settled decision 14 puts on `llm.call`'s
-   `error`. `approved` is `true` for every ungated call; a gated call's
-   `approved` reflects the approval gate's real decision (see below).
+   approvalWaitMs?, error? }`. `error`, when present, is truncated to 500
+   characters — the same bound `02-telemetry`'s settled decision 14 puts on
+   `llm.call`'s `error`. `approved` is `true` for every ungated call; a
+   gated call's `approved` reflects the approval gate's real decision (see
+   below). `durationMs` is **handler execution time only** — it starts once
+   validation has passed and the handler is actually invoked (or, for a
+   gated call, once the approval gate has resolved), never before.
+   `approvalWaitMs` is `undefined` on an ungated call and present (possibly
+   `0`) on any call that went through the approval gate, measuring the time
+   spent inside `requestApproval` itself — split out so a denied/timed-out
+   gated call's multi-minute approval wait is no longer misattributed to
+   `durationMs` (settled decision 12a; see the Approval gate section below).
 
 `TOOL_HANDLER_TIMEOUT_MS` is a package-internal constant (not
 env-configurable, same posture as `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`),
@@ -205,9 +234,12 @@ splits them into gated (`requiresApproval: true`) and ungated:
 - **Denied, timed out, or aborted mid-wait are the same code path** (settled
   decision 7): every call in the batch becomes a `"user did not approve"`
   tool result, `approved: false` on its `tool.call` event, no handler ever
-  runs, and the turn's retry counter is untouched. The loop *continues* — an
-  approval denial never ends a turn (`TurnOutcome` excludes it, settled
-  decision 13) — so the model sees the denial and can respond to it.
+  runs, and the turn's retry counter is untouched. Its `durationMs` is
+  near-zero (no handler ran) while `approvalWaitMs` carries the real time
+  spent waiting on `requestApproval` — what `durationMs` used to
+  misattribute before this split. The loop *continues* — an approval denial
+  never ends a turn (`TurnOutcome` excludes it, settled decision 13) — so
+  the model sees the denial and can respond to it.
 - `RunTurnDeps.approvalGate` is optional in the type, but `runTurn` calls
   `assertApprovalGateConfigured` synchronously at the very top of the
   function, before any I/O: if any tool in `definition.tools` sets
@@ -235,8 +267,14 @@ and `ThreadRepo { getOrCreateThread(channel, chatId), appendMessages(threadId,
 messages) }` — an injected port, mirroring `packages/llm`'s
 `LlmUsageRepo`/`BudgetUsageRepo`. `apps/hermes/src/store/build-thread-repo.ts`
 wires this to `@hermes/store`'s `getOrCreateThread`/`appendMessages`. Full,
-untrimmed history is always persisted; the chars/4 trim above only ever
-affects what is sent to the model on a given call.
+untrimmed history is always persisted — including the real assistant
+`tool_calls`/`role: "tool"` shape a tool-calling turn produced, not a
+flattened summary (see "The loop" above) — and the chars/4 group-aware trim
+above only ever affects what is sent to the model on a given call. On read,
+`@hermes/store`'s `getOrCreateThread` validates the stored `messages` jsonb
+against `@hermes/core`'s `messageSchema` before returning it, so a
+hand-corrupted row throws instead of being silently replayed to the
+provider.
 
 ## Public API
 

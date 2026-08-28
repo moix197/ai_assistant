@@ -6,6 +6,20 @@ function userMessage(content: string): Message {
   return { role: "user", content };
 }
 
+function assistantWithToolCalls(argsBlobLength: number, toolCallId = "c1"): Message {
+  return {
+    role: "assistant",
+    content: "",
+    toolCalls: [
+      { id: toolCallId, name: "big_tool", arguments: { blob: "x".repeat(argsBlobLength) } },
+    ],
+  };
+}
+
+function toolResult(content: string, toolCallId = "c1"): Message {
+  return { role: "tool", content, toolCallId };
+}
+
 describe("trimHistory", () => {
   it("keeps everything when the estimated size is under budget", () => {
     const messages = [userMessage("short"), userMessage("also short")];
@@ -61,5 +75,44 @@ describe("trimHistory", () => {
     // candidate for trimming by construction — there is nothing here that
     // could drop it, because it is never part of the input.
     expect(trimmed).toEqual(history);
+  });
+
+  it("drops a trim-boundary-crossing tool-call group whole, never orphaning the role:'tool' message from the assistant toolCalls message it answers", () => {
+    // Sized so the boundary falls *inside* this group under the old,
+    // per-message algorithm: dropping just the (large) assistant message
+    // alone would already bring the running total under budget, leaving the
+    // (tiny) tool-result message behind with no preceding assistant
+    // toolCalls message — exactly the orphaning group-aware trim exists to
+    // prevent.
+    const bigAssistant = assistantWithToolCalls(2_000); // estimate ~500
+    const smallToolResult = toolResult("ok"); // estimate ~1
+    const newest = userMessage("z".repeat(40)); // estimate 10
+
+    const result = trimHistory([bigAssistant, smallToolResult, newest], 100);
+
+    expect(result).toEqual([newest]);
+  });
+
+  it("keeps a tool-call group whole when it fits the budget, rather than splitting it even though it could technically fit partially", () => {
+    const assistant = assistantWithToolCalls(20); // small
+    const result_ = toolResult("ok");
+    const newest = userMessage("hi");
+
+    const result = trimHistory([assistant, result_, newest], 1_000);
+
+    expect(result).toEqual([assistant, result_, newest]);
+  });
+
+  it("counts a tool call's serialized arguments toward its size, not just plain .content, so a tool-heavy message now registers against the budget instead of estimating to (near) zero", () => {
+    // `content` is empty here — under the old content-only estimate this
+    // message sized to 0 and could never be a trim candidate regardless of
+    // budget. Counting its tool call's serialized `arguments` is what makes
+    // it correctly outweigh a tiny budget.
+    const heavy = assistantWithToolCalls(2_000);
+    const newest = userMessage("keep me");
+
+    const result = trimHistory([heavy, newest], 100);
+
+    expect(result).toEqual([newest]);
   });
 });

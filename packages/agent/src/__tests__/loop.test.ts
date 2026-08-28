@@ -298,11 +298,64 @@ describe("runTurn — tool execution", () => {
     expect(complete).toHaveBeenCalledTimes(2);
     expect(threadRepo.appendMessages).toHaveBeenCalledWith("thread-1", [
       { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_1", name: "noop", arguments: {} }],
+      },
+      { role: "tool", content: "tool output", toolCallId: "call_1" },
       { role: "assistant", content: "final answer" },
-    ]);
+    ] satisfies Message[]);
 
     const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
     expect(findToolMessage(secondRequest, "call_1")?.content).toBe("tool output");
+  });
+
+  it("persists the full conversation tail through a real ThreadRepo round trip, so the next turn's trimHistory/converse sees the exact same wire order it wrote", async () => {
+    const handler = vi.fn().mockResolvedValue("tool output");
+    const noopTool = tool({ handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "call_1", name: "noop", arguments: {} }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "final answer" }));
+    const llmProvider: LlmProvider = { complete };
+
+    // A minimal in-memory fake standing in for `@hermes/store`'s real
+    // `getOrCreateThread`/`appendMessages` — proves the persisted tail
+    // round-trips through a fresh `getOrCreateThread` read (as the next
+    // turn's `trimHistory`/`converse` seed would see it) with wire order
+    // intact, not just that `appendMessages` was called with the right args.
+    let stored: Message[] = [];
+    const threadRepo: ThreadRepo = {
+      getOrCreateThread: vi.fn().mockImplementation(async () => fakeThread({ messages: stored })),
+      appendMessages: vi.fn().mockImplementation(async (_threadId, newMessages: Message[]) => {
+        stored = [...stored, ...newMessages];
+      }),
+    };
+
+    await runTurn(
+      definition({ tools: [noopTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    const nextThread = await threadRepo.getOrCreateThread("telegram", "555");
+    const assistantIndex = nextThread.messages.findIndex(
+      (m) => m.role === "assistant" && m.toolCalls?.some((call) => call.id === "call_1"),
+    );
+    const toolResultIndex = nextThread.messages.findIndex(
+      (m) => m.role === "tool" && m.toolCallId === "call_1",
+    );
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(toolResultIndex).toBe(assistantIndex + 1);
+    expect(nextThread.messages.at(-1)).toEqual({ role: "assistant", content: "final answer" });
   });
 
   it("appends the assistant's tool-call message before the tool-result messages answering it", async () => {
@@ -691,6 +744,7 @@ describe("runTurn — tool execution", () => {
     expect(toolCallEvents).toHaveLength(1);
     expect(toolCallEvents[0]).toMatchObject({ tool: "boom", approved: true });
     expect(toolCallEvents[0]?.error).toHaveLength(500);
+    expect((toolCallEvents[0] as { approvalWaitMs?: number }).approvalWaitMs).toBeUndefined();
   });
 });
 
@@ -806,6 +860,134 @@ describe("runTurn — approval gate", () => {
         (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
       );
     expect(toolCallEvents[0]).toMatchObject({ tool: "echo", approved: false });
+  });
+
+  it("splits durationMs (handler time only) from approvalWaitMs (the approval-gate wait) on an approved gated call", async () => {
+    vi.useFakeTimers();
+    try {
+      const APPROVAL_WAIT_MS = 5_000;
+      const HANDLER_MS = 50;
+      const handler = vi.fn(
+        () => new Promise<string>((resolve) => setTimeout(() => resolve("echoed"), HANDLER_MS)),
+      );
+      const gatedTool = tool({ name: "echo", requiresApproval: true, handler });
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(
+          completionResult({
+            toolCalls: [{ id: "c1", name: "echo", arguments: { text: "hi" } }],
+            text: "",
+          }),
+        )
+        .mockResolvedValueOnce(completionResult({ text: "done" }));
+      const llmProvider: LlmProvider = { complete };
+      const threadRepo = fakeThreadRepo();
+      const recorder = fakeRecorder();
+      const approvalGate: ApprovalGate = {
+        requestApproval: vi.fn(
+          () =>
+            new Promise<"approved" | "denied">((resolve) =>
+              setTimeout(() => resolve("approved"), APPROVAL_WAIT_MS),
+            ),
+        ),
+      };
+
+      const resultPromise = runTurn(
+        definition({ tools: [gatedTool] }),
+        {
+          llmProvider,
+          threadRepo,
+          telemetryRecorder: recorder,
+          signal: new AbortController().signal,
+          approvalGate,
+        },
+        "telegram",
+        "555",
+        "hello",
+      );
+
+      await vi.runAllTimersAsync();
+      const text = await resultPromise;
+
+      expect(text).toBe("done");
+      const toolCallEvents = recorder.record.mock.calls
+        .map(([event]) => event as TelemetryEvent)
+        .filter(
+          (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+        );
+      expect(toolCallEvents).toHaveLength(1);
+      expect(toolCallEvents[0]).toMatchObject({
+        tool: "echo",
+        approved: true,
+        durationMs: HANDLER_MS,
+        approvalWaitMs: APPROVAL_WAIT_MS,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("splits durationMs (near-zero, no handler ran) from approvalWaitMs (the full wait) on a denied gated call", async () => {
+    vi.useFakeTimers();
+    try {
+      const APPROVAL_WAIT_MS = 300_000; // the 5-minute approval timeout window
+      const handler = vi.fn();
+      const gatedTool = tool({ name: "echo", requiresApproval: true, handler });
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(
+          completionResult({
+            toolCalls: [{ id: "c1", name: "echo", arguments: { text: "hi" } }],
+            text: "",
+          }),
+        )
+        .mockResolvedValueOnce(completionResult({ text: "not approved, sorry" }));
+      const llmProvider: LlmProvider = { complete };
+      const threadRepo = fakeThreadRepo();
+      const recorder = fakeRecorder();
+      const approvalGate: ApprovalGate = {
+        requestApproval: vi.fn(
+          () =>
+            new Promise<"approved" | "denied">((resolve) =>
+              setTimeout(() => resolve("denied"), APPROVAL_WAIT_MS),
+            ),
+        ),
+      };
+
+      const resultPromise = runTurn(
+        definition({ tools: [gatedTool] }),
+        {
+          llmProvider,
+          threadRepo,
+          telemetryRecorder: recorder,
+          signal: new AbortController().signal,
+          approvalGate,
+        },
+        "telegram",
+        "555",
+        "hello",
+      );
+
+      await vi.runAllTimersAsync();
+      const text = await resultPromise;
+
+      expect(text).toBe("not approved, sorry");
+      expect(handler).not.toHaveBeenCalled();
+      const toolCallEvents = recorder.record.mock.calls
+        .map(([event]) => event as TelemetryEvent)
+        .filter(
+          (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+        );
+      expect(toolCallEvents).toHaveLength(1);
+      expect(toolCallEvents[0]).toMatchObject({
+        tool: "echo",
+        approved: false,
+        durationMs: 0,
+        approvalWaitMs: APPROVAL_WAIT_MS,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("collects a batch's ungated result even while the gated call's approval promise never resolves", async () => {

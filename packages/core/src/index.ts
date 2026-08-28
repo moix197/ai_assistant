@@ -18,6 +18,7 @@ export type {
 } from "./telemetry";
 export { nextDelay } from "./backoff";
 export { delay } from "./delay";
+export { messageSchema, messagesArraySchema } from "./llm-types";
 export type {
   LlmUsageEntry,
   Message,

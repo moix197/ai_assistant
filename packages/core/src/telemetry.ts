@@ -27,8 +27,17 @@ export interface ToolCallEvent {
   threadId: string | null;
   turnId: string | null;
   tool: string;
+  /** Handler execution time only — excludes any approval wait, see `approvalWaitMs`. */
   durationMs: number;
   approved: boolean;
+  /**
+   * Time spent waiting on `ApprovalGate.requestApproval` — present (possibly
+   * `0`) only for a call that went through the gate, `undefined` for an
+   * ungated call. Split out of `durationMs` so a denied/timed-out gated
+   * call's multi-minute approval wait no longer gets misattributed to
+   * handler time.
+   */
+  approvalWaitMs?: number;
   error?: string;
 }
 

@@ -40,8 +40,17 @@ Strictly downward; no package imports one above it.
      └───────────┴───────────┴───────────┴───────────┴──────────┴─────────► core
 ```
 
-- `packages/core` depends on nothing. It is where ports live so lower packages
-  can be depended on without depending on their implementations.
+- `packages/core` depends on no other `@hermes/*` package. It is where ports
+  live so lower packages can be depended on without depending on their
+  implementations. Its one exception is `zod`: `Message` and its four role
+  variants (`SystemMessage`/`UserMessage`/`AssistantMessage`/`ToolMessage`)
+  are schema-first (`04-google-auth` Phase 1), so `@hermes/store` can
+  validate a stored `threads.messages` jsonb row against the exact same
+  shape the rest of the codebase compiles against, instead of a hand-mirrored
+  copy that could silently drift. `zod` is a leaf, third-party validation
+  library already load-bearing in `packages/agent`/`packages/config`, not
+  another `@hermes/*` package's implementation `core` would be coupling to —
+  the zero-*internal*-dependency reasoning above is unaffected by it.
 - **`packages/channels` must not depend on `packages/store`.** It needs a
   persisted poll offset, but takes an injected `TelegramOffsetRepo` port
   (`{ getOffset, setOffset }`) instead of importing Postgres. `boot.ts` binds it

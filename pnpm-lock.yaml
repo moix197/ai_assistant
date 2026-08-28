@@ -78,7 +78,11 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
 
   packages/llm:
     dependencies:

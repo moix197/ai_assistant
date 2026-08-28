@@ -10,5 +10,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsup src/index.ts --format esm --dts --clean --target node22 --out-dir dist",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^3.25.0"
   }
 }

@@ -173,6 +173,9 @@ async function invokeTool(
  * the `role: "tool"` message fed back to the model. `approved` defaults to
  * `true` for the ungated path (`resolveToolCall`, below) — `runGatedToolCalls`
  * passes `false` explicitly for a denied/timed-out/aborted gated call.
+ * `approvalWaitMs` is `undefined` for an ungated call and present (possibly
+ * `0`) for any call that went through the approval gate, approved or not —
+ * threaded through from `runGatedToolCalls`, never measured here.
  */
 function finishToolCall(
   toolCall: ToolCall,
@@ -182,6 +185,7 @@ function finishToolCall(
   startedAt: number,
   outcome: { content: string; error?: string },
   approved = true,
+  approvalWaitMs?: number,
 ): Message {
   emitTelemetryEvent(deps.telemetryRecorder, {
     name: "tool.call",
@@ -190,6 +194,7 @@ function finishToolCall(
     tool: toolCall.name,
     durationMs: Date.now() - startedAt,
     approved,
+    ...(approvalWaitMs !== undefined ? { approvalWaitMs } : {}),
     ...(outcome.error !== undefined ? { error: truncateToolError(outcome.error) } : {}),
   });
   return { role: "tool", content: outcome.content, toolCallId: toolCall.id };
@@ -204,6 +209,15 @@ function finishToolCall(
  * round-trip: the first failure's result is the raw zod error, the second
  * (and every one after) is the terminal "invalid arguments, giving up"
  * message — the count is never decremented by an intervening success.
+ *
+ * `startedAt` for `durationMs` is captured right before the handler actually
+ * runs, not at the top of this function: an unknown tool or a validation
+ * failure never invokes a handler at all, and a successful call's clock
+ * starts only after lookup/validation, so `durationMs` reflects handler
+ * execution time only (settled decision 12a). `approvalWaitMs`, when passed
+ * in by `runGatedToolCalls` for a gated-and-approved batch, is threaded
+ * through unchanged to every call's `tool.call` event — this function never
+ * measures it itself.
  */
 async function resolveToolCall(
   toolCall: ToolCall,
@@ -212,13 +226,22 @@ async function resolveToolCall(
   deps: RunTurnDeps,
   threadId: string | null,
   turnId: string,
+  approvalWaitMs?: number,
 ): Promise<Message> {
-  const startedAt = Date.now();
   const spec = toolsByName.get(toolCall.name);
 
   if (!spec) {
     const content = `unknown tool: ${toolCall.name}`;
-    return finishToolCall(toolCall, deps, threadId, turnId, startedAt, { content, error: content });
+    return finishToolCall(
+      toolCall,
+      deps,
+      threadId,
+      turnId,
+      Date.now(),
+      { content, error: content },
+      true,
+      approvalWaitMs,
+    );
   }
 
   const parsed = spec.schema.safeParse(toolCall.arguments);
@@ -227,7 +250,16 @@ async function resolveToolCall(
     retryCounts.set(spec.name, attempt);
     const zodMessage = parsed.error.message;
     const content = attempt >= 2 ? `invalid arguments, giving up: ${zodMessage}` : zodMessage;
-    return finishToolCall(toolCall, deps, threadId, turnId, startedAt, { content, error: content });
+    return finishToolCall(
+      toolCall,
+      deps,
+      threadId,
+      turnId,
+      Date.now(),
+      { content, error: content },
+      true,
+      approvalWaitMs,
+    );
   }
 
   // Dispatched via `.map()`/`Promise.all` below — every call's synchronous
@@ -236,11 +268,17 @@ async function resolveToolCall(
   // land "between" them. One pre-invocation check per call is sufficient.
   assertToolInvocationAllowed(deps.signal);
 
+  const startedAt = Date.now();
   const outcome = await invokeTool(spec, parsed.data, deps.signal);
-  return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome);
+  return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome, true, approvalWaitMs);
 }
 
-/** All tool calls in one model response execute concurrently, never sequentially. */
+/**
+ * All tool calls in one model response execute concurrently, never
+ * sequentially. `approvalWaitMs` is `undefined` for the ungated path — the
+ * gated-and-approved path (`runGatedToolCalls`) passes the batch's measured
+ * approval wait so every call in it carries the same value.
+ */
 function runToolCalls(
   toolCalls: ToolCall[],
   toolsByName: Map<string, ToolSpec>,
@@ -248,10 +286,11 @@ function runToolCalls(
   deps: RunTurnDeps,
   threadId: string | null,
   turnId: string,
+  approvalWaitMs?: number,
 ): Promise<Message[]> {
   return Promise.all(
     toolCalls.map((toolCall) =>
-      resolveToolCall(toolCall, toolsByName, retryCounts, deps, threadId, turnId),
+      resolveToolCall(toolCall, toolsByName, retryCounts, deps, threadId, turnId, approvalWaitMs),
     ),
   );
 }
@@ -266,6 +305,17 @@ function runToolCalls(
  * validate-then-invoke path an ungated call takes (`runToolCalls`) —
  * approval only gates *whether* a call runs, never how its args are
  * validated or retried.
+ *
+ * Measures `approvalWaitMs` as the time spent inside `requestApproval`
+ * itself, separate from `durationMs` (settled decision 12a — folded into
+ * this phase since nothing in this plan ships a gated Google tool to
+ * exercise it live): a denied/timed-out/aborted batch resolves its calls
+ * with `startedAt` taken *after* the gate settles, so `durationMs` reflects
+ * only the near-zero time to build the tool-result message, while
+ * `approvalWaitMs` carries the real wait that `durationMs` used to
+ * misattribute. An approved batch threads the same measured `approvalWaitMs`
+ * into `runToolCalls`, whose own `resolveToolCall` starts its `durationMs`
+ * clock only once the handler itself begins (post-resolution).
  */
 async function runGatedToolCalls(
   gatedCalls: ToolCall[],
@@ -285,26 +335,37 @@ async function runGatedToolCalls(
   // Mirrors the ungated path's per-call check in `resolveToolCall`: an
   // already-aborted turn must not send an approval prompt during shutdown.
   assertToolInvocationAllowed(deps.signal);
-  const startedAt = Date.now();
+  const waitStartedAt = Date.now();
   const batch: ApprovalRequest[] = gatedCalls.map((call) => ({
     tool: call.name,
     args: call.arguments,
   }));
   const decision = await approvalGate.requestApproval(batch, { threadId, turnId }, deps.signal);
+  const approvalWaitMs = Date.now() - waitStartedAt;
 
   if (decision === "approved") {
-    return runToolCalls(gatedCalls, toolsByName, retryCounts, deps, threadId, turnId);
+    return runToolCalls(
+      gatedCalls,
+      toolsByName,
+      retryCounts,
+      deps,
+      threadId,
+      turnId,
+      approvalWaitMs,
+    );
   }
 
+  const resolvedAt = Date.now();
   return gatedCalls.map((toolCall) =>
     finishToolCall(
       toolCall,
       deps,
       threadId,
       turnId,
-      startedAt,
+      resolvedAt,
       { content: APPROVAL_DENIED_MESSAGE },
       false,
+      approvalWaitMs,
     ),
   );
 }
@@ -361,6 +422,14 @@ async function executeToolCalls(
  * across turns. Tool definitions (`toolDefs`) are sent to the provider
  * whenever `definition.tools` is non-empty; `tools` stays `undefined`
  * otherwise.
+ *
+ * `newMessages` in the return value is the tail of `conversation` this turn
+ * actually produced — the seed user message plus every assistant/tool
+ * message generated by the loop, in wire order, ending with the final
+ * assistant reply — sliced directly off the one local array the loop already
+ * builds and appends to, rather than reconstructed from `text`/`toolCalls`
+ * separately. `runTurn` persists this unchanged, so there is exactly one
+ * source of truth for what a turn produced.
  */
 async function converse(
   definition: AgentDefinition,
@@ -369,10 +438,11 @@ async function converse(
   turnId: string,
   userText: string,
   progress: TurnProgress,
-): Promise<{ text: string; costUsd: number; iterations: number }> {
+): Promise<{ text: string; newMessages: Message[]; costUsd: number; iterations: number }> {
   const { system, toolDefs } = assemblePrefix(definition);
   const trimmed = trimHistory(thread.messages, HISTORY_BUDGET_CHARS);
   const conversation: Message[] = [...trimmed, { role: "user", content: userText }];
+  const newMessagesStart = trimmed.length;
   const toolsByName = new Map(definition.tools.map((tool) => [tool.name, tool]));
   const retryCounts = new Map<string, number>();
 
@@ -392,7 +462,18 @@ async function converse(
     progress.totalCostUsd += result.costUsd;
 
     if (result.toolCalls.length === 0) {
-      return { text: result.text, costUsd: progress.totalCostUsd, iterations: iteration };
+      // Appends onto a fresh array, not `conversation` itself: `conversation`
+      // was just handed to `deps.llmProvider.complete()` as `request.messages`
+      // by reference (never cloned) — mutating it further here, after that
+      // call already returned, would be a footgun for any caller (a test's
+      // mock included) still holding that same reference.
+      const finalMessage: Message = { role: "assistant", content: result.text };
+      return {
+        text: result.text,
+        newMessages: [...conversation.slice(newMessagesStart), finalMessage],
+        costUsd: progress.totalCostUsd,
+        iterations: iteration,
+      };
     }
 
     // The assistant's own tool-call request must precede the tool-result
@@ -443,7 +524,7 @@ export async function runTurn(
     const thread = await deps.threadRepo.getOrCreateThread(channel, chatId);
     threadId = thread.id;
 
-    const { text, costUsd, iterations } = await converse(
+    const { text, newMessages, costUsd, iterations } = await converse(
       definition,
       deps,
       thread,
@@ -452,10 +533,7 @@ export async function runTurn(
       progress,
     );
 
-    await deps.threadRepo.appendMessages(thread.id, [
-      { role: "user", content: userText },
-      { role: "assistant", content: text },
-    ]);
+    await deps.threadRepo.appendMessages(thread.id, newMessages);
 
     emitTelemetryEvent(deps.telemetryRecorder, {
       name: "turn",

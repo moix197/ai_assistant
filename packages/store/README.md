@@ -239,7 +239,12 @@ No size cap or archival policy yet — the same unbounded-growth posture as
   (channel, chat_id) DO NOTHING RETURNING *`, then a `SELECT` on conflict —
   the same shape `llm-dedupe-repo.ts`'s `claim` uses, the only existing
   upsert idiom in this package. Returns `{ id, channel, chatId, messages }`;
-  a fresh thread starts with `messages: []`.
+  a fresh thread starts with `messages: []`. `row.messages` is runtime-
+  validated against `@hermes/core`'s `messagesArraySchema` before it becomes
+  `Thread.messages` — see "Row validation" below; a hand-corrupted row (e.g.
+  a manual `psql` edit that breaks the `Message` shape) throws instead of
+  silently returning cast garbage that `packages/agent`'s `trimHistory`/
+  `converse` would otherwise replay to the provider as if well-typed.
 - `appendMessages(pool, threadId, newMessages)` — `UPDATE threads SET
   messages = messages || $2::jsonb, updated_at = now() WHERE id = $1`,
   appending rather than replacing so a concurrent read never sees a partial
@@ -249,6 +254,27 @@ No size cap or archival policy yet — the same unbounded-growth posture as
   `packages/llm` already follows for `LlmUsageRepo`/`BudgetUsageRepo`.
   `apps/hermes/src/store/build-thread-repo.ts` wires this module into that
   port.
+
+## Row validation
+
+`src/validate-row.ts` exports `parseValidatedJson(schema, value, context)` —
+a small **generic** helper (accepts anything shaped like a zod schema's
+`safeParse`, via the local `ValidatableSchema<T>` interface, so this package
+doesn't need `zod` as a dependency just to name the parameter type) that
+validates an already-JSON-parsed jsonb value and throws a descriptive error
+naming `context` (e.g. `"threads.messages"`) on failure, rather than casting.
+The thrown message truncates the schema's own error text to 500 characters —
+the same posture `packages/agent`'s `tool.call` telemetry already applies to
+its `error` field — so a malformed row's full content doesn't leak into logs
+indiscriminately, while the table/column name stays fully readable. Fails
+closed, per ROADMAP invariant 7: an invalid row is a thrown error, never a
+silently-returned best-effort value.
+
+`thread-repo.ts`'s `toThread` is the one caller today, validating
+`row.messages` against `@hermes/core`'s `messagesArraySchema`. The helper is
+deliberately schema-agnostic — it takes any matching schema — so a future
+repo (e.g. a `GoogleAccountRepo` validating its own schema-first type) can
+reuse it unmodified against a different schema.
 
 ## Testing
 
@@ -318,7 +344,10 @@ and `/stats` both depend on.
 call returns the same row, never a duplicate) and different `chatId`s under
 the same channel get distinct threads; a fresh thread starts with `messages:
 []`; `appendMessages` appends across two calls without clobbering earlier
-entries and bumps `updated_at`.
+entries and bumps `updated_at`; a row hand-corrupted with a raw SQL `UPDATE`
+that breaks the `Message` shape (e.g. an unknown `role`) makes
+`getOrCreateThread`'s read throw a descriptive error instead of returning
+silently-cast garbage.
 
 The guard and URL resolution in `src/__tests__/db-env.ts` are published to
 other packages through this package's `./testing` subpath export, so

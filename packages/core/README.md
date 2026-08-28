@@ -1,6 +1,12 @@
 # @hermes/core
 
-Shared types with no dependency on any other Hermes package.
+Shared types with no dependency on any other Hermes package. Depends on
+`zod` — a leaf, third-party validation library, not another `@hermes/*`
+package — so `Message` can be schema-first (see below); the zero-dependency
+posture this package is otherwise built on is about workspace-package
+coupling ("so lower packages can be depended on without depending on their
+implementations"), which a leaf library already load-bearing in
+`packages/agent`/`packages/config` doesn't touch.
 
 - `Result<T, E>` (`ok`/`err`) — explicit success/failure values instead of
   throwing for expected error paths.
@@ -29,15 +35,25 @@ Shared types with no dependency on any other Hermes package.
 - `nextDelay()` / `delay()` — the shared exponential-backoff step and its
   sleep. Both the Telegram client and the LLM adapter retry off these rather
   than each rolling their own curve.
-- The provider-neutral LLM types — `Message`, `MessageRole`, `ToolCall`,
-  `ToolResult`, `Usage`, `LlmUsageEntry`. They live here, not in
-  `@hermes/llm`, precisely because `store` and (later) `agent` need to name
-  them without depending on the adapter: `LlmUsageEntry` is re-exported by
-  both `llm` and `store`, so neither side can drift a field apart without a
-  type error. `Message` carries two optional fields alongside `role`/
-  `content`: `toolCallId` (present when `role === "tool"`, the `ToolCall`
-  this message answers) and `toolCalls` (present when `role === "assistant"`
-  and the model requested tool calls this turn — this message must precede
-  the `role: "tool"` results answering it). `@hermes/llm`'s adapter maps
-  both onto the wire's `tool_call_id`/`tool_calls` keys rather than
-  spreading the domain shape verbatim.
+- The provider-neutral LLM types — `Message`, `ToolCall`, `ToolResult`,
+  `Usage`, `LlmUsageEntry`. They live here, not in `@hermes/llm`, precisely
+  because `store` and (later) `agent` need to name them without depending on
+  the adapter: `LlmUsageEntry` is re-exported by both `llm` and `store`, so
+  neither side can drift a field apart without a type error.
+  `Message`/`SystemMessage`/`UserMessage`/`AssistantMessage`/`ToolMessage`
+  are **schema-first**: each a `z.object` (the union, `messageSchema`, a
+  `z.discriminatedUnion("role", ...)`), with the exported TS types being
+  `z.infer<typeof ...>` rather than hand-written — a hand-mirrored copy of
+  this shape anywhere else (e.g. a duplicate schema in `packages/store`)
+  would be exactly the kind of drift CLAUDE.md's DRY rule exists to prevent.
+  `AssistantMessage` carries an optional `toolCalls` (present when the model
+  requested tool calls this turn — this message must precede the `role:
+  "tool"` results answering it); `ToolMessage` carries a mandatory
+  `toolCallId` (the `ToolCall` this message answers — unrepresentable
+  without one, since every OpenAI-compatible provider rejects a `role:
+  "tool"` message missing it). `@hermes/llm`'s adapter maps both onto the
+  wire's `tool_call_id`/`tool_calls` keys rather than spreading the domain
+  shape verbatim. `messageSchema`/`messagesArraySchema` are exported so
+  `@hermes/store` can validate a `threads.messages` jsonb row against this
+  exact shape at read time (`parseValidatedJson`, see
+  `packages/store/README.md`) instead of casting.

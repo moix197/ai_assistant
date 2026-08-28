@@ -1,5 +1,6 @@
-import type { Message } from "@hermes/core";
+import { type Message, messagesArraySchema } from "@hermes/core";
 import type { Pool } from "pg";
+import { parseValidatedJson } from "./validate-row";
 
 export interface Thread {
   id: string;
@@ -12,11 +13,13 @@ interface ThreadRow {
   id: string;
   channel: string;
   chat_id: string;
-  messages: Message[];
+  /** Unvalidated as read from `pg` — `toThread` runs it through `parseValidatedJson` before trusting its shape. */
+  messages: unknown;
 }
 
 function toThread(row: ThreadRow): Thread {
-  return { id: row.id, channel: row.channel, chatId: row.chat_id, messages: row.messages };
+  const messages = parseValidatedJson(messagesArraySchema, row.messages, "threads.messages");
+  return { id: row.id, channel: row.channel, chatId: row.chat_id, messages };
 }
 
 /**
