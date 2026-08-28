@@ -6,9 +6,10 @@ multi-turn conversation with restart-safe history. Phase 1 of
 history, call the model once, persist, reply — with no tools. Phase 2 added
 the tool registry and a real multi-iteration loop: zod validation, a
 two-strikes per-tool-call retry counter, a per-tool-call handler timeout, and
-concurrent execution of every tool call in one model response. Phase 3 (this
-phase) adds the approval gate: some tools require a human's yes/no before
-they run.
+concurrent execution of every tool call in one model response. Phase 3
+(`03-agent-core`) added the approval gate: some tools require a human's
+yes/no before they run. `04-google-auth` Phase 3 widened `ToolSpec.handler`'s
+`ctx` with `channel`/`channelUserId` — see below.
 
 ## Port contract
 
@@ -16,14 +17,22 @@ they run.
 
 - `Message` — reused from `@hermes/core`, never redefined.
 - `ToolSpec { name, description, schema: z.ZodTypeAny, handler, requiresApproval }`
-  — a tool made available to the model. `handler(args: unknown, { signal }):
-  Promise<unknown>` receives its `safeParse`d args and the turn's
-  `AbortSignal`. No mutable `register()`: tools are supplied once, at
-  `AgentDefinition` construction, because registration-order nondeterminism
-  would threaten the byte-stable prefix invariant #6 depends on. The
-  registry itself (a `Map<string, ToolSpec>` keyed by name) is built fresh
-  inside `loop.ts`'s `converse()` on every `runTurn` call — it isn't a
-  standalone module, and doesn't need to be with one or two tools.
+  — a tool made available to the model. `handler(args: unknown, { signal,
+  channel, channelUserId }): Promise<unknown>` receives its `safeParse`d
+  args and the turn's `AbortSignal`, plus `channel`/`channelUserId` —
+  identifying who is asking, threaded from `runTurn`'s own parameters (the
+  latter itself threaded from `Agent.handleMessage`, `04-google-auth`'s Phase
+  3). `whoami` (`apps/hermes/src/agent/tools/whoami.ts`) is the first tool
+  that reads these — a Google-identity lookup scoped to the asking chat, with
+  no hardcoded channel constant. **This was a required-field widening of the
+  contract, not an additive one**: every existing `ctx` literal, including in
+  tests that invoke a handler directly, had to gain both fields. No mutable
+  `register()`: tools are supplied once, at `AgentDefinition` construction,
+  because registration-order nondeterminism would threaten the byte-stable
+  prefix invariant #6 depends on. The registry itself (a `Map<string,
+  ToolSpec>` keyed by name) is built fresh inside `loop.ts`'s `converse()` on
+  every `runTurn` call — it isn't a standalone module, and doesn't need to be
+  with a handful of tools.
 - `AgentDefinition { name, model, systemPrompt, tools, channels }` — the one
   configuration object per agent, and the entire D4 multi-agent seam
   (settled decision 10): reserved, not built. `apps/hermes` passes one

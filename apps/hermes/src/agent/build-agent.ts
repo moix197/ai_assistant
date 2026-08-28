@@ -3,10 +3,12 @@ import type { InboundCallback, TelegramPoller } from "@hermes/channels";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
+import { buildGoogleAccountRepo } from "../store/build-google-account-repo";
 import { buildThreadRepo } from "../store/build-thread-repo";
 import { createTelegramApprovalGate } from "./telegram-approval-gate";
 import { echoTool } from "./tools/echo";
 import { getCurrentTimeTool } from "./tools/get-current-time";
+import { createWhoamiTool } from "./tools/whoami";
 
 /**
  * Fixed placeholder — the same text `apps/hermes/src/handlers/complete.ts`
@@ -79,9 +81,12 @@ export interface BuiltAgent {
  * one call site. Agent #2 means a second `createAgent` call plus a routing
  * decision, not "one more list entry" — see
  * `.ai/decisions/agent-multi-agent-seam.md`. `tools:
- * [getCurrentTimeTool, echoTool]` — `echo` is the one gated tool this PRD
- * ships, so this is also the only place that constructs the
- * `TelegramApprovalGate` and wires it into `createAgent`'s deps.
+ * [getCurrentTimeTool, echoTool, whoamiTool]` — `echo` is the one gated tool
+ * this PRD ships, so this is also the only place that constructs the
+ * `TelegramApprovalGate` and wires it into `createAgent`'s deps. `whoamiTool`
+ * (Phase 3) is built here too, with the same `pool`-backed
+ * `buildGoogleAccountRepo` the OAuth connect flow already uses
+ * (`boot.ts`'s `buildConnectFlow`), closed over via `createWhoamiTool`.
  */
 export function buildAgent(
   pool: Pool,
@@ -93,12 +98,13 @@ export function buildAgent(
 ): BuiltAgent {
   const { threadRepo, resolveChatId } = createThreadRepoWithChatIndex(pool);
   const approvalGate = createTelegramApprovalGate(channel, resolveChatId);
+  const whoamiTool = createWhoamiTool(buildGoogleAccountRepo(pool));
 
   const definition: AgentDefinition = {
     name: "hermes",
     model,
     systemPrompt: SYSTEM_PROMPT,
-    tools: [getCurrentTimeTool, echoTool],
+    tools: [getCurrentTimeTool, echoTool, whoamiTool],
     channels: [CHANNEL_TELEGRAM],
   };
 

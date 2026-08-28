@@ -38,6 +38,8 @@ describe("createDispatchCommand — argument routing", () => {
       startHandler: vi.fn().mockResolvedValue(undefined),
       statsHandler: vi.fn().mockResolvedValue(undefined),
       connectHandler: vi.fn().mockResolvedValue(undefined),
+      statusHandler: vi.fn().mockResolvedValue(undefined),
+      disconnectHandler: vi.fn().mockResolvedValue(undefined),
       completionHandler: vi.fn().mockResolvedValue(undefined),
     };
   }
@@ -71,6 +73,26 @@ describe("createDispatchCommand — argument routing", () => {
     expect(deps.completionHandler).not.toHaveBeenCalled();
   });
 
+  it("/status (bare) reaches statusHandler with args === '', never completionHandler", async () => {
+    const deps = createDeps();
+    const dispatch = createDispatchCommand(deps);
+
+    await dispatch(inboundMessage("/status"));
+
+    expect(deps.statusHandler).toHaveBeenCalledWith(expect.anything(), "");
+    expect(deps.completionHandler).not.toHaveBeenCalled();
+  });
+
+  it("/disconnect (bare) reaches disconnectHandler with args === '', never completionHandler", async () => {
+    const deps = createDeps();
+    const dispatch = createDispatchCommand(deps);
+
+    await dispatch(inboundMessage("/disconnect"));
+
+    expect(deps.disconnectHandler).toHaveBeenCalledWith(expect.anything(), "");
+    expect(deps.completionHandler).not.toHaveBeenCalled();
+  });
+
   it("an unrecognized bare command still falls through to completionHandler unchanged (regression guard)", async () => {
     const deps = createDeps();
     const dispatch = createDispatchCommand(deps);
@@ -85,5 +107,7 @@ describe("createDispatchCommand — argument routing", () => {
     expect(deps.startHandler).not.toHaveBeenCalled();
     expect(deps.statsHandler).not.toHaveBeenCalled();
     expect(deps.connectHandler).not.toHaveBeenCalled();
+    expect(deps.statusHandler).not.toHaveBeenCalled();
+    expect(deps.disconnectHandler).not.toHaveBeenCalled();
   });
 });

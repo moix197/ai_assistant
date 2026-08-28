@@ -91,6 +91,7 @@ async function replyWithCompletion(
   const resultText = await options.agent.handleMessage(
     CHANNEL_TELEGRAM,
     message.chatId,
+    message.channelUserId,
     message.text,
   );
   await options.channel.send(message.chatId, resultText);

@@ -144,12 +144,14 @@ async function invokeTool(
   spec: ToolSpec,
   args: unknown,
   signal: AbortSignal,
+  channel: string,
+  channelUserId: string,
 ): Promise<{ content: string; error?: string }> {
   const handlerWon = new AbortController();
   const raceSignal = AbortSignal.any([signal, handlerWon.signal]);
   try {
     const outcome = await Promise.race([
-      spec.handler(args, { signal }),
+      spec.handler(args, { signal, channel, channelUserId }),
       delay(TOOL_HANDLER_TIMEOUT_MS, raceSignal).then(() => TOOL_TIMEOUT),
     ]);
 
@@ -226,6 +228,8 @@ async function resolveToolCall(
   deps: RunTurnDeps,
   threadId: string | null,
   turnId: string,
+  channel: string,
+  channelUserId: string,
   approvalWaitMs?: number,
 ): Promise<Message> {
   const spec = toolsByName.get(toolCall.name);
@@ -269,7 +273,7 @@ async function resolveToolCall(
   assertToolInvocationAllowed(deps.signal);
 
   const startedAt = Date.now();
-  const outcome = await invokeTool(spec, parsed.data, deps.signal);
+  const outcome = await invokeTool(spec, parsed.data, deps.signal, channel, channelUserId);
   return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome, true, approvalWaitMs);
 }
 
@@ -286,11 +290,23 @@ function runToolCalls(
   deps: RunTurnDeps,
   threadId: string | null,
   turnId: string,
+  channel: string,
+  channelUserId: string,
   approvalWaitMs?: number,
 ): Promise<Message[]> {
   return Promise.all(
     toolCalls.map((toolCall) =>
-      resolveToolCall(toolCall, toolsByName, retryCounts, deps, threadId, turnId, approvalWaitMs),
+      resolveToolCall(
+        toolCall,
+        toolsByName,
+        retryCounts,
+        deps,
+        threadId,
+        turnId,
+        channel,
+        channelUserId,
+        approvalWaitMs,
+      ),
     ),
   );
 }
@@ -324,6 +340,8 @@ async function runGatedToolCalls(
   deps: RunTurnDeps,
   threadId: string,
   turnId: string,
+  channel: string,
+  channelUserId: string,
 ): Promise<Message[]> {
   const { approvalGate } = deps;
   if (!approvalGate) {
@@ -351,6 +369,8 @@ async function runGatedToolCalls(
       deps,
       threadId,
       turnId,
+      channel,
+      channelUserId,
       approvalWaitMs,
     );
   }
@@ -386,6 +406,8 @@ async function executeToolCalls(
   deps: RunTurnDeps,
   threadId: string,
   turnId: string,
+  channel: string,
+  channelUserId: string,
 ): Promise<Message[]> {
   const gatedIds = new Set(
     toolCalls.filter((call) => toolsByName.get(call.name)?.requiresApproval).map((call) => call.id),
@@ -394,9 +416,27 @@ async function executeToolCalls(
   const ungatedCalls = toolCalls.filter((call) => !gatedIds.has(call.id));
 
   const [ungatedResults, gatedResults] = await Promise.all([
-    runToolCalls(ungatedCalls, toolsByName, retryCounts, deps, threadId, turnId),
+    runToolCalls(
+      ungatedCalls,
+      toolsByName,
+      retryCounts,
+      deps,
+      threadId,
+      turnId,
+      channel,
+      channelUserId,
+    ),
     gatedCalls.length > 0
-      ? runGatedToolCalls(gatedCalls, toolsByName, retryCounts, deps, threadId, turnId)
+      ? runGatedToolCalls(
+          gatedCalls,
+          toolsByName,
+          retryCounts,
+          deps,
+          threadId,
+          turnId,
+          channel,
+          channelUserId,
+        )
       : Promise.resolve<Message[]>([]),
   ]);
 
@@ -436,6 +476,7 @@ async function converse(
   deps: RunTurnDeps,
   thread: Thread,
   turnId: string,
+  channelUserId: string,
   userText: string,
   progress: TurnProgress,
 ): Promise<{ text: string; newMessages: Message[]; costUsd: number; iterations: number }> {
@@ -489,6 +530,8 @@ async function converse(
       deps,
       thread.id,
       turnId,
+      thread.channel,
+      channelUserId,
     );
     conversation.push(...toolResultMessages);
   }
@@ -513,6 +556,7 @@ export async function runTurn(
   deps: RunTurnDeps,
   channel: string,
   chatId: string,
+  channelUserId: string,
   userText: string,
 ): Promise<string> {
   const turnId = newId();
@@ -529,6 +573,7 @@ export async function runTurn(
       deps,
       thread,
       turnId,
+      channelUserId,
       userText,
       progress,
     );

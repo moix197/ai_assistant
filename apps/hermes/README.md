@@ -43,12 +43,12 @@ in the entry point itself.
    (`src/handlers/with-private-chat.ts`) — the single allowlist and
    non-private-chat gates for every handler, composed once rather than
    duplicated per handler. The dispatcher (`src/boot.ts`) routes `/ping`,
-   `/start`, and `/stats` to their handlers — `/stats` matched before the
-   fallthrough, same as the other two, so an unmatched command can never
-   trigger a paid completion call — and everything else to the completion
-   handler (`src/handlers/complete.ts`), which now runs every message
-   through the `packages/agent` (03-agent-core) loop instead of calling the
-   LLM provider directly — see "Completion path" below.
+   `/start`, `/stats`, `/connect`, `/status`, and `/disconnect` to their
+   handlers — each matched before the fallthrough, so an unmatched command
+   can never trigger a paid completion call — and everything else to the
+   completion handler (`src/handlers/complete.ts`), which now runs every
+   message through the `packages/agent` (03-agent-core) loop instead of
+   calling the LLM provider directly — see "Completion path" below.
 10. `buildTelemetryRecorder(pool, logger)` — built after the pool because it
     writes through it, and handed to exactly two places: the handler wiring
     (which passes it into the LLM adapter as `opts.recorder`, so `llm.call`
@@ -81,25 +81,31 @@ extracted into its own small module and unit-tested there:
   `@hermes/agent` and construct the one hardcoded `AgentDefinition` (the D4
   multi-agent seam, reserved not built): `model` from the active provider
   profile, `systemPrompt` a fixed placeholder, `tools: [getCurrentTimeTool,
-  echoTool]`, `channels: ["telegram"]` — reusing the exact `"telegram"`
-  string `complete.ts`'s dedupe key already spells out, not a new constant.
-  Also the only place that constructs the `TelegramApprovalGate` (Phase 3)
-  and wires it into the agent's deps — see "Approval gate" below. Returns
-  `{ agent, handleApprovalCallback }`, not a bare `Agent`: `boot.ts` needs
-  the latter to route inbound button taps into the gate.
+  echoTool, whoamiTool]`, `channels: ["telegram"]` — reusing the exact
+  `"telegram"` string `complete.ts`'s dedupe key already spells out, not a
+  new constant. Also the only place that constructs the
+  `TelegramApprovalGate` (Phase 3, `03-agent-core`) and wires it into the
+  agent's deps — see "Approval gate" below — and (`04-google-auth` Phase 3)
+  the `whoamiTool` itself, via `createWhoamiTool` closed over a `pool`-backed
+  `buildGoogleAccountRepo`. Returns `{ agent, handleApprovalCallback }`, not
+  a bare `Agent`: `boot.ts` needs the latter to route inbound button taps
+  into the gate.
 
 ## Completion path
 
 `src/handlers/complete.ts`'s completion handler no longer calls
 `llmProvider.complete()` directly. It claims `telegram:<updateId>` in
 `llm_dedupe`, then calls the injected `Agent.handleMessage(channel, chatId,
-text)` (built by `src/agent/build-agent.ts`, wrapping `packages/agent`'s
-bounded turn loop), replies with its text, then marks the dedupe key
-completed — the same load-bearing claim → reply → complete ordering this
-handler has always used, unchanged. History now persists per `(channel,
-chat_id)` in Postgres (`packages/store`'s `threads` table) and survives a
-restart. The turn now has two tools (`get_current_time`, `echo`) and an
-approval gate for the one that's gated (`echo`) — see "Approval gate" below.
+channelUserId, text)` (built by `src/agent/build-agent.ts`, wrapping
+`packages/agent`'s bounded turn loop) — `channelUserId` is the inbound
+message's own sender id, threaded through so a tool handler's `ctx` can
+resolve "who is asking" (`04-google-auth` Phase 3) — replies with its text,
+then marks the dedupe key completed — the same load-bearing claim → reply →
+complete ordering this handler has always used, unchanged. History now
+persists per `(channel, chat_id)` in Postgres (`packages/store`'s `threads`
+table) and survives a restart. The turn now has three tools
+(`get_current_time`, `echo`, `whoami`) and an approval gate for the one
+that's gated (`echo`) — see "Approval gate" below.
 
 ## Approval gate
 
@@ -109,6 +115,19 @@ approval gate for the one that's gated (`echo`) — see "Approval gate" below.
 one Telegram message per batch of gated calls, with Approve/Deny buttons
 naming every call in it — a batch of two gated calls in one model turn still
 gets exactly one combined prompt, never two.
+
+`whoami` (`04-google-auth` Phase 3) is deliberately `requiresApproval: false`
+— a pure, idempotent read of the Google identity already granted at
+`/connect google` time, not a consequence (`.ai/decisions/
+google-oauth-flow.md`'s settled decision 3). It makes no live Google API
+call: it projects `google_email` off the stored `google_accounts` row via
+the injected `GoogleAccountRepo`, checking `hasRequiredScopes` against
+`IDENTITY_SCOPES` — a real, executed check, not a hollow always-true one,
+even though every account today requests `IDENTITY_SCOPES` unconditionally
+so the `missing_scope` branch is unreachable via `/connect` this phase. Its
+failure paths (`{ ok: false, reason: "not_connected" }` /
+`{ ok: false, reason: "missing_scope", scope }`) are structured results, not
+thrown errors — the model relays them as chat text.
 
 - **In-memory only, never persisted.** A pending approval lives in a
   `Map<approvalId, ...>` inside the gate's closure. Restarting the process
@@ -141,6 +160,12 @@ gets exactly one combined prompt, never two.
 - `complete.ts` — the dispatcher's fallthrough and the only handler that
   spends money. Claims `telegram:<updateId>` in `llm_dedupe` before the
   agent turn and marks it completed after the reply lands.
+- `disconnect.ts` (`04-google-auth` Phase 3) — `/disconnect` removes the
+  sender's `google_accounts` row and confirms. Thin wiring only, mirroring
+  `stats.ts`'s shape; no arguments. Idempotent by construction:
+  `deleteAccount` is a plain `DELETE ... WHERE`, so a second call against an
+  already-disconnected chat affects zero rows and still replies the same
+  confirming text, never a throw.
 - `echo.ts` — echoes back the message text. **No longer wired**; kept in the
   tree as a documented reference/fallback after `complete.ts` took its place
   as the fallthrough.
@@ -160,6 +185,12 @@ gets exactly one combined prompt, never two.
   against. "Error rate" means precisely the share of `llm.call` events with
   `is_error = true`; a budget-ceiling rejection never produces an `llm.call`
   event, so it is excluded by construction, not by a filter.
+- `status.ts` (`04-google-auth` Phase 3) — `/status` reads the sender's
+  `google_accounts` row and replies "Connected as `<email>`, scopes:
+  `<scopes>`" or "Not connected. Run /connect google to connect." Reads
+  `scopes` from the stored row (what was actually granted), never from
+  `TOOL_REQUIRED_SCOPES` (what a given tool requires). No LLM call either
+  way, mirroring `stats.ts`'s shape.
 - `with-allowlist.ts` — `withAllowlist(handler, allowlist, logger)`, composed
   once in `boot.ts` around the dispatcher rather than inlined in each
   handler.

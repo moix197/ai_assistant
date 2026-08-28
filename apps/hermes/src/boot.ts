@@ -38,9 +38,11 @@ import {
 } from "./google/build-oauth-callback-route";
 import { createCompletionHandler } from "./handlers/complete";
 import { createConnectHandler } from "./handlers/connect";
+import { createDisconnectHandler } from "./handlers/disconnect";
 import { createPingHandler } from "./handlers/ping";
 import { createStartHandler } from "./handlers/start";
 import { createStatsHandler } from "./handlers/stats";
+import { createStatusHandler } from "./handlers/status";
 import { withAllowlist } from "./handlers/with-allowlist";
 import { withPrivateChat } from "./handlers/with-private-chat";
 import { startHealthServer } from "./health";
@@ -105,6 +107,8 @@ export interface DispatchCommandDeps {
   startHandler: (message: InboundMessage, args: string) => Promise<void>;
   statsHandler: (message: InboundMessage, args: string) => Promise<void>;
   connectHandler: (message: InboundMessage, args: string) => Promise<void>;
+  statusHandler: (message: InboundMessage, args: string) => Promise<void>;
+  disconnectHandler: (message: InboundMessage, args: string) => Promise<void>;
   completionHandler: (message: InboundMessage, args: string) => Promise<void>;
 }
 
@@ -117,12 +121,12 @@ export interface DispatchCommandDeps {
  * matching happens — this closes a real paid-fallthrough hole: previously
  * `/connect google` matched nothing and fell through to the paid
  * `completionHandler`; now every command with an argument routes locally.
- * `/ping`, `/start`, `/stats`, and `/connect` short-circuit; anything else
- * falls through to `completionHandler`, which replaced `echoHandler` here —
- * `echo.ts` stays in the tree as a documented reference/fallback but is no
- * longer wired. Each short-circuit is matched **before** the fallthrough for
- * the same reason: an unmatched command falling through would otherwise
- * trigger a real paid completion call (see
+ * `/ping`, `/start`, `/stats`, `/connect`, `/status`, and `/disconnect`
+ * short-circuit; anything else falls through to `completionHandler`, which
+ * replaced `echoHandler` here — `echo.ts` stays in the tree as a documented
+ * reference/fallback but is no longer wired. Each short-circuit is matched
+ * **before** the fallthrough for the same reason: an unmatched command
+ * falling through would otherwise trigger a real paid completion call (see
  * `__tests__/dispatch-stats-command.test.ts`,
  * `__tests__/dispatcher-argument-parsing.test.ts`).
  */
@@ -135,6 +139,8 @@ export function createDispatchCommand(
     if (matchesCommand(command, "/start")) return deps.startHandler(message, args);
     if (matchesCommand(command, "/stats")) return deps.statsHandler(message, args);
     if (matchesCommand(command, "/connect")) return deps.connectHandler(message, args);
+    if (matchesCommand(command, "/status")) return deps.statusHandler(message, args);
+    if (matchesCommand(command, "/disconnect")) return deps.disconnectHandler(message, args);
     return deps.completionHandler(message, args);
   };
 }
@@ -414,7 +420,7 @@ export interface MessageHandlerDeps {
 }
 
 /**
- * The five handlers `dispatchCommand` routes between, each wired to real
+ * The seven handlers `dispatchCommand` routes between, each wired to real
  * infrastructure. echoHandler stays available (createEchoHandler,
  * "./handlers/echo") as a documented reference/fallback but is no longer
  * wired — completionHandler is dispatchCommand's fallthrough now.
@@ -458,6 +464,8 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
         resolveBudgetCapUsd(config),
       ),
       connectHandler: createConnectHandler(channel, connectFlow),
+      statusHandler: createStatusHandler(channel, buildGoogleAccountRepo(pool)),
+      disconnectHandler: createDisconnectHandler(channel, buildGoogleAccountRepo(pool)),
       completionHandler: createCompletionHandler({
         channel,
         agent,

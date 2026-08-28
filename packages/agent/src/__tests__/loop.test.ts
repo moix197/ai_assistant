@@ -93,6 +93,7 @@ describe("runTurn — happy path", () => {
       },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -124,6 +125,7 @@ describe("runTurn — happy path", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -153,6 +155,7 @@ describe("runTurn — happy path", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -179,6 +182,7 @@ describe("runTurn — abort", () => {
         { llmProvider, threadRepo, telemetryRecorder: recorder, signal: controller.signal },
         "telegram",
         "555",
+        "111",
         "hello",
       ),
     ).rejects.toBeInstanceOf(LlmAbortedError);
@@ -214,6 +218,7 @@ describe("runTurn — provider failure", () => {
         },
         "telegram",
         "555",
+        "111",
         "hello",
       ),
     ).rejects.toBe(failure);
@@ -259,6 +264,7 @@ describe("runTurn — provider failure", () => {
         },
         "telegram",
         "555",
+        "111",
         "hello",
       ),
     ).rejects.toBe(failure);
@@ -290,6 +296,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -343,6 +350,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -378,6 +386,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -408,11 +417,42 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
     const request = complete.mock.calls[0]?.[0] as CompletionRequest;
     expect(request.tools).toEqual([expect.objectContaining({ name: "get_current_time" })]);
+  });
+
+  it("threads channel and channelUserId through to the tool handler's ctx, matching what runTurn was called with", async () => {
+    const handler = vi.fn().mockResolvedValue("ok");
+    const noopTool = tool({ handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "call_1", name: "noop", arguments: {} }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "final answer" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+
+    await runTurn(
+      definition({ tools: [noopTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal },
+      "telegram",
+      "555",
+      "channel-user-9",
+      "hello",
+    );
+
+    expect(handler).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ channel: "telegram", channelUserId: "channel-user-9" }),
+    );
   });
 
   it("feeds back an 'unknown tool' result and continues when the model calls an unregistered tool", async () => {
@@ -433,6 +473,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -458,6 +499,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -498,6 +540,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -549,6 +592,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -587,6 +631,7 @@ describe("runTurn — tool execution", () => {
         { llmProvider, threadRepo, signal: new AbortController().signal },
         "telegram",
         "555",
+        "111",
         "hello",
       );
 
@@ -628,6 +673,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, telemetryRecorder: recorder, signal: controller.signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -698,6 +744,7 @@ describe("runTurn — tool execution", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -732,6 +779,7 @@ describe("runTurn — tool execution", () => {
       },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -797,6 +845,7 @@ describe("runTurn — approval gate", () => {
       },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -845,6 +894,7 @@ describe("runTurn — approval gate", () => {
       },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -903,6 +953,7 @@ describe("runTurn — approval gate", () => {
         },
         "telegram",
         "555",
+        "111",
         "hello",
       );
 
@@ -965,6 +1016,7 @@ describe("runTurn — approval gate", () => {
         },
         "telegram",
         "555",
+        "111",
         "hello",
       );
 
@@ -1024,6 +1076,7 @@ describe("runTurn — approval gate", () => {
       { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -1056,6 +1109,7 @@ describe("runTurn — approval gate", () => {
       },
       "telegram",
       "555",
+      "111",
       "hello",
     );
 
@@ -1098,6 +1152,7 @@ describe("runTurn — max iterations", () => {
         },
         "telegram",
         "555",
+        "111",
         "hello",
       ),
     ).rejects.toThrow(/MAX_ITERATIONS/);

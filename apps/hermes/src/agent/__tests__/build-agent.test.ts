@@ -52,7 +52,7 @@ describe("buildAgent — wiring", () => {
       new AbortController().signal,
       createMockChannel(),
     );
-    const reply = await agent.handleMessage("telegram", "555", "hello");
+    const reply = await agent.handleMessage("telegram", "555", "111", "hello");
 
     expect(reply).toBe("hi there");
     expect(complete).toHaveBeenCalledWith(
@@ -74,7 +74,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, whoami) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -95,16 +95,18 @@ describe("buildAgent — wiring", () => {
       new AbortController().signal,
       createMockChannel(),
     );
-    await agent.handleMessage("telegram", "999", "hi");
+    await agent.handleMessage("telegram", "999", "111", "hi");
 
     expect(complete).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "another-model",
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
-        // for deterministic output — "echo" precedes "get_current_time".
+        // for deterministic output — "echo" precedes "get_current_time"
+        // precedes "whoami".
         tools: [
           expect.objectContaining({ name: "echo" }),
           expect.objectContaining({ name: "get_current_time" }),
+          expect.objectContaining({ name: "whoami" }),
         ],
       }),
     );
