@@ -697,17 +697,17 @@ shipped) actually true.
 
 **Steps:**
 
-- [ ] `editMessage`'s job is specifically to make the buttons inert after one
+- [x] `editMessage`'s job is specifically to make the buttons inert after one
       resolution — write a test proving a second callback against an
       already-resolved approval id (tap, timeout, or abort — same branch)
       gets the "expired" reply, never a second execution of the tool
-- [ ] The combined-batch prompt: one message, one set of buttons, naming every
+- [x] The combined-batch prompt: one message, one set of buttons, naming every
       gated call in the batch — not one message per gated call. Test this
       with a batch of two gated calls
-- [ ] Timeout test uses fake timers, not a real 5-minute wait — assert the
+- [x] Timeout test uses fake timers, not a real 5-minute wait — assert the
       map entry is cleared and the tool results all read "user did not
       approve" after the timeout fires
-- [ ] **Resolution races (two taps, or a timer racing a late tap) are
+- [x] **Resolution races (two taps, or a timer racing a late tap) are
       resolved by "first resolution wins, everything after sees
       'expired'"** — this requires the map entry to be deleted
       *synchronously*, before any `await` (including the `editMessage` call
@@ -715,16 +715,16 @@ shipped) actually true.
       explicitly and test it: a stale callback arriving immediately after the
       timer fires (before the timer's own `editMessage` has resolved) must
       still get the expiry reply, not a second resolution
-- [ ] **Abort mid-wait**: a `signal` aborting while a batch is pending
+- [x] **Abort mid-wait**: a `signal` aborting while a batch is pending
       resolves every open approval as `"denied"` immediately — not after the
       5-minute timeout, and not left leaking past the 8s hard-exit budget.
       Test with fake timers: abort the signal without advancing time and
       assert `requestApproval` still settles
-- [ ] Confirm ungated tool calls in the same batch as a gated one actually
+- [x] Confirm ungated tool calls in the same batch as a gated one actually
       execute without waiting on the approval gate's promise — test this
       with a fake `ApprovalGate` whose promise never resolves during the
       test and assert the ungated call's result is still collected
-- [ ] `deps.approvalGate` required-when-any-tool-is-gated: write the
+- [x] `deps.approvalGate` required-when-any-tool-is-gated: write the
       fail-fast construction test (a `definition` with an `echo`-like gated
       tool and no `approvalGate` supplied throws at construction, not at the
       first approval attempt)
@@ -740,8 +740,8 @@ shipped) actually true.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
 - [ ] Manual: ask the bot to echo something → one message with Approve/Deny
       buttons naming the call appears; tap Deny → the message updates to a
       resolved state, the bot's next reply shows it did not run `echo`, and
@@ -754,17 +754,48 @@ shipped) actually true.
 - [ ] Manual: tap an already-resolved prompt's button again → no second
       execution, a "this approval has expired" (or equivalent) callback answer
 
+**Review-driven changes not anticipated by this phase's File changes table:**
+
+1. **Poller concurrency (blocking defect).** `pollOnce` awaited each update's
+   handler, so a turn parked in `requestApproval` starved the `getUpdates` call
+   that would deliver the tap — every gated call deadlocked the bot for 5
+   minutes and then resolved as "denied", and Phase 3's core success criterion
+   could not pass. Fixed by dispatching message updates WITHOUT awaiting them
+   (offset advances immediately) while `callback_query` updates stay awaited
+   inline. **Accepted trade-off, chosen deliberately by the orchestrator: a
+   message update in flight when the process dies is no longer redelivered.**
+   `poller-crash-replay.test.ts` was repointed to pin the narrowed guarantee
+   rather than the old one. Recorded in
+   `.ai/decisions/poller-concurrent-message-dispatch.md`. A consequence worth
+   knowing: two turns for the same chat can now run concurrently — safe today
+   because `appendMessages` is one atomic `messages || $2::jsonb` statement and
+   `llm_dedupe` keys per `updateId`, so the exposure is snapshot staleness, not
+   lost history.
+2. **`Channel`'s new members are optional** (`subscribeCallback?`,
+   `editMessage?`, `answerCallback?`) rather than required; `TelegramPoller`
+   re-narrows all three to required, so a gated tool still cannot be wired to a
+   channel lacking them — it is a compile error, not a runtime surprise.
+3. **`targetResolver` (threadId→chatId) is a stopgap** in-memory index in
+   `build-agent.ts`, populated as a side effect of `getOrCreateThread`, because
+   `ThreadRepo` has no reverse lookup. Never evicts; empty after restart.
+   Recorded in `.ai/decisions/approval-gate-design.md`.
+4. **`buildAgent` now returns `{ agent, handleApprovalCallback }`** so `boot.ts`
+   can wire the tap into `channel.subscribeCallback`.
+5. **`pnpm lint` was red** (10 errors, two of them left behind by Phase 2) and
+   CI runs lint before test. Cleared in `6a50040`; lint is now part of this
+   plan's verification gate alongside test and typecheck.
+
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: approval gate with Telegram inline keyboards, echo tool`
+- [x] Changes committed: `feat: approval gate with Telegram inline keyboards, echo tool`
 - [ ] Phase marked complete
 
 ---
