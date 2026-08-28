@@ -18,11 +18,13 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
 export const HISTORY_BUDGET_CHARS = 8_000;
 
 /**
- * `.content` alone under-counts an assistant message carrying `toolCalls`:
- * its `content` is often empty (the wire-format assistant tool-call request,
- * see `loop.ts`), while the requested arguments — the actual payload size —
- * live in `toolCalls`. Counting their serialized `arguments` alongside
- * `content` is what lets a tool-heavy turn actually register against
+ * `message.content.length` already covers every role, including a
+ * `role: "tool"` message's own result `content` — that part isn't new here.
+ * What it misses is an assistant message carrying `toolCalls`: its own
+ * `content` is often empty (the wire-format assistant tool-call request, see
+ * `loop.ts`), so the actual payload — the requested arguments — lives in
+ * `toolCalls` instead. Counting each call's serialized `arguments` alongside
+ * `content` is the one addition that lets a tool-heavy turn register against
  * `HISTORY_BUDGET_CHARS` instead of estimating to (near) zero.
  */
 function estimateSize(message: Message): number {

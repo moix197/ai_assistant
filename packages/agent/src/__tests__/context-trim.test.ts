@@ -115,4 +115,23 @@ describe("trimHistory", () => {
 
     expect(result).toEqual([newest]);
   });
+
+  it("drops an older tool-call group entirely while keeping a newer, separate tool-call group intact", () => {
+    // Two distinct groups. Sized so a message-granularity drop (dropping
+    // just the oldest single message) would already bring the running total
+    // under budget — leaving the older group's role:"tool" message behind,
+    // orphaned from the assistant toolCalls message it answers. Only a
+    // group-granularity drop removes the whole older group and leaves the
+    // newer group untouched.
+    const oldAssistant = assistantWithToolCalls(400, "c1"); // estimate ~103
+    const oldToolResult = toolResult("a".repeat(20), "c1"); // estimate 5
+    const newAssistant = assistantWithToolCalls(20, "c2"); // estimate ~8
+    const newToolResult = toolResult("ok", "c2"); // estimate ~1
+
+    const result = trimHistory([oldAssistant, oldToolResult, newAssistant, newToolResult], 20);
+
+    expect(result).not.toContainEqual(oldAssistant);
+    expect(result).not.toContainEqual(oldToolResult);
+    expect(result).toEqual([newAssistant, newToolResult]);
+  });
 });
