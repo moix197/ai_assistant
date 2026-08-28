@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-27
 **Branch:** `feat/03-agent-core`
-**Status:** not started
+**Status:** complete
 
 ## Context
 
@@ -227,10 +227,10 @@ used.
 
 **Steps:**
 
-- [ ] Confirm with the user: branch name `feat/03-agent-core`, base ref `main`
-- [ ] `git worktree add ../hermes-03-agent-core -b feat/03-agent-core main`
-- [ ] Verify worktree is active and on the correct branch: `git worktree list`
-- [ ] **Explicit step, do not skip:** copy `.env` from the repo root into the
+- [x] Confirm with the user: branch name `feat/03-agent-core`, base ref `main`
+- [x] `git worktree add ../hermes-03-agent-core -b feat/03-agent-core main`
+- [x] Verify worktree is active and on the correct branch: `git worktree list`
+- [x] **Explicit step, do not skip:** copy `.env` from the repo root into the
       new worktree (`../hermes-03-agent-core/.env`) — gitignored, so the
       worktree starts without it.
 
@@ -367,8 +367,8 @@ becomes possible once this phase ships.)
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
@@ -532,8 +532,8 @@ assertion would prove nothing the type checker doesn't already prove).
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing (no-tests justification above accepted)
@@ -651,8 +651,8 @@ scope, not a Phase 2 nit. Worth its own card.
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
@@ -800,8 +800,8 @@ by timed-out approvals. Not fixed here — worth a decision.
 **Phase review:**
 
 - [x] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
@@ -850,8 +850,8 @@ by timed-out approvals. Not fixed here — worth a decision.
 **Steps:**
 
 - [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–3 together
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–3 together
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent reviews the entire change end-to-end
 - [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
 - [x] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated
@@ -865,7 +865,7 @@ by timed-out approvals. Not fixed here — worth a decision.
 - [x] Overall success criteria met
 - [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
       table below
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
 
 ## Documentation
 
