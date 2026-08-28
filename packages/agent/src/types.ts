@@ -15,7 +15,12 @@ export interface ToolSpec {
   description: string;
   schema: z.ZodTypeAny;
   handler: (args: unknown, ctx: { signal: AbortSignal }) => Promise<unknown>;
-  /** Gates this tool behind the approval flow (Phase 3). Unused — every tool this phase has none — until then. */
+  /**
+   * Gates this tool behind the approval flow: `true` routes the call through
+   * `runGatedToolCalls`, which requires `RunTurnDeps.approvalGate` (enforced
+   * at construction via `assertApprovalGateConfigured`). `echoTool`
+   * (`apps/hermes/src/agent/tools/echo.ts`) is the one tool that sets this.
+   */
   requiresApproval: boolean;
 }
 

@@ -14,7 +14,7 @@ export interface ProviderProfile {
   model: string;
 }
 
-/** A tool made available to the model. Wire-format-complete; no real caller until `packages/agent` (2c). */
+/** A tool made available to the model. Wire-format-complete; `converse()` (`packages/agent/src/loop.ts`) is its real caller. */
 export interface ToolDefinition {
   name: string;
   description: string;

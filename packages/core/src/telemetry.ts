@@ -19,10 +19,7 @@ export interface LlmCallEvent {
   error?: string;
 }
 
-/**
- * One tool invocation. Defined here so `packages/agent` (2c) has a typed
- * contract to emit into — no producer ships in this PRD.
- */
+/** One tool invocation. `packages/agent`'s tool loop (`finishToolCall` in `src/loop.ts`) is its producer. */
 export interface ToolCallEvent {
   name: "tool.call";
   threadId: string | null;
@@ -41,10 +38,7 @@ export interface ToolCallEvent {
  */
 export type TurnOutcome = "completed" | "max_iterations" | "aborted" | "error";
 
-/**
- * One agentic-loop turn. Defined here for the same forward-looking reason as
- * `ToolCallEvent` — no producer ships in this PRD.
- */
+/** One agentic-loop turn. `packages/agent`'s `runTurn` (`src/loop.ts`) is its producer. */
 export interface TurnEvent {
   name: "turn";
   threadId: string | null;

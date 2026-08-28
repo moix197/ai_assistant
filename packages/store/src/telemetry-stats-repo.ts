@@ -54,9 +54,10 @@ export async function getLlmCallStatsSince(pool: Pool, sinceUtc: Date): Promise<
 
 /**
  * Groups `tool.call` rows since `sinceUtc` by `tool_name`, most-called first.
- * Returns `[]` (not an error, not `null`) when no `tool.call` rows exist —
- * the case every one of today's calls hits, since no producer exists until
- * `packages/agent` (2c).
+ * Returns `[]` (not an error, not `null`) when no `tool.call` rows exist in
+ * the window — `packages/agent`'s tool loop (`finishToolCall` in
+ * `src/loop.ts`) emits a `tool.call` event for every tool invocation, so `[]`
+ * means "no tool calls in the window", never "no producer exists".
  */
 export async function getTopToolsSince(
   pool: Pool,

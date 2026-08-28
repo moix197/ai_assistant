@@ -17,8 +17,12 @@ interface TelemetryEventRow {
 /**
  * Splits one `TelemetryEvent` into the fixed columns every event's rollup
  * queries filter/aggregate on, plus a `fields` jsonb bag for the rest.
- * `isError` is derived from the event's own `error` presence — `llm.call`
- * and `tool.call` carry an optional `error`, `turn` never does.
+ * `isError` is derived per event kind: `llm.call` and `tool.call` carry an
+ * optional `error`, so `isError` is that field's presence; `turn` carries no
+ * `error` field, so `isError` is derived from its `outcome` instead —
+ * `"error"` or `"aborted"` are errors, `"completed"`/`"max_iterations"` are
+ * not. `is_error` is a rollup filter column (see `packages/store/README.md`),
+ * so a `turn` row must set it consistently with the other two kinds.
  */
 function toRow(event: TelemetryEvent): TelemetryEventRow {
   const base = { threadId: event.threadId, turnId: event.turnId, durationMs: event.durationMs };
@@ -64,7 +68,7 @@ function toRow(event: TelemetryEvent): TelemetryEventRow {
         toolName: null,
         costUsd: null,
         totalCostUsd: event.totalCostUsd,
-        isError: false,
+        isError: event.outcome === "error" || event.outcome === "aborted",
         fields: { iterations: event.iterations, outcome: event.outcome },
       };
   }

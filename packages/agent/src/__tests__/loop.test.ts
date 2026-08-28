@@ -848,6 +848,49 @@ describe("runTurn — approval gate", () => {
     await vi.waitFor(() => expect(ungatedCalled).toBe(true));
     expect(gatedHandler).not.toHaveBeenCalled();
   });
+
+  it("never sends an approval prompt when the turn is aborted before the gated batch is dispatched", async () => {
+    const gatedTool = tool({ name: "echo", requiresApproval: true, handler: vi.fn() });
+    const controller = new AbortController();
+    let resolveComplete!: (result: CompletionResult) => void;
+    const complete = vi.fn().mockReturnValueOnce(
+      new Promise<CompletionResult>((resolve) => {
+        resolveComplete = resolve;
+      }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    const resultPromise = runTurn(
+      definition({ tools: [gatedTool] }),
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: controller.signal,
+        approvalGate,
+      },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    // Aborts between the model response arriving and the gated batch being
+    // dispatched — the point `runGatedToolCalls` must itself check, since the
+    // per-iteration check at the top of `converse` already passed.
+    controller.abort();
+    resolveComplete(
+      completionResult({ toolCalls: [{ id: "c1", name: "echo", arguments: {} }], text: "" }),
+    );
+
+    await expect(resultPromise).rejects.toBeInstanceOf(LlmAbortedError);
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+
+    const event = recordedTurnEvent(recorder);
+    expect(event).toMatchObject({ name: "turn", outcome: "aborted" });
+  });
 });
 
 describe("runTurn — max iterations", () => {

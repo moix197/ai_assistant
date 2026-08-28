@@ -42,9 +42,8 @@ function toToolDefinition(spec: ToolSpec): ToolDefinition {
  * `toolDefs` derives each tool's JSON Schema deterministically: tools sorted
  * by name first, each schema's own keys emitted in sorted order via
  * `sortKeysDeep`. Two independent calls with the same `definition` produce
- * byte-identical output — proven with `definition.tools = []` this phase
- * (`__tests__/prompt.test.ts`); Phase 2 reuses this same function unmodified
- * once `definition.tools` is non-empty.
+ * byte-identical output, whether `definition.tools` is empty or not — see
+ * `__tests__/prompt.test.ts`.
  */
 export function assemblePrefix(definition: AgentDefinition): AssembledPrefix {
   const toolDefs = [...definition.tools]

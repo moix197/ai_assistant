@@ -8,10 +8,9 @@ import type { Thread, ThreadRepo } from "./thread-repo-port";
 import type { AgentDefinition, ToolSpec } from "./types";
 
 /**
- * Bounds the whole turn's model round-trips. Declared even in Phase 1, when
- * traffic could never reach iteration 2 (no tools meant `toolCalls` was
- * always empty) — Phase 2 is the first phase that can actually exercise it,
- * via the tool loop below.
+ * Bounds the whole turn's model round-trips. Reached whenever the model keeps
+ * emitting tool calls instead of a final text response — see the tool loop
+ * below.
  */
 export const MAX_ITERATIONS = 8;
 
@@ -283,6 +282,9 @@ async function runGatedToolCalls(
     // only fires if that invariant was somehow bypassed.
     throw new Error("runGatedToolCalls invoked without an approvalGate configured");
   }
+  // Mirrors the ungated path's per-call check in `resolveToolCall`: an
+  // already-aborted turn must not send an approval prompt during shutdown.
+  assertToolInvocationAllowed(deps.signal);
   const startedAt = Date.now();
   const batch: ApprovalRequest[] = gatedCalls.map((call) => ({
     tool: call.name,
@@ -356,9 +358,9 @@ async function executeToolCalls(
  * stored history once, then calls the model up to `MAX_ITERATIONS` times.
  * The registry (`toolsByName`) and the retry counter (`retryCounts`) are
  * both scoped to this one turn — built fresh every call, never cached
- * across turns. Real tool definitions (`toolDefs`) are sent to the provider
- * for the first time this phase; `tools` stays `undefined` when
- * `definition.tools` is empty, exactly as Phase 1 shipped it.
+ * across turns. Tool definitions (`toolDefs`) are sent to the provider
+ * whenever `definition.tools` is non-empty; `tools` stays `undefined`
+ * otherwise.
  */
 async function converse(
   definition: AgentDefinition,

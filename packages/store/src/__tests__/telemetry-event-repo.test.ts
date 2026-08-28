@@ -65,6 +65,24 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
         outcome: "completed",
         durationMs: 4000,
       },
+      {
+        name: "turn",
+        threadId: "thread-1",
+        turnId: "turn-2",
+        iterations: 2,
+        totalCostUsd: 0.0002,
+        outcome: "error",
+        durationMs: 1000,
+      },
+      {
+        name: "turn",
+        threadId: "thread-1",
+        turnId: "turn-3",
+        iterations: 1,
+        totalCostUsd: 0,
+        outcome: "aborted",
+        durationMs: 500,
+      },
     ];
 
     const querySpy = vi.spyOn(pool, "query");
@@ -86,9 +104,9 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
       fields: Record<string, unknown>;
     }>("SELECT * FROM telemetry_events ORDER BY id ASC");
 
-    expect(result.rows).toHaveLength(4);
+    expect(result.rows).toHaveLength(6);
 
-    const [success, failure, toolCall, turn] = result.rows;
+    const [success, failure, toolCall, turnCompleted, turnError, turnAborted] = result.rows;
 
     expect(success?.name).toBe("llm.call");
     expect(success?.is_error).toBe(false);
@@ -119,12 +137,21 @@ describe.skipIf(!testDatabaseUrl)("telemetry-event-repo (integration)", () => {
     // `cost_usd` stays NULL on a `turn` row — its total lives in
     // `total_cost_usd` instead, so the two columns never disagree about
     // what a plain `SUM(cost_usd)` means (03-agent-core settled decision 1).
-    expect(turn?.name).toBe("turn");
-    expect(turn?.tool_name).toBeNull();
-    expect(turn?.cost_usd).toBeNull();
-    expect(Number(turn?.total_cost_usd)).toBeCloseTo(0.0005, 6);
-    expect(turn?.is_error).toBe(false);
-    expect(turn?.fields).toMatchObject({ iterations: 3, outcome: "completed" });
+    expect(turnCompleted?.name).toBe("turn");
+    expect(turnCompleted?.tool_name).toBeNull();
+    expect(turnCompleted?.cost_usd).toBeNull();
+    expect(Number(turnCompleted?.total_cost_usd)).toBeCloseTo(0.0005, 6);
+    expect(turnCompleted?.is_error).toBe(false);
+    expect(turnCompleted?.fields).toMatchObject({ iterations: 3, outcome: "completed" });
+
+    // `is_error` is a rollup filter column (`packages/store/README.md`) — a
+    // `turn` row must set it from the turn's actual outcome, not hardcode
+    // `false`, or an operator filtering for errors misses every failed turn.
+    expect(turnError?.is_error).toBe(true);
+    expect(turnError?.fields).toMatchObject({ outcome: "error" });
+
+    expect(turnAborted?.is_error).toBe(true);
+    expect(turnAborted?.fields).toMatchObject({ outcome: "aborted" });
   });
 
   it("performs no query for an empty array", async () => {
