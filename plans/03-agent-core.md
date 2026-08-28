@@ -572,19 +572,24 @@ worst case 2 paid calls for one bad tool, not 8.
 | create | `apps/hermes/src/agent/tools/get-current-time.ts` | `ToolSpec`: `name: "get_current_time"`, `schema: z.object({})` (no arguments), `handler: async () => new Date().toISOString()`, `requiresApproval: false` — the ROADMAP-named throwaway tool, defined in `apps/hermes` per the D4-seam boundary rule, never in `packages/agent` |
 | modify | `apps/hermes/src/agent/build-agent.ts` | `AgentDefinition.tools` gains `[getCurrentTimeTool]` |
 | create | `apps/hermes/src/agent/tools/__tests__/get-current-time.test.ts` | handler returns a valid ISO-8601 string close to "now" |
+| modify | `packages/core/src/llm-types.ts` | **added during review fallout, not in the original plan.** `Message` became a discriminated union (`SystemMessage \| UserMessage \| AssistantMessage \| ToolMessage`) so an assistant message can carry `toolCalls` and a tool message's `toolCallId` is mandatory. Without this the loop could append a tool result with no preceding assistant tool-call message and no way to type the id — a shape any OpenAI-compatible provider rejects. `MessageRole` removed (unused once the union landed) |
+| modify | `packages/llm/src/adapter/openai-compatible.ts` | **added during review fallout.** `buildRequestBody` no longer spreads `request.messages` verbatim — `toWireMessage`/`toWireToolCall` map the domain shape to real OpenAI wire keys (`tool_calls`, `tool_call_id`, `function.name`/`function.arguments` as a JSON string), with a `never` exhaustiveness check. The verbatim spread shipped `toolCallId` as-is, which 400s |
+| modify | `apps/hermes/package.json` + `pnpm-lock.yaml` | `zod` added — the new tool file needs it and pnpm's strict linking forbids phantom deps |
+| modify | `apps/hermes/src/agent/__tests__/build-agent.test.ts` | mechanical: the `tools: undefined` assertion broke once `build-agent.ts` gained a tool |
+| modify | `.ai/decisions/tool-call-wire-format.md` (new), `.ai/index.md`, `.ai/architecture.md`, `packages/core/README.md`, `packages/llm/README.md`, `packages/store/README.md` | knowledge-base sync: record the wire-format decision, retire the now-false "tool loop has no producer / `ToolDefinition` has no caller" claims |
 
 **Steps:**
 
-- [ ] Build the tool `Map` once per `runTurn` call (or once per `AgentDefinition`
+- [x] Build the tool `Map` once per `runTurn` call (or once per `AgentDefinition`
       if it's safe to cache — confirm no per-turn state leaks into it) from
       `definition.tools`, keyed by `name` — this is "the registry," not a new
       standalone module; keep it inside `loop.ts` unless it grows large enough
       to earn its own file (it doesn't yet, with one tool)
-- [ ] Zod validation failure and unknown-tool-name both produce a tool-result
+- [x] Zod validation failure and unknown-tool-name both produce a tool-result
       message the model sees — write a test proving the loop does **not**
       throw or abort the turn in either case, only in the max-iteration,
       abort, or LLM-failure cases
-- [ ] **Two-strikes retry counter**: write a test where the same tool name
+- [x] **Two-strikes retry counter**: write a test where the same tool name
       fails validation twice across two iterations — assert the first
       failure's tool result is the raw zod error (corrective), the second
       failure's tool result is the terminal "invalid arguments, giving up"
@@ -594,23 +599,23 @@ worst case 2 paid calls for one bad tool, not 8.
       turn. Also assert the counter is keyed per tool name, not globally: a
       second, different tool failing validation for the first time still
       gets its own corrective round-trip in the same turn
-- [ ] **Tool handler timeout**: fake-timers test with a handler that never
+- [x] **Tool handler timeout**: fake-timers test with a handler that never
       resolves — assert the turn still completes (or reaches the next
       iteration) within `TOOL_HANDLER_TIMEOUT_MS`, the timed-out tool's
       result reads "tool timed out," and other tool calls in the same batch
       are unaffected
-- [ ] Parallel execution: the test for this must prove actual concurrency, not
+- [x] Parallel execution: the test for this must prove actual concurrency, not
       just "both ran" — e.g., two fake handlers that each await a shared
       gate/flag set by the other, provably deadlocking if run sequentially and
       succeeding if run in parallel (same rigor `02-telemetry`'s recorder
       applied to proving its own concurrency claims)
-- [ ] `tool.call`'s `error` field truncated to 500 chars at the emission site
+- [x] `tool.call`'s `error` field truncated to 500 chars at the emission site
       (matching `02-telemetry`'s settled decision 14 for `llm.call`'s `error`
       — apply the same bound here, don't leave it unbounded)
-- [ ] Confirm `assemblePrefix`'s determinism test from Phase 1 still holds
+- [x] Confirm `assemblePrefix`'s determinism test from Phase 1 still holds
       now that `definition.tools` is non-empty — extend, don't duplicate, that
       test file
-- [ ] Confirm `getTopToolsSince` (already shipped, unused, in `02-telemetry`)
+- [x] Confirm `getTopToolsSince` (already shipped, unused, in `02-telemetry`)
       needs **no code change** to start returning `get_current_time` rows —
       if it does need a change, that's a signal something about the `tool.call`
       event shape drifted from what `02-telemetry` actually shipped; re-check
@@ -626,25 +631,34 @@ worst case 2 paid calls for one bad tool, not 8.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
 - [ ] Manual: ask the bot "what time is it right now?" → reply includes a real
       current time; `psql` shows a `tool.call` row with `tool_name =
       'get_current_time'`, `approved = true`, a small positive `duration_ms`
 - [ ] Manual: `/stats` → top-tools section now lists `get_current_time` instead
       of "no tool calls recorded yet"
 
+**Deferred follow-up (raised in review, deliberately not fixed here):**
+
+`packages/store/src/thread-repo.ts:15` types persisted jsonb rows as `Message[]`
+without validating them, so the discriminated union's "a tool message without a
+`toolCallId` is unrepresentable" guarantee stops at the database boundary.
+Pre-existing, and harmless today because only user/assistant messages are
+persisted. Fixing it means runtime validation at the persistence layer — real
+scope, not a Phase 2 nit. Worth its own card.
+
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: tool registry, get_current_time, parallel execution with retry`
+- [x] Changes committed: `feat: tool registry, get_current_time, parallel execution with retry`
 - [ ] Phase marked complete
 
 ---
