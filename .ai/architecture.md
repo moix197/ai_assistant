@@ -148,10 +148,11 @@ allowlist gate stays outermost precisely because that fallthrough now spends
 money — an unknown sender is rejected before it can reach `complete()`. The
 usage row is written from the adapter's success path, so a failed call records
 nothing and a retried one still records exactly once; see
-[llm-cost-accounting](decisions/llm-cost-accounting.md). Still one `complete()`
-per message — no tool loop yet — but that call now goes through
-`packages/agent`'s `runTurn`, which loads the conversation before it and
-appends the user and assistant messages after it. History lives in `threads`,
+[llm-cost-accounting](decisions/llm-cost-accounting.md). Up to `MAX_ITERATIONS`
+calls to `complete()` per message now — Phase 2's tool-execution loop — all
+routed through `packages/agent`'s `runTurn`, which loads the conversation
+before the loop starts and appends the user and final assistant messages
+after it. History lives in `threads`,
 one row per `(channel, chat_id)`, written by `packages/store`'s
 `thread-repo.ts` and reached only through an injected `ThreadRepo` port, so
 `packages/agent` never imports `@hermes/store` and the dependency direction

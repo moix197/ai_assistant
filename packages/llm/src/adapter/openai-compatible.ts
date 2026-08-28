@@ -199,13 +199,13 @@ function toWireToolCall(toolCall: ToolCall): Record<string, unknown> {
  * verbatim (as this used to) let `toolCallId` leak onto the wire unchanged,
  * which every OpenAI-compatible provider rejects ("tool message must be a
  * response to a preceding message with tool_calls" / missing `tool_call_id`)
- * — see `.ai/decisions/` and `plans/03-agent-core.md`'s Phase 2 review.
+ * — see `.ai/decisions/tool-call-wire-format.md`.
  */
 function toWireMessage(message: Message): Record<string, unknown> {
   if (message.role === "tool") {
     return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
   }
-  if (message.toolCalls !== undefined && message.toolCalls.length > 0) {
+  if (message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0) {
     return {
       role: message.role,
       content: message.content,

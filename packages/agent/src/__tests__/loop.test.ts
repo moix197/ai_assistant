@@ -548,6 +548,50 @@ describe("runTurn — tool execution", () => {
     }
   });
 
+  it("reports 'tool aborted', not 'tool timed out', and an aborted turn outcome when the signal fires mid-handler", async () => {
+    let resolveHandlerStarted!: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      resolveHandlerStarted = resolve;
+    });
+    // Never resolves on its own — only the external abort can settle the race.
+    const hangingHandler = vi.fn(async () => {
+      resolveHandlerStarted();
+      return new Promise<never>(() => {});
+    });
+    const hangingTool = tool({ name: "hangs", handler: hangingHandler });
+    const complete = vi.fn().mockResolvedValueOnce(
+      completionResult({ toolCalls: [{ id: "c1", name: "hangs", arguments: {} }], text: "" }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+    const controller = new AbortController();
+
+    const resultPromise = runTurn(
+      definition({ tools: [hangingTool] }),
+      { llmProvider, threadRepo, telemetryRecorder: recorder, signal: controller.signal },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    await handlerStarted;
+    controller.abort();
+
+    await expect(resultPromise).rejects.toBeInstanceOf(LlmAbortedError);
+    expect(threadRepo.appendMessages).not.toHaveBeenCalled();
+
+    const toolCallEvents = recorder.record.mock.calls
+      .map(([event]) => event as TelemetryEvent)
+      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+    expect(toolCallEvents).toHaveLength(1);
+    expect(toolCallEvents[0]?.error).toContain("tool aborted");
+    expect(toolCallEvents[0]?.error).not.toContain("tool timed out");
+
+    const event = recordedTurnEvent(recorder);
+    expect(event).toMatchObject({ name: "turn", outcome: "aborted" });
+  });
+
   it("executes multiple tool calls in one response concurrently, not sequentially", async () => {
     let resolveAStarted!: () => void;
     let resolveBStarted!: () => void;

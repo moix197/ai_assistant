@@ -9,18 +9,44 @@
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
-export interface Message {
-  role: MessageRole;
+export interface SystemMessage {
+  role: "system";
   content: string;
-  /** Present when `role === "tool"`: the id of the `ToolCall` this message answers. */
-  toolCallId?: string;
+}
+
+export interface UserMessage {
+  role: "user";
+  content: string;
+}
+
+export interface AssistantMessage {
+  role: "assistant";
+  content: string;
   /**
-   * Present when `role === "assistant"` and the model requested one or more
-   * tool calls this turn — the wire format's assistant `tool_calls` message
-   * that must precede the `role: "tool"` result messages answering it.
+   * Present when the model requested one or more tool calls this turn — the
+   * wire format's assistant `tool_calls` message that must precede the
+   * `role: "tool"` result messages answering it.
    */
   toolCalls?: ToolCall[];
 }
+
+export interface ToolMessage {
+  role: "tool";
+  content: string;
+  /** The id of the `ToolCall` this message answers. Mandatory, not optional:
+   * a `role: "tool"` message without one is meaningless on the wire (every
+   * OpenAI-compatible provider rejects it), so it is unrepresentable here
+   * rather than checked at the adapter boundary. See
+   * `.ai/decisions/tool-call-wire-format.md`. */
+  toolCallId: string;
+}
+
+/**
+ * Discriminated on `role` so a `role: "tool"` message missing `toolCallId`,
+ * or a non-assistant message carrying `toolCalls`, is a compile error instead
+ * of a runtime-optional field that adapters must remember to guard.
+ */
+export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
 
 export interface ToolCall {
   id: string;

@@ -20,9 +20,10 @@ Shared types with no dependency on any other Hermes package.
   `threadId`/`turnId` are nullable on every variant because they only become
   real ids once `packages/agent` assigns them — a call made outside a turn
   still carries `null` for both. `packages/agent`'s `runTurn` is the producer
-  of `turn` events, and stamps the same ids onto the `llm.call` it makes;
-  `ToolCallEvent` still has no producer, existing so tools have a typed
-  contract to emit into. `TurnEvent.outcome` is the `TurnOutcome` union —
+  of `turn` events, stamps the same ids onto the `llm.call` it makes, and
+  (since Phase 2's tool loop) is also the producer of `ToolCallEvent` via
+  `finishToolCall` — one per tool call, `approved: true` unconditionally
+  until Phase 3's approval gate lands. `TurnEvent.outcome` is the `TurnOutcome` union —
   `"completed" | "max_iterations" | "aborted" | "error"` — so an outcome
   string can't drift. See `.ai/decisions/telemetry-event-schema.md`.
 - `nextDelay()` / `delay()` — the shared exponential-backoff step and its
