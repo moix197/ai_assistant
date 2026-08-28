@@ -59,7 +59,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools:[] and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -82,7 +82,10 @@ describe("buildAgent — wiring", () => {
     await agent.handleMessage("telegram", "999", "hi");
 
     expect(complete).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "another-model", tools: undefined }),
+      expect.objectContaining({
+        model: "another-model",
+        tools: [expect.objectContaining({ name: "get_current_time" })],
+      }),
     );
   });
 });

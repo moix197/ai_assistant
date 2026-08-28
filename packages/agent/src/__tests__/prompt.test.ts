@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 import { assemblePrefix } from "../prompt";
-import type { AgentDefinition } from "../types";
+import type { AgentDefinition, ToolSpec } from "../types";
 
 function definition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -9,6 +10,17 @@ function definition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     systemPrompt: "You are Hermes, a helpful assistant.",
     tools: [],
     channels: ["telegram"],
+    ...overrides,
+  };
+}
+
+function tool(overrides: Partial<ToolSpec> = {}): ToolSpec {
+  return {
+    name: "get_current_time",
+    description: "Returns the current time.",
+    schema: z.object({}),
+    handler: async () => new Date().toISOString(),
+    requiresApproval: false,
     ...overrides,
   };
 }
@@ -46,5 +58,57 @@ describe("assemblePrefix", () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     expect(new Set(results).size).toBe(1);
+  });
+
+  it("is still byte-identical across two independent calls once tools is non-empty", () => {
+    const definitionWithTools = definition({
+      tools: [tool({ name: "zebra" }), tool({ name: "alpha" })],
+    });
+
+    const first = assemblePrefix(definitionWithTools);
+    const second = assemblePrefix(definitionWithTools);
+
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.toolDefs).toHaveLength(2);
+  });
+
+  it("sorts tools by name regardless of declaration order", () => {
+    const declaredZebraFirst = assemblePrefix(
+      definition({ tools: [tool({ name: "zebra" }), tool({ name: "alpha" })] }),
+    );
+    const declaredAlphaFirst = assemblePrefix(
+      definition({ tools: [tool({ name: "alpha" }), tool({ name: "zebra" })] }),
+    );
+
+    expect(declaredZebraFirst.toolDefs.map((t) => t.name)).toEqual(["alpha", "zebra"]);
+    expect(JSON.stringify(declaredZebraFirst)).toBe(JSON.stringify(declaredAlphaFirst));
+  });
+
+  it("emits each tool's JSON Schema with sorted keys, deterministically", () => {
+    const withTool = assemblePrefix(
+      definition({
+        tools: [
+          tool({
+            name: "get_current_time",
+            description: "Returns the current time.",
+            schema: z.object({ zeta: z.string().optional(), alpha: z.number().optional() }),
+          }),
+        ],
+      }),
+    );
+
+    expect(withTool.toolDefs).toEqual([
+      {
+        name: "get_current_time",
+        description: "Returns the current time.",
+        parameters: expect.any(Object),
+      },
+    ]);
+    // Property key order within the derived JSON Schema is sorted, not
+    // declaration order — proven at the byte level via JSON.stringify.
+    const parametersJson = JSON.stringify(withTool.toolDefs[0]?.parameters);
+    expect(parametersJson.indexOf('"additionalProperties"')).toBeLessThan(
+      parametersJson.indexOf('"properties"'),
+    );
   });
 });

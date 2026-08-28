@@ -3,6 +3,7 @@ import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { buildThreadRepo } from "../store/build-thread-repo";
+import { getCurrentTimeTool } from "./tools/get-current-time";
 
 /**
  * Fixed placeholder — the same text `apps/hermes/src/handlers/complete.ts`
@@ -24,8 +25,8 @@ const CHANNEL_TELEGRAM = "telegram";
  * The only place allowed to import both `@hermes/agent` and construct the
  * one hardcoded `AgentDefinition` — the D4 seam (settled decision 10):
  * `apps/hermes` passes a single-entry `AgentDefinition[]` at boot, nothing
- * here makes a second agent more than a second list entry away. `tools: []`
- * this phase; Phase 2 adds `get_current_time`, Phase 3 adds `echo`.
+ * here makes a second agent more than a second list entry away. `tools:
+ * [getCurrentTimeTool]` this phase; Phase 3 adds `echo`.
  */
 export function buildAgent(
   pool: Pool,
@@ -38,7 +39,7 @@ export function buildAgent(
     name: "hermes",
     model,
     systemPrompt: SYSTEM_PROMPT,
-    tools: [],
+    tools: [getCurrentTimeTool],
     channels: [CHANNEL_TELEGRAM],
   };
 

@@ -1,11 +1,13 @@
 # @hermes/agent
 
 The bounded agentic loop: turns a stateless single-shot LLM reply into a real
-multi-turn conversation with restart-safe history. This phase (Phase 1 of
-`plans/03-agent-core.md`) ships the loop's simplest shape — load thread, trim
-history, call the model once, persist, reply — with no tools yet. Phase 2
-adds the tool registry and a real multi-iteration loop; Phase 3 adds the
-approval gate.
+multi-turn conversation with restart-safe history. Phase 1 of
+`plans/03-agent-core.md` shipped the loop's simplest shape — load thread, trim
+history, call the model once, persist, reply — with no tools. Phase 2 (this
+phase) adds the tool registry and a real multi-iteration loop: zod
+validation, a two-strikes per-tool-call retry counter, a per-tool-call
+handler timeout, and concurrent execution of every tool call in one model
+response. Phase 3 adds the approval gate.
 
 ## Port contract
 
@@ -13,11 +15,14 @@ approval gate.
 
 - `Message` — reused from `@hermes/core`, never redefined.
 - `ToolSpec { name, description, schema: z.ZodTypeAny, handler, requiresApproval }`
-  — a tool made available to the model. No real caller until Phase 2; this
-  phase only proves `ToolSpec[]` can be empty. No mutable `register()`: tools
-  are supplied once, at `AgentDefinition` construction, because
-  registration-order nondeterminism would threaten the byte-stable prefix
-  invariant #6 depends on.
+  — a tool made available to the model. `handler(args: unknown, { signal }):
+  Promise<unknown>` receives its `safeParse`d args and the turn's
+  `AbortSignal`. No mutable `register()`: tools are supplied once, at
+  `AgentDefinition` construction, because registration-order nondeterminism
+  would threaten the byte-stable prefix invariant #6 depends on. The
+  registry itself (a `Map<string, ToolSpec>` keyed by name) is built fresh
+  inside `loop.ts`'s `converse()` on every `runTurn` call — it isn't a
+  standalone module, and doesn't need to be with one or two tools.
 - `AgentDefinition { name, model, systemPrompt, tools, channels }` — the one
   configuration object per agent, and the entire D4 multi-agent seam
   (settled decision 10): reserved, not built. `apps/hermes` passes one
@@ -40,11 +45,14 @@ content, no dates, no user names (current time is a *tool*, Phase 2, never a
 prompt line). `toolDefs` derives each tool's JSON Schema via `zod/v4`'s
 `z.toJSONSchema`, with `definition.tools` sorted by name first and each
 schema's own keys emitted in sorted order (`sortKeysDeep`). Two independent
-calls with the same `definition` produce byte-identical output — proven this
-phase with `definition.tools = []` (`__tests__/prompt.test.ts`); Phase 2
-reuses this same function unmodified once tools are non-empty. This is what
-lets `/stats`' cache-hit rate (`02-telemetry`) actually move: a provider can
-only cache a prefix that never drifts by even one byte between calls.
+calls with the same `definition` produce byte-identical output — proven with
+`definition.tools = []` in Phase 1, and now (this phase) with a non-empty
+`definition.tools` too (`__tests__/prompt.test.ts`): `assemblePrefix` itself
+is unmodified since Phase 1, reused exactly as it shipped. This is what lets
+`/stats`' cache-hit rate (`02-telemetry`) actually move: a provider can only
+cache a prefix that never drifts by even one byte between calls. `loop.ts`
+sends `tools: toolDefs` on the request only when `definition.tools.length >
+0`; otherwise `tools: undefined`, exactly as Phase 1 shipped it.
 
 `packages/agent` uses `zod/v4` (the subpath the installed `zod@3.25.76`
 ships, not the top-level `zod` classic export) specifically because
@@ -69,42 +77,85 @@ a given call; the full, untrimmed history is always what gets persisted.
 
 ## The loop
 
-`src/loop.ts`'s `runTurn(definition, deps, channel, chatId, userText)` is
-this phase's shape:
+`src/loop.ts`'s `runTurn(definition, deps, channel, chatId, userText)`:
 
 1. Load or create the thread via the injected `ThreadRepo`
    (`getOrCreateThread`).
-2. Check `deps.signal.aborted` — throws `LlmAbortedError` (reused from
-   `@hermes/llm`, not a new type) if already aborted, **before** any LLM call
-   is attempted. `deps.signal` is a required constructor dependency, not
-   optional: a deliberate reaction to `02-telemetry` Phase 6's own "mechanism
-   built but never wired" bug, where the boot `AbortController`'s signal had
-   been wired into the LLM adapter but never into the Telegram poller.
-3. Assemble the prefix (`assemblePrefix`) and trim stored history
-   (`trimHistory`, `HISTORY_BUDGET_CHARS`).
-4. Call `llmProvider.complete(...)` once, with a freshly generated `turnId`
-   (`newId()`) and the thread's real `threadId`/`turnId` on the request —
-   `tools: undefined` this phase, so `MAX_TOKENS_PER_TURN` (`@hermes/llm`)
-   is the only budget in play.
-5. If the model returns a tool call anyway, throw a defensive, temporary
-   guard ("tool calls are not supported until packages/agent Phase 2") — not
-   a real code path, since `tools: undefined` means no provider should ever
-   do that; removed once Phase 2 adds real handling.
+2. Run the tool-execution loop (`converse`, internal): assemble the prefix
+   (`assemblePrefix`) and trim stored history (`trimHistory`,
+   `HISTORY_BUDGET_CHARS`) once, then call `llmProvider.complete(...)` up to
+   `MAX_ITERATIONS` (8) times. Before **every** iteration, check
+   `deps.signal.aborted` and throw `LlmAbortedError` (reused from
+   `@hermes/llm`) if it's already set — `deps.signal` is a required
+   constructor dependency, not optional: a deliberate reaction to
+   `02-telemetry` Phase 6's own "mechanism built but never wired" bug, where
+   the boot `AbortController`'s signal had been wired into the LLM adapter
+   but never into the Telegram poller.
+3. If a response's `toolCalls` is empty, the loop is done: that response's
+   `text` is the turn's reply.
+4. Otherwise, every entry in `toolCalls` is resolved concurrently (see "Tool
+   execution" below) into a `role: "tool"` result message, all of which are
+   appended to the conversation before the next iteration.
+5. Reaching `MAX_ITERATIONS` without ever getting an empty `toolCalls`
+   throws an internal `MaxIterationsReachedError` carrying the real
+   accumulated `costUsd` and iteration count from the calls that did happen.
 6. On success: persist the user message and the assistant reply together in
    **one** `appendMessages` call, emit a `turn` telemetry event
-   (`iterations: 1`, `outcome: "completed"`, `totalCostUsd` from the
-   result's `costUsd`), and return the reply text.
-7. On any thrown error (an already-aborted signal, a provider failure — including
-   `UnpricedModelError`, which gets no special-casing — or the tool-call
-   guard above): emit a `turn` event with `totalCostUsd: 0` and
-   `outcome: "aborted"` (for `LlmAbortedError`) or `"error"` (everything
-   else), then **rethrow the original error unchanged** — no new
-   error-handling branch. The existing completion handler's generic-failure
-   reply still applies.
+   (`iterations` = however many calls it took, `outcome: "completed"`,
+   `totalCostUsd` = the sum of every iteration's `costUsd`), and return the
+   reply text.
+7. On any thrown error: emit a `turn` event and **rethrow the original error
+   unchanged** — no new error-handling branch, so the existing completion
+   handler's generic-failure reply still applies.
+   `outcome: "max_iterations"` (`MaxIterationsReachedError`, `totalCostUsd`/
+   `iterations` from the error) is the one outcome with real cost/iteration
+   data; an already-aborted signal (`outcome: "aborted"`) or any other
+   provider failure — including `UnpricedModelError`, which gets no
+   special-casing — reports `outcome: "error"`, `totalCostUsd: 0`, exactly as
+   Phase 1 shipped it.
 
-`MAX_ITERATIONS = 8` is declared in `loop.ts` even though this phase's
-traffic can never reach iteration 2 (no tools means `toolCalls` is always
-empty) — Phase 2 is the first phase that can actually exercise it.
+## Tool execution
+
+For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
+
+1. Looks up a `ToolSpec` by name in the registry (a `Map` built once per
+   `runTurn` call from `definition.tools`, keyed by name — not a standalone
+   module, and not cached across turns).
+2. An **unknown tool name** feeds back `"unknown tool: <name>"` — never
+   throws, the turn continues (settled decision 15's error-recovery shape,
+   applied uniformly to every tool failure mode below).
+3. A known tool's `arguments` are `schema.safeParse`d. On failure, a
+   `Map<toolName, number>` scoped to this turn tracks a **two-strikes retry
+   counter**, keyed by tool name (never a stable call id — providers issue a
+   fresh one every iteration): the first failure for a given tool name feeds
+   back the raw zod error message (the model's one corrective attempt); the
+   second (and every failure after) feeds back the terminal
+   `"invalid arguments, giving up: <zod error>"` and that tool name gets no
+   further corrective feedback for the rest of the turn. The counter is
+   never decremented by an intervening success, and is isolated per tool
+   name — a different tool's first failure in the same turn still gets its
+   own corrective round-trip.
+4. On successful validation, `spec.handler(args, { signal: deps.signal })`
+   runs inside a `Promise.race` against `delay(TOOL_HANDLER_TIMEOUT_MS,
+   deps.signal)` (`delay` reused from `@hermes/core`) — a handler that never
+   resolves feeds back `"tool timed out after <ms>ms"` instead of stalling
+   the turn. `deps.signal.aborted` is checked immediately before invocation.
+   A handler that **throws** feeds back the thrown error's message — like
+   every other failure mode here, this never aborts the turn.
+5. **Every tool call in one model response executes concurrently** via
+   `Promise.all`/`.map()` — each call's synchronous work (registry lookup,
+   `safeParse`, the abort check) runs before its first `await`, so there's no
+   event-loop gap between calls for an abort to land "between" them.
+6. Each call — regardless of outcome — emits its own `tool.call` telemetry
+   event: `{ name: "tool.call", threadId, turnId, tool, durationMs, approved:
+   true, error? }`. `approved: true` unconditionally this phase, since no
+   approval gate exists yet (Phase 3). `error`, when present, is truncated to
+   500 characters — the same bound `02-telemetry`'s settled decision 14 puts
+   on `llm.call`'s `error`.
+
+`TOOL_HANDLER_TIMEOUT_MS` is a package-internal constant (not
+env-configurable, same posture as `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`),
+independent of the turn-level iteration cap.
 
 ## Persistence port
 
