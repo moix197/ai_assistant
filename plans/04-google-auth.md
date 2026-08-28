@@ -910,41 +910,41 @@ Google connection needs to be re-established, and `/status` afterward shows
 
 **Steps:**
 
-- [ ] **Single-flight test must prove actual sharing, not just "both
+- [x] **Single-flight test must prove actual sharing, not just "both
       succeeded"**: two concurrent `getValidAccessToken` calls for the same
       stale account must be provably backed by the *same* refresh (e.g., a
       fake `oauthClient.refreshToken` that counts invocations — assert it's
       called exactly once for two concurrent callers), matching the rigor
       `03-agent-core` applied to its own parallel-tool-execution proof
-- [ ] Confirm `getValidAccessToken`'s skew check is real: an account whose
+- [x] Confirm `getValidAccessToken`'s skew check is real: an account whose
       `expiresAt` is well outside `REFRESH_SKEW_MS` returns the cached token
       **without** calling `oauthClient.refreshToken` at all — write a test
       asserting zero refresh calls for a fresh token, not just "the right
       token came back"
-- [ ] Confirm the `finally`-deletion means a failed refresh doesn't poison a
+- [x] Confirm the `finally`-deletion means a failed refresh doesn't poison a
       later, independent attempt — test: first `getValidAccessToken` call
       rejects, a later call (not concurrent, after the first settles) is
       allowed to try again, not permanently blocked
-- [ ] Confirm `REFRESH_SKEW_MS` is the *only* place "how close to expiry
+- [x] Confirm `REFRESH_SKEW_MS` is the *only* place "how close to expiry
       counts as needs-refresh" is defined — `listAccountsExpiringBefore`'s
       cutoff in `refresh-sweep.ts` must import and reuse it, not hardcode
       its own duration
-- [ ] `runOnce`'s failure classification: a `RefreshFailedError` with
+- [x] `runOnce`'s failure classification: a `RefreshFailedError` with
       `invalid_grant`/revoked marks disconnected and alerts; anything else
       (network timeout, 500) leaves the row untouched for the next tick —
       write a test asserting a transient failure does **not** delete the
       account or send an alert
-- [ ] Confirm the sweep is wired **only** inside `boot()`'s construction
+- [x] Confirm the sweep is wired **only** inside `boot()`'s construction
       path — no standalone script or bin entry is added for it, per the
       constraint this plan states in Dependencies & Risks; confirm by
       inspection that its construction site in `wireRuntimeAndShutdown` is
       reached only after `acquireInstanceLockOrExit` in `boot()`'s call
       order, not merely assumed
-- [ ] `sweep.stop()`'s shutdown budget: confirm it fits inside the existing
+- [x] `sweep.stop()`'s shutdown budget: confirm it fits inside the existing
       8s hard-exit ceiling alongside `channel.stop()` (5s) and
       `telemetryRecorder.stop()` (1s) — size its own bound accordingly and
       say so explicitly if it needs a slice of that budget
-- [ ] Manual verification: forcing `expires_at` into the past via `psql` is
+- [x] Manual verification: forcing `expires_at` into the past via `psql` is
       the only practical way to exercise this without waiting out a real
       Google access-token lifetime (~1 hour) — state this in Verification
       rather than leaving it to be rediscovered
@@ -959,10 +959,10 @@ Google connection needs to be re-established, and `/status` afterward shows
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] `pnpm lint` green
 - [ ] Manual: `psql` force-expire a connected account's `expires_at`,
       `docker compose up -d --build`, wait for the immediate boot-time sweep
       pass, `psql` → `expires_at` and `token_envelope` have changed, no
@@ -975,16 +975,20 @@ Google connection needs to be re-established, and `/status` afterward shows
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: proactive token refresh sweep, single-flight coordinator, refresh-failure alert`
-- [ ] Phase marked complete
+- [x] Changes committed: `feat: proactive token refresh sweep, single-flight coordinator, refresh-failure alert`
+- [x] Phase marked complete
+
+**Outstanding for Phase 4 (deliberately unticked):** the two `Manual:` items need live Google credentials and a running bot. The handoff/`/clear` boxes do not apply: executed and reviewed in one session. Code-review verdict: **green**, no blocking findings; the reviewer confirmed against `google-auth-library@9.15.1` source that an *unrecognized* refresh error falls to log-only and leaves the row intact — only an explicit `invalid_grant` disconnects, so a transient blip cannot delete a valid credential.
+
+**Deferred, recorded, not blocking merge:** `oauth-client.ts`'s `refreshAccessToken` still reaches around `OAuth2Client`'s **protected** `refreshToken()` via a cast. The race it avoids is real (the public methods read and write the shared client's `credentials`), but a public-API alternative exists — a throwaway `OAuth2Client` per refresh, whose constructor does no I/O. It was not adopted because `refresh.test.ts`'s `fakeOAuthClient` mocks the protected method directly, so the swap needs a client-factory injection seam rather than a behavior change. That is test coupling dictating production design, not a correctness argument — worth revisiting, and worth watching on any `google-auth-library` upgrade, since a `protected` member can be renamed without a semver signal. Recorded in `.ai/decisions/google-token-refresh.md`. Commits: `482f3bd` (phase), `de99666` (review nits).
 
 ---
 
