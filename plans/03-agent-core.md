@@ -352,30 +352,30 @@ becomes possible once this phase ships.)
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green — migrations `005`/`006` apply cleanly, thread
       repo round-trips for real
-- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
-- [ ] Manual: message the bot twice in the same chat, second message
+- [x] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
+- [x] Manual: message the bot twice in the same chat, second message
       referencing the first ("what did I just say?") → the reply shows real
       memory
-- [ ] Manual: `docker compose restart hermes`, send a follow-up message in the
+- [x] Manual: `docker compose restart hermes`, send a follow-up message in the
       same chat → the bot still has the earlier context (read back from
       `threads`, not from an in-process cache)
-- [ ] Manual: `psql` into the app database after a turn → one new `turn` row
+- [x] Manual: `psql` into the app database after a turn → one new `turn` row
       with `iterations = 1`, `outcome = 'completed'`, `total_cost_usd` set and
       `cost_usd` `NULL`; the corresponding `llm.call` row has real
       `thread_id`/`turn_id`, not `NULL`
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: agent package, multi-turn history, wired into the completion path`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
@@ -538,9 +538,9 @@ assertion would prove nothing the type checker doesn't already prove).
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing (no-tests justification above accepted)
 - [x] Documentation updated (see Documentation section) — none required this phase, no README content changes
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `fix: repair Phase 1 consumer fallout — CompletionRequest ids, agent-handler deps, Agent type export`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
