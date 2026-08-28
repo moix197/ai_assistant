@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import type { ApprovalGate } from "../approval-gate-port";
 import { HISTORY_BUDGET_CHARS } from "../context-trim";
+import { createAgent } from "../index";
 import { runTurn } from "../loop";
 import type { Thread, ThreadRepo } from "../thread-repo-port";
 import type { AgentDefinition, ToolSpec } from "../types";
@@ -681,22 +682,22 @@ describe("runTurn — tool execution", () => {
 });
 
 describe("runTurn — approval gate", () => {
-  it("fails fast, before any I/O, when a tool requires approval but no approvalGate is supplied", async () => {
+  it("fails fast, at construction, when a tool requires approval but no approvalGate is supplied", () => {
     const gatedTool = tool({ name: "echo", requiresApproval: true });
     const complete = vi.fn();
     const llmProvider: LlmProvider = { complete };
     const threadRepo = fakeThreadRepo();
 
-    await expect(
-      runTurn(
-        definition({ tools: [gatedTool] }),
-        { llmProvider, threadRepo, signal: new AbortController().signal },
-        "telegram",
-        "555",
-        "hello",
-      ),
-    ).rejects.toThrow(/approvalGate/i);
+    expect(() =>
+      createAgent(definition({ tools: [gatedTool] }), {
+        llmProvider,
+        threadRepo,
+        signal: new AbortController().signal,
+      }),
+    ).toThrow(/approvalGate/i);
 
+    // Construction throws before any turn ever runs, so neither the thread
+    // nor the model is ever touched.
     expect(threadRepo.getOrCreateThread).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
   });

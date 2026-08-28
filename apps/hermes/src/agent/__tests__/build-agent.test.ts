@@ -100,10 +100,12 @@ describe("buildAgent — wiring", () => {
     expect(complete).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "another-model",
-        tools: expect.arrayContaining([
-          expect.objectContaining({ name: "get_current_time" }),
+        // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
+        // for deterministic output — "echo" precedes "get_current_time".
+        tools: [
           expect.objectContaining({ name: "echo" }),
-        ]),
+          expect.objectContaining({ name: "get_current_time" }),
+        ],
       }),
     );
   });

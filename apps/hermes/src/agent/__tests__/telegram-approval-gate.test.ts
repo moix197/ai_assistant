@@ -106,6 +106,9 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
       "msg-1",
       expect.stringContaining("Approved"),
     );
+    // handleCallback is the sole owner of the edit on a tap — requestApproval
+    // must not also edit once it wakes up from the resolved promise.
+    expect(channel.editMessage).toHaveBeenCalledTimes(1);
   });
 
   it("resolves 'denied' on a matching Deny tap and edits the message to a resolved state", async () => {
@@ -119,6 +122,13 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
 
     expect(await decisionPromise).toBe("denied");
     expect(channel.answerCallback).toHaveBeenCalledWith("cbq-1", expect.stringContaining("Denied"));
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
+      expect.stringContaining("Denied"),
+    );
+    // Same single-owner invariant as the approve case above.
+    expect(channel.editMessage).toHaveBeenCalledTimes(1);
   });
 });
 

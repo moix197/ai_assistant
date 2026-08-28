@@ -46,14 +46,18 @@ function callbackData(approvalId: string, action: "approve" | "deny"): string {
  *
  * Resolution — a tap (`handleCallback`), the `timeoutMs` window, or the
  * turn's own `AbortSignal` firing — is **one code path**: whichever fires
- * first synchronously deletes the `pending` map entry *before* any `await`
- * (including the `editMessage` that shows the resolved state), so the other
- * two triggers can never also resolve the same approval (settled decision
- * 7). The timeout races against `signal` using `delay(timeoutMs, signal)`
- * composed (`AbortSignal.any`) with a controller this function aborts once a
- * tap wins first — the same early-cancel pattern `packages/agent`'s
- * `invokeTool` uses for its own handler-timeout race — so an abort or a tap
- * never leaves the other trigger's timer leaking.
+ * first synchronously deletes the `pending` map entry *before* any `await`,
+ * so the other two triggers can never also resolve the same approval
+ * (settled decision 7). The post-resolution `editMessage` is owned by
+ * whichever trigger synchronously won: a tap edits inside `handleCallback`;
+ * the timeout/abort race edits inside `requestApproval` itself (guarded by
+ * `resolvedByTimer`, since both share that one `delay(...).then()`
+ * continuation) — never both, so exactly one `editMessage` call happens per
+ * resolution. The timeout races against `signal` using `delay(timeoutMs,
+ * signal)` composed (`AbortSignal.any`) with a controller this function
+ * aborts once a tap wins first — the same early-cancel pattern
+ * `packages/agent`'s `invokeTool` uses for its own handler-timeout race — so
+ * an abort or a tap never leaves the other trigger's timer leaking.
  *
  * `targetResolver` maps a turn's `threadId` to the Telegram chat id to
  * send/edit into — `apps/hermes/src/agent/build-agent.ts` supplies one
@@ -87,6 +91,11 @@ export function createTelegramApprovalGate(
     const tapWon = new AbortController();
     const raceSignal = AbortSignal.any([signal, tapWon.signal]);
 
+    // Set when this function's own delay-race resolves the promise (timeout
+    // or abort) rather than a tap — the flag is how requestApproval knows it,
+    // not handleCallback, owns the post-resolution edit for this decision.
+    let resolvedByTimer = false;
+
     const decision = await new Promise<"approved" | "denied">((resolve) => {
       pending.set(approvalId, { batch, target, messageId, resolve });
 
@@ -96,6 +105,7 @@ export function createTelegramApprovalGate(
         const entry = pending.get(approvalId);
         if (!entry) return;
         pending.delete(approvalId);
+        resolvedByTimer = true;
         entry.resolve("denied");
       });
     });
@@ -109,8 +119,12 @@ export function createTelegramApprovalGate(
       return decision;
     }
 
-    const label = decision === "approved" ? "Approved." : "Denied (or expired).";
-    await channel.editMessage(target, messageId, formatResolvedText(batch, label)).catch(() => {});
+    if (resolvedByTimer) {
+      // A tap already made its own editMessage call inside handleCallback —
+      // only edit here when this race, not a tap, won the resolution.
+      const label = "Denied (or expired).";
+      await channel.editMessage(target, messageId, formatResolvedText(batch, label)).catch(() => {});
+    }
     return decision;
   }
 

@@ -46,28 +46,13 @@ export interface RunTurnDeps {
   signal: AbortSignal;
   /**
    * Required once any tool in `definition.tools` sets `requiresApproval:
-   * true` — enforced by `assertApprovalGateConfigured`, called synchronously
-   * at the top of `runTurn`, before any I/O, so a gated tool configured with
-   * no gate supplied fails fast at construction rather than silently never
-   * asking. Optional otherwise: a tool-less or ungated-only definition has
-   * nothing to gate.
+   * true` — enforced by `assertApprovalGateConfigured` in
+   * `packages/agent/src/index.ts`'s `createAgent`, called synchronously at
+   * construction, before any I/O, so a gated tool configured with no gate
+   * supplied fails fast at boot rather than silently never asking. Optional
+   * otherwise: a tool-less or ungated-only definition has nothing to gate.
    */
   approvalGate?: ApprovalGate;
-}
-
-/**
- * Fails fast, before any I/O, when `definition` configures a gated tool but
- * `deps` carries no `approvalGate` to ask it through — the alternative
- * (discovering this only at the first gated call, mid-turn) would silently
- * never ask. Called synchronously at the very top of `runTurn`.
- */
-function assertApprovalGateConfigured(definition: AgentDefinition, deps: RunTurnDeps): void {
-  const needsGate = definition.tools.some((tool) => tool.requiresApproval);
-  if (needsGate && !deps.approvalGate) {
-    throw new Error(
-      `agent "${definition.name}" has a tool requiring approval but no approvalGate was supplied`,
-    );
-  }
 }
 
 /**
@@ -425,7 +410,6 @@ export async function runTurn(
   chatId: string,
   userText: string,
 ): Promise<string> {
-  assertApprovalGateConfigured(definition, deps);
   const turnId = newId();
   const startedAt = Date.now();
   let threadId: string | null = null;
