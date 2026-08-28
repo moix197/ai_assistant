@@ -1,4 +1,5 @@
 import {
+  type InboundCallback,
   type InboundMessage,
   type TelegramClient,
   type TelegramPoller,
@@ -358,8 +359,16 @@ export interface MessageHandlerDeps {
  * infrastructure. echoHandler stays available (createEchoHandler,
  * "./handlers/echo") as a documented reference/fallback but is no longer
  * wired — completionHandler is dispatchCommand's fallthrough now.
+ *
+ * `createMessageHandlers`'s return also carries the approval gate's callback
+ * resolver — see `subscribeGatedDispatch` for why both are wired together.
  */
-function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
+interface MessageHandlerWiring {
+  handlers: DispatchCommandDeps;
+  handleApprovalCallback: (callback: InboundCallback) => Promise<void>;
+}
+
+function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
   const { channel, pool, config, logger, signal, telemetryRecorder } = deps;
   const providerProfiles = buildProviderProfiles(config);
   const llmProvider = buildLlmProvider(
@@ -370,33 +379,37 @@ function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
     signal,
     telemetryRecorder,
   );
-  const agent = buildAgent(
+  const { agent, handleApprovalCallback } = buildAgent(
     pool,
     llmProvider,
     providerProfiles.primary.model,
     telemetryRecorder,
     signal,
+    channel,
   );
 
   return {
-    pingHandler: createPingHandler(channel, pool),
-    startHandler: createStartHandler(channel, pool),
-    statsHandler: createStatsHandler(
-      channel,
-      buildStatsRepo(pool),
-      systemClock,
-      resolveBudgetCapUsd(config),
-    ),
-    completionHandler: createCompletionHandler({
-      channel,
-      agent,
-      logger,
-      dedupeRepo: {
-        claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
-        complete: (dedupeKey: string, resultText: string) =>
-          completeDedupe(pool, dedupeKey, resultText),
-      },
-    }),
+    handlers: {
+      pingHandler: createPingHandler(channel, pool),
+      startHandler: createStartHandler(channel, pool),
+      statsHandler: createStatsHandler(
+        channel,
+        buildStatsRepo(pool),
+        systemClock,
+        resolveBudgetCapUsd(config),
+      ),
+      completionHandler: createCompletionHandler({
+        channel,
+        agent,
+        logger,
+        dedupeRepo: {
+          claim: (dedupeKey: string) => claimDedupe(pool, dedupeKey),
+          complete: (dedupeKey: string, resultText: string) =>
+            completeDedupe(pool, dedupeKey, resultText),
+        },
+      }),
+    },
+    handleApprovalCallback,
   };
 }
 
@@ -407,12 +420,22 @@ function createMessageHandlers(deps: MessageHandlerDeps): DispatchCommandDeps {
  * rejected before the private-chat check even looks at them — and, since
  * completionHandler is the fallthrough, before it ever reaches
  * `llmProvider.complete()`, so an unknown sender never costs anything.
+ *
+ * The approval gate's callback resolver is wired here too, alongside the
+ * message dispatch above: `channel.subscribeCallback` registers the single
+ * handler for every inbound button tap, routing it straight to
+ * `handleApprovalCallback` — deliberately **not** gated behind
+ * `withAllowlist`/`withPrivateChat` the way message dispatch is, since a
+ * callback answers a prompt this bot itself already sent into an allowlisted
+ * chat; there is no unauthenticated inbound surface here to gate.
  */
 function subscribeGatedDispatch(deps: MessageHandlerDeps): void {
   const { channel, config, logger } = deps;
-  const dispatchCommand = createDispatchCommand(createMessageHandlers(deps));
+  const { handlers, handleApprovalCallback } = createMessageHandlers(deps);
+  const dispatchCommand = createDispatchCommand(handlers);
   const allowlist = parseAllowlist(config.TELEGRAM_ALLOWLIST);
   channel.subscribe(withAllowlist(withPrivateChat(dispatchCommand, logger), allowlist, logger));
+  channel.subscribeCallback(handleApprovalCallback);
 }
 
 /**

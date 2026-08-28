@@ -22,6 +22,8 @@ const REDACTED_TOKEN = "<REDACTED>";
 const TIMEOUT_MARGIN_MS = 10_000;
 const SEND_MESSAGE_TIMEOUT_MS = 10_000;
 const DELETE_WEBHOOK_TIMEOUT_MS = 10_000;
+const ANSWER_CALLBACK_QUERY_TIMEOUT_MS = 10_000;
+const EDIT_MESSAGE_TEXT_TIMEOUT_MS = 10_000;
 
 /** HTTP 429 (rate limited): retry_after is authoritative, but still bounded so a persistent limiter can't hang shutdown. */
 const MAX_RATE_LIMIT_RETRIES = 5;
@@ -48,10 +50,35 @@ export interface TelegramMessage {
   text?: string;
 }
 
+/** The tap payload Telegram sends for an inline-keyboard button press. */
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  /** The message the tapped button was attached to — absent for very old/inaccessible messages, per Telegram's API. */
+  message?: TelegramMessage;
+  /** The button's `callback_data`, absent only for a button that carried none (never the case for a button this codebase sends). */
+  data?: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+}
+
+/** One row of an inline keyboard's buttons, in Telegram's own wire shape. */
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  callback_data: string;
+}
+
+export interface TelegramReplyMarkup {
+  inline_keyboard: TelegramInlineKeyboardButton[][];
+}
+
+export interface SendMessageOptions {
+  replyMarkup?: TelegramReplyMarkup;
 }
 
 export interface GetUpdatesParams {
@@ -70,7 +97,17 @@ export interface GetUpdatesParams {
 
 export interface TelegramClient {
   getUpdates(params: GetUpdatesParams): Promise<TelegramUpdate[]>;
-  sendMessage(chatId: string | number, text: string): Promise<void>;
+  /**
+   * Returns the id of the message actually sent — when `text` is chunked
+   * into multiple parts (see `chunk.ts`), that's the *last* part's id, and
+   * `options.replyMarkup` (when given) is attached to that last part only,
+   * so a keyboard never appears mid-message on a long send.
+   */
+  sendMessage(
+    chatId: string | number,
+    text: string,
+    options?: SendMessageOptions,
+  ): Promise<{ messageId: number }>;
   /**
    * Deletes any webhook registered for this bot token. `getUpdates`
    * long-polling and a webhook are mutually exclusive on Telegram's side, so
@@ -78,6 +115,10 @@ export interface TelegramClient {
    * idempotent even when no webhook was ever set.
    */
   deleteWebhook(): Promise<void>;
+  /** Acknowledges a `callback_query` — Telegram requires every one to be answered, with or without a visible toast (`text`). */
+  answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>;
+  /** Edits a previously sent message's text in place — used to make a resolved approval prompt's buttons inert. */
+  editMessageText(chatId: string | number, messageId: number, text: string): Promise<void>;
 }
 
 export interface TelegramClientOptions {
@@ -315,19 +356,31 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
       );
     },
 
-    async sendMessage(chatId, text) {
+    async sendMessage(chatId, text, options) {
       // Chunked before sending so any long output (starting with /ping's
       // text) is safe by construction, not by caller discipline. Parts are
       // sent in order, awaited one at a time, to preserve message order.
-      for (const part of chunkText(text)) {
-        await callWithRetry<TelegramMessage>(
+      // A caller-supplied keyboard is attached only to the last part, so it
+      // never appears mid-message on a long send.
+      const parts = chunkText(text);
+      let lastMessage: TelegramMessage | undefined;
+      for (let index = 0; index < parts.length; index++) {
+        const isLast = index === parts.length - 1;
+        const body: Record<string, unknown> = { chat_id: chatId, text: parts[index] };
+        if (isLast && options?.replyMarkup) {
+          body.reply_markup = options.replyMarkup;
+        }
+        lastMessage = await callWithRetry<TelegramMessage>(
           fetchImpl,
           token,
           "sendMessage",
-          { chat_id: chatId, text: part },
+          body,
           SEND_MESSAGE_TIMEOUT_MS,
         );
       }
+      // `parts` is never empty — chunkText always returns at least one part,
+      // even for an empty string — so lastMessage is always assigned here.
+      return { messageId: lastMessage!.message_id };
     },
 
     async deleteWebhook() {
@@ -337,6 +390,26 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
         "deleteWebhook",
         {},
         DELETE_WEBHOOK_TIMEOUT_MS,
+      );
+    },
+
+    async answerCallbackQuery(callbackQueryId, text) {
+      await callWithRetry<boolean>(
+        fetchImpl,
+        token,
+        "answerCallbackQuery",
+        { callback_query_id: callbackQueryId, ...(text !== undefined ? { text } : {}) },
+        ANSWER_CALLBACK_QUERY_TIMEOUT_MS,
+      );
+    },
+
+    async editMessageText(chatId, messageId, text) {
+      await callWithRetry<TelegramMessage>(
+        fetchImpl,
+        token,
+        "editMessageText",
+        { chat_id: chatId, message_id: messageId, text },
+        EDIT_MESSAGE_TEXT_TIMEOUT_MS,
       );
     },
   };

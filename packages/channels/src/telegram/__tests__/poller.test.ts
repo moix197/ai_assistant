@@ -51,7 +51,13 @@ describe("createTelegramPoller — offset ordering", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     let resolveHandler: () => void = () => {};
     const handlerPromise = new Promise<void>((resolve) => {
@@ -86,7 +92,13 @@ describe("createTelegramPoller — handler failure", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("transient send failure"));
 
@@ -117,7 +129,13 @@ describe("createTelegramPoller — handler failure", () => {
       .fn()
       .mockResolvedValueOnce([first, second])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValueOnce(new Error("boom"));
 
@@ -157,7 +175,13 @@ describe("createTelegramPoller — abort signal wiring (idle-bot shutdown regres
           );
         }),
     );
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     const handler = vi.fn();
 
@@ -184,13 +208,94 @@ describe("createTelegramPoller — abort signal wiring (idle-bot shutdown regres
   });
 });
 
+describe("createTelegramPoller — callback_query inbound (Phase 3)", () => {
+  function makeCallbackUpdate(updateId: number): TelegramUpdate {
+    return {
+      update_id: updateId,
+      callback_query: {
+        id: `cbq-${updateId}`,
+        from: { id: 111, is_bot: false },
+        message: {
+          message_id: 7,
+          chat: { id: 555, type: "private" },
+          date: 0,
+        },
+        data: "approval-1:approve",
+      },
+    };
+  }
+
+  it("requests callback_query in allowedUpdates", async () => {
+    const getUpdates = vi.fn().mockImplementation(() => pendingForever());
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+
+    createTelegramPoller({
+      client,
+      logger: createMockLogger(),
+      offsetRepo: createMockOffsetRepo(),
+    }).subscribe(vi.fn());
+
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(1));
+    expect(getUpdates).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedUpdates: expect.arrayContaining(["callback_query"]) }),
+    );
+  });
+
+  it("normalizes a callback_query update into the inbound callback kind and dispatches it to subscribeCallback's handler", async () => {
+    const update = makeCallbackUpdate(70);
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([update])
+      .mockImplementation(() => pendingForever());
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    const messageHandler = vi.fn();
+    const callbackHandler = vi.fn().mockResolvedValue(undefined);
+
+    const poller = createTelegramPoller({
+      client,
+      logger: createMockLogger(),
+      offsetRepo: createMockOffsetRepo(),
+    });
+    poller.subscribe(messageHandler);
+    poller.subscribeCallback(callbackHandler);
+
+    await vi.waitFor(() => expect(callbackHandler).toHaveBeenCalledTimes(1));
+    expect(callbackHandler).toHaveBeenCalledWith({
+      callbackId: "cbq-70",
+      callbackData: "approval-1:approve",
+      chatId: "555",
+      messageId: "7",
+      channelUserId: "111",
+    });
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+});
+
 describe("createTelegramPoller — fatal 409 conflict", () => {
   it("stops polling and reports the fatal error instead of retrying forever", async () => {
     const conflictError = new TelegramApiError("conflict, gave up after retries", {
       status: 409,
     });
     const getUpdates = vi.fn().mockRejectedValue(conflictError);
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     const onFatalError = vi.fn();
     const handler = vi.fn();

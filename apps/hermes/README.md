@@ -80,9 +80,13 @@ extracted into its own small module and unit-tested there:
 - `src/agent/build-agent.ts` — the only place allowed to import both
   `@hermes/agent` and construct the one hardcoded `AgentDefinition` (the D4
   multi-agent seam, reserved not built): `model` from the active provider
-  profile, `systemPrompt` a fixed placeholder, `tools: []` this phase,
-  `channels: ["telegram"]` — reusing the exact `"telegram"` string
-  `complete.ts`'s dedupe key already spells out, not a new constant.
+  profile, `systemPrompt` a fixed placeholder, `tools: [getCurrentTimeTool,
+  echoTool]`, `channels: ["telegram"]` — reusing the exact `"telegram"`
+  string `complete.ts`'s dedupe key already spells out, not a new constant.
+  Also the only place that constructs the `TelegramApprovalGate` (Phase 3)
+  and wires it into the agent's deps — see "Approval gate" below. Returns
+  `{ agent, handleApprovalCallback }`, not a bare `Agent`: `boot.ts` needs
+  the latter to route inbound button taps into the gate.
 
 ## Completion path
 
@@ -94,7 +98,43 @@ bounded turn loop), replies with its text, then marks the dedupe key
 completed — the same load-bearing claim → reply → complete ordering this
 handler has always used, unchanged. History now persists per `(channel,
 chat_id)` in Postgres (`packages/store`'s `threads` table) and survives a
-restart; this phase's turn has no tools yet (Phase 2).
+restart. The turn now has two tools (`get_current_time`, `echo`) and an
+approval gate for the one that's gated (`echo`) — see "Approval gate" below.
+
+## Approval gate
+
+`echo` is the one tool this PRD ships with `requiresApproval: true`. Before
+`packages/agent`'s loop runs it, `src/agent/build-agent.ts`'s
+`createTelegramApprovalGate` (`src/agent/telegram-approval-gate.ts`) sends
+one Telegram message per batch of gated calls, with Approve/Deny buttons
+naming every call in it — a batch of two gated calls in one model turn still
+gets exactly one combined prompt, never two.
+
+- **In-memory only, never persisted.** A pending approval lives in a
+  `Map<approvalId, ...>` inside the gate's closure. Restarting the process
+  drops it — there is no recovery path, by design (settled decision 6): a
+  restarted bot's next `callback_query` against a now-unknown id gets the
+  same "this approval has expired, please ask again" reply as an
+  already-resolved or genuinely-unknown one. All three are the same code
+  path, never a hang, a throw, or a second tool execution.
+- **One resolution, three possible triggers.** A tap (routed through
+  `boot.ts`'s `channel.subscribeCallback` wiring, alongside — not instead of
+  — the existing message dispatch), a 5-minute timeout, or the turn's own
+  `AbortSignal` firing. Whichever happens first synchronously deletes the
+  pending entry before any `await` (including the `editMessage` that shows
+  the resolved state), so the other two triggers can never also resolve the
+  same approval — a stale callback arriving right after the timer fires still
+  gets the expiry reply, never a second resolution.
+- **Denied, timed out, or aborted mid-wait are one outcome.** Each gated call
+  becomes a `"user did not approve"` tool result and the turn *continues* so
+  the model can respond to the denial — only the iteration cap, an abort, or
+  an LLM-level failure actually end a turn.
+- **Ungated calls in the same batch are never blocked** by the approval wait
+  (settled decision 16) — `get_current_time` alongside a gated `echo` call in
+  the same model response still resolves immediately.
+- `build-agent.ts` resolves a turn's `threadId` to its Telegram chat id via a
+  small in-memory index populated as threads are loaded (`ApprovalGate`'s
+  port is channel-agnostic — its context deliberately carries no chat id).
 
 ## Handlers
 

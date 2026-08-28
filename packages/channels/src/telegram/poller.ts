@@ -2,8 +2,11 @@ import { type Logger, delay } from "@hermes/core";
 import type {
   Channel,
   ChannelCapabilities,
+  InboundCallback,
+  InboundCallbackHandler,
   InboundMessage,
   InboundMessageHandler,
+  SendOptions,
 } from "../channel";
 import {
   TelegramApiError,
@@ -14,7 +17,7 @@ import {
 
 const POLL_TIMEOUT_SECONDS = 30;
 const POLL_LIMIT = 100;
-const ALLOWED_UPDATES = ["message", "edited_message"] as const;
+const ALLOWED_UPDATES = ["message", "edited_message", "callback_query"] as const;
 /** Default fixed delay before retrying after a transient getUpdates/handler failure. Overridable via TelegramPollerOptions.retryDelayMs so tests don't have to wait out the real value. */
 const DEFAULT_RETRY_DELAY_MS = 3_000;
 
@@ -64,6 +67,34 @@ export function normalizeTelegramUpdate(
 }
 
 /**
+ * Converts a raw `callback_query` update into the channel-neutral
+ * `InboundCallback` shape, or `null` when it can't (no `callback_query` at
+ * all, or one missing the message/data this codebase's only caller —
+ * the approval gate — always needs). Mirrors `normalizeTelegramUpdate`'s
+ * fail-closed shape: dropped and logged at debug, never thrown.
+ */
+export function normalizeTelegramCallback(
+  update: TelegramUpdate,
+  logger: Logger,
+): InboundCallback | null {
+  const callback = update.callback_query;
+  if (!callback) return null;
+
+  if (!callback.message || callback.data === undefined) {
+    logger.debug("dropped callback_query with no message or data", { updateId: update.update_id });
+    return null;
+  }
+
+  return {
+    callbackId: callback.id,
+    callbackData: callback.data,
+    chatId: String(callback.message.chat.id),
+    messageId: String(callback.message.message_id),
+    channelUserId: String(callback.from.id),
+  };
+}
+
+/**
  * Persistence port for the poller's offset — a small interface rather than a
  * direct `@hermes/store` dependency, so this package stays decoupled from
  * Postgres and the poller stays testable with a mock. `boot.ts` wires this to
@@ -99,8 +130,17 @@ export interface TelegramPollerOptions {
   signal?: AbortSignal;
 }
 
-/** A Telegram `Channel` plus graceful-shutdown control. */
+/**
+ * A Telegram `Channel` plus graceful-shutdown control. Narrows `Channel`'s
+ * optional Phase-3 members (`subscribeCallback`/`editMessage`/
+ * `answerCallback`) to required, since the real Telegram implementation
+ * always provides them — only a mock `Channel` built before inline keyboards
+ * existed is allowed to omit them.
+ */
 export interface TelegramPoller extends Channel {
+  subscribeCallback(handler: InboundCallbackHandler): void;
+  editMessage(target: string, messageId: string, text: string): Promise<void>;
+  answerCallback(callbackId: string, text?: string): Promise<void>;
   /**
    * Flips the loop's stopping flag so no new `getUpdates` call starts, then
    * resolves once the loop has actually exited — including any in-flight
@@ -122,6 +162,7 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
   const { client, logger, offsetRepo, onFatalError, signal } = options;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   let handler: InboundMessageHandler | undefined;
+  let callbackHandler: InboundCallbackHandler | undefined;
   let offset: number | undefined;
   let stopping = false;
   let loopPromise: Promise<void> = Promise.resolve();
@@ -130,6 +171,10 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
     const message = normalizeTelegramUpdate(update, logger);
     if (message && handler) {
       await handler(message);
+    }
+    const callback = normalizeTelegramCallback(update, logger);
+    if (callback && callbackHandler) {
+      await callbackHandler(callback);
     }
     const nextOffset = update.update_id + 1;
     // Persisted only *after* the handler has fully completed: Telegram
@@ -223,8 +268,29 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
       handler = inboundHandler;
       loopPromise = loop();
     },
-    async send(target, text) {
-      await client.sendMessage(target, text);
+    subscribeCallback(inboundCallbackHandler) {
+      callbackHandler = inboundCallbackHandler;
+    },
+    async send(target, text, sendOptions?: SendOptions) {
+      const replyMarkup = sendOptions?.buttons
+        ? {
+            inline_keyboard: sendOptions.buttons.map((row) =>
+              row.map((button) => ({ text: button.label, callback_data: button.callbackData })),
+            ),
+          }
+        : undefined;
+      const { messageId } = await client.sendMessage(
+        target,
+        text,
+        replyMarkup ? { replyMarkup } : undefined,
+      );
+      return { messageId: String(messageId) };
+    },
+    async editMessage(target, messageId, text) {
+      await client.editMessageText(target, Number(messageId), text);
+    },
+    async answerCallback(callbackId, text) {
+      await client.answerCallbackQuery(callbackId, text);
     },
     async stop() {
       stopping = true;

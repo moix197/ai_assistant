@@ -49,6 +49,59 @@ describe("createTelegramClient — request shape", () => {
   });
 });
 
+describe("createTelegramClient — inline keyboards (Phase 3)", () => {
+  it("attaches reply_markup and returns the sent message's id when options.replyMarkup is given", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true, result: { message_id: 42 } }));
+    const client = createTelegramClient({ token: TOKEN, fetchImpl });
+    const replyMarkup = {
+      inline_keyboard: [[{ text: "Approve", callback_data: "a1:approve" }]],
+    };
+
+    const result = await client.sendMessage("999", "please approve", { replyMarkup });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "999",
+      text: "please approve",
+      reply_markup: replyMarkup,
+    });
+    expect(result).toEqual({ messageId: 42 });
+  });
+
+  it("answerCallbackQuery calls the answerCallbackQuery endpoint with the callback id and text", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ ok: true, result: true }));
+    const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+    await client.answerCallbackQuery("cbq-1", "Approved.");
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.telegram.org/bot${TOKEN}/answerCallbackQuery`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      callback_query_id: "cbq-1",
+      text: "Approved.",
+    });
+  });
+
+  it("editMessageText calls the editMessageText endpoint with chat_id/message_id/text", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true, result: { message_id: 42 } }));
+    const client = createTelegramClient({ token: TOKEN, fetchImpl });
+
+    await client.editMessageText("999", 42, "Approved.");
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.telegram.org/bot${TOKEN}/editMessageText`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      chat_id: "999",
+      message_id: 42,
+      text: "Approved.",
+    });
+  });
+});
+
 describe("createTelegramClient — getUpdates timeout margin", () => {
   it("sets the AbortController timeout longer than the poll timeout param", async () => {
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");

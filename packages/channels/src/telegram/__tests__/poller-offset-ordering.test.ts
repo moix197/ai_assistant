@@ -41,7 +41,13 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
 
     let resolveHandler: () => void = () => {};
@@ -75,7 +81,13 @@ describe("createTelegramPoller — offset persistence ordering", () => {
       .fn()
       .mockResolvedValueOnce([update])
       .mockImplementation(() => pendingForever());
-    const client: TelegramClient = { getUpdates, sendMessage: vi.fn(), deleteWebhook: vi.fn() };
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
     const logger = createMockLogger();
     const handler = vi.fn().mockRejectedValue(new Error("boom"));
 

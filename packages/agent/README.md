@@ -3,11 +3,12 @@
 The bounded agentic loop: turns a stateless single-shot LLM reply into a real
 multi-turn conversation with restart-safe history. Phase 1 of
 `plans/03-agent-core.md` shipped the loop's simplest shape — load thread, trim
-history, call the model once, persist, reply — with no tools. Phase 2 (this
-phase) adds the tool registry and a real multi-iteration loop: zod
-validation, a two-strikes per-tool-call retry counter, a per-tool-call
-handler timeout, and concurrent execution of every tool call in one model
-response. Phase 3 adds the approval gate.
+history, call the model once, persist, reply — with no tools. Phase 2 added
+the tool registry and a real multi-iteration loop: zod validation, a
+two-strikes per-tool-call retry counter, a per-tool-call handler timeout, and
+concurrent execution of every tool call in one model response. Phase 3 (this
+phase) adds the approval gate: some tools require a human's yes/no before
+they run.
 
 ## Port contract
 
@@ -164,15 +165,68 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
    `safeParse`, the abort check) runs before its first `await`, so there's no
    event-loop gap between calls for an abort to land "between" them.
 6. Each call — regardless of outcome — emits its own `tool.call` telemetry
-   event: `{ name: "tool.call", threadId, turnId, tool, durationMs, approved:
-   true, error? }`. `approved: true` unconditionally this phase, since no
-   approval gate exists yet (Phase 3). `error`, when present, is truncated to
-   500 characters — the same bound `02-telemetry`'s settled decision 14 puts
-   on `llm.call`'s `error`.
+   event: `{ name: "tool.call", threadId, turnId, tool, durationMs, approved,
+   error? }`. `error`, when present, is truncated to 500 characters — the
+   same bound `02-telemetry`'s settled decision 14 puts on `llm.call`'s
+   `error`. `approved` is `true` for every ungated call; a gated call's
+   `approved` reflects the approval gate's real decision (see below).
 
 `TOOL_HANDLER_TIMEOUT_MS` is a package-internal constant (not
 env-configurable, same posture as `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`),
 independent of the turn-level iteration cap.
+
+## Approval gate
+
+`src/approval-gate-port.ts` exports `ApprovalRequest { tool, args }` (the
+model's *raw* requested arguments, shown to the human as-is — not the
+`schema.safeParse`d result) and the injected `ApprovalGate` port:
+`requestApproval(batch, { threadId, turnId }, signal): Promise<"approved" |
+"denied">`. Channel-agnostic — `packages/agent` never imports
+`@hermes/channels`; the one real implementation
+(`apps/hermes/src/agent/telegram-approval-gate.ts`) is Telegram-specific and
+lives entirely in `apps/hermes`, matching the D4-seam boundary rule.
+
+Before executing a response's tool calls, `loop.ts` (`executeToolCalls`)
+splits them into gated (`requiresApproval: true`) and ungated:
+
+- **Ungated calls run immediately**, exactly as Phase 2 shipped them — the
+  approval wait for any gated calls in the same batch never blocks them
+  (settled decision 16). This is proven with a fake `ApprovalGate` whose
+  promise never resolves during the test and the ungated call's result still
+  lands.
+- **Gated calls in the same model response share one combined approval
+  prompt** (settled decision 5 — the user's own override of a more granular
+  per-call default): `runGatedToolCalls` builds one `ApprovalRequest[]` batch
+  and calls `requestApproval` once for the whole batch, not once per call.
+- **Approved**: every gated call in the batch falls through to the exact same
+  validate-then-invoke path an ungated call takes (`runToolCalls`) — approval
+  only gates *whether* a call runs, never how its args are validated or
+  retried.
+- **Denied, timed out, or aborted mid-wait are the same code path** (settled
+  decision 7): every call in the batch becomes a `"user did not approve"`
+  tool result, `approved: false` on its `tool.call` event, no handler ever
+  runs, and the turn's retry counter is untouched. The loop *continues* — an
+  approval denial never ends a turn (`TurnOutcome` excludes it, settled
+  decision 13) — so the model sees the denial and can respond to it.
+- `RunTurnDeps.approvalGate` is optional in the type, but `runTurn` calls
+  `assertApprovalGateConfigured` synchronously at the very top of the
+  function, before any I/O: if any tool in `definition.tools` sets
+  `requiresApproval: true` and no `approvalGate` was supplied, it throws
+  immediately — fail-fast at construction, not silently never asking on the
+  first gated call.
+
+`apps/hermes/src/agent/telegram-approval-gate.ts`'s `createTelegramApprovalGate`
+implements the port over Telegram inline keyboards: one message with
+Approve/Deny buttons per batch, held in an in-memory `Map<approvalId, ...>` —
+**not persisted** (settled decision 6 — a restart drops any pending
+approval). Resolution — a tap, the 5-minute timeout, or the turn's
+`AbortSignal` firing — is one code path: whichever fires first synchronously
+deletes the map entry *before* any `await` (including the `editMessage` that
+shows the resolved state), so the other two triggers can never also resolve
+it, and a `callback_query` referencing an id that's unknown, already
+resolved, or gone because the process restarted is the same branch: answer
+with "this approval has expired, please ask again," never a hang or a second
+execution. See `apps/hermes/README.md` for the Telegram-specific mechanics.
 
 ## Persistence port
 
@@ -189,8 +243,9 @@ affects what is sent to the model on a given call.
 `src/index.ts` exports `createAgent(definition, deps)` — a thin factory
 wrapping `runTurn` and the injected deps into a `{ handleMessage(channel,
 chatId, text): Promise<string> }` object — plus `AgentDefinition`,
-`ToolSpec`, `ThreadRepo`, `Thread`, and `Message`. Nothing else is public;
-`loop.ts`, `prompt.ts`, and `context-trim.ts` are internal.
+`ToolSpec`, `ApprovalGate`, `ApprovalRequest`, `ThreadRepo`, `Thread`, and
+`Message`. Nothing else is public; `loop.ts`, `prompt.ts`, and
+`context-trim.ts` are internal.
 
 ## Dependencies
 

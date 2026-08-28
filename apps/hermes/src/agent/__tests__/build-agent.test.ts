@@ -1,3 +1,4 @@
+import type { TelegramPoller } from "@hermes/channels";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
@@ -15,6 +16,19 @@ function createMockRecorder(): TelemetryRecorderHandle & { record: ReturnType<ty
   return { record: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) };
 }
 
+/** Never exercised by these tests (no gated tool call is triggered) — just needs to satisfy the type. */
+function createMockChannel(): TelegramPoller {
+  return {
+    capabilities: { markdown: true, files: true, buttons: true, maxMessageLength: 4096 },
+    subscribe: vi.fn(),
+    subscribeCallback: vi.fn(),
+    send: vi.fn().mockResolvedValue({ messageId: "msg-1" }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    answerCallback: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 describe("buildAgent — wiring", () => {
   it("handleMessage delegates to the injected llmProvider and persists through the real pool", async () => {
     const pool = createMockPool([
@@ -30,12 +44,13 @@ describe("buildAgent — wiring", () => {
     const llmProvider: LlmProvider = { complete };
     const recorder = createMockRecorder();
 
-    const agent = buildAgent(
+    const { agent } = buildAgent(
       pool,
       llmProvider,
       "some-model",
       recorder,
       new AbortController().signal,
+      createMockChannel(),
     );
     const reply = await agent.handleMessage("telegram", "555", "hello");
 
@@ -59,7 +74,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -72,19 +87,23 @@ describe("buildAgent — wiring", () => {
     });
     const llmProvider: LlmProvider = { complete };
 
-    const agent = buildAgent(
+    const { agent } = buildAgent(
       pool,
       llmProvider,
       "another-model",
       createMockRecorder(),
       new AbortController().signal,
+      createMockChannel(),
     );
     await agent.handleMessage("telegram", "999", "hi");
 
     expect(complete).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "another-model",
-        tools: [expect.objectContaining({ name: "get_current_time" })],
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "get_current_time" }),
+          expect.objectContaining({ name: "echo" }),
+        ]),
       }),
     );
   });

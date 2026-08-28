@@ -1,6 +1,7 @@
 import type { Message, TelemetryEvent, TelemetryRecorder, ToolCall } from "@hermes/core";
 import { delay, newId } from "@hermes/core";
 import { LlmAbortedError, type LlmProvider, MAX_TOKENS_PER_TURN } from "@hermes/llm";
+import type { ApprovalGate, ApprovalRequest } from "./approval-gate-port";
 import { HISTORY_BUDGET_CHARS, trimHistory } from "./context-trim";
 import { assemblePrefix } from "./prompt";
 import type { Thread, ThreadRepo } from "./thread-repo-port";
@@ -25,6 +26,13 @@ const TOOL_HANDLER_TIMEOUT_MS = 10_000;
 /** Matches `02-telemetry`'s settled decision 14 bound on `llm.call`'s `error` field — applied here for `tool.call`. */
 const TOOL_ERROR_MAX_CHARS = 500;
 
+/**
+ * Fed back to the model, verbatim, for a gated call the human denied, let
+ * time out, or that got swept up in a shutdown abort mid-wait — settled
+ * decision 7's single code path treats all three the same way.
+ */
+const APPROVAL_DENIED_MESSAGE = "user did not approve";
+
 export interface RunTurnDeps {
   llmProvider: LlmProvider;
   threadRepo: ThreadRepo;
@@ -36,6 +44,30 @@ export interface RunTurnDeps {
    * Dependencies & Risks.
    */
   signal: AbortSignal;
+  /**
+   * Required once any tool in `definition.tools` sets `requiresApproval:
+   * true` — enforced by `assertApprovalGateConfigured`, called synchronously
+   * at the top of `runTurn`, before any I/O, so a gated tool configured with
+   * no gate supplied fails fast at construction rather than silently never
+   * asking. Optional otherwise: a tool-less or ungated-only definition has
+   * nothing to gate.
+   */
+  approvalGate?: ApprovalGate;
+}
+
+/**
+ * Fails fast, before any I/O, when `definition` configures a gated tool but
+ * `deps` carries no `approvalGate` to ask it through — the alternative
+ * (discovering this only at the first gated call, mid-turn) would silently
+ * never ask. Called synchronously at the very top of `runTurn`.
+ */
+function assertApprovalGateConfigured(definition: AgentDefinition, deps: RunTurnDeps): void {
+  const needsGate = definition.tools.some((tool) => tool.requiresApproval);
+  if (needsGate && !deps.approvalGate) {
+    throw new Error(
+      `agent "${definition.name}" has a tool requiring approval but no approvalGate was supplied`,
+    );
+  }
 }
 
 /**
@@ -154,8 +186,9 @@ async function invokeTool(
 
 /**
  * Emits this call's `tool.call` telemetry event and turns the outcome into
- * the `role: "tool"` message fed back to the model. `approved: true`
- * unconditionally this phase — no approval gate exists yet (Phase 3).
+ * the `role: "tool"` message fed back to the model. `approved` defaults to
+ * `true` for the ungated path (`resolveToolCall`, below) — `runGatedToolCalls`
+ * passes `false` explicitly for a denied/timed-out/aborted gated call.
  */
 function finishToolCall(
   toolCall: ToolCall,
@@ -164,6 +197,7 @@ function finishToolCall(
   turnId: string,
   startedAt: number,
   outcome: { content: string; error?: string },
+  approved = true,
 ): Message {
   emitTelemetryEvent(deps.telemetryRecorder, {
     name: "tool.call",
@@ -171,7 +205,7 @@ function finishToolCall(
     turnId,
     tool: toolCall.name,
     durationMs: Date.now() - startedAt,
-    approved: true,
+    approved,
     ...(outcome.error !== undefined ? { error: truncateToolError(outcome.error) } : {}),
   });
   return { role: "tool", content: outcome.content, toolCallId: toolCall.id };
@@ -239,6 +273,78 @@ function runToolCalls(
 }
 
 /**
+ * Resolves a batch of gated tool calls behind one combined approval prompt
+ * (settled decision 5 — one prompt for the whole batch, not one per call).
+ * Denied, timed out, or aborted mid-wait are the same code path (settled
+ * decision 7): every call in the batch becomes an `APPROVAL_DENIED_MESSAGE`
+ * tool result, no handler ever runs, and the turn's retry counter is never
+ * touched. An approved batch falls through to the exact same
+ * validate-then-invoke path an ungated call takes (`runToolCalls`) —
+ * approval only gates *whether* a call runs, never how its args are
+ * validated or retried.
+ */
+async function runGatedToolCalls(
+  gatedCalls: ToolCall[],
+  toolsByName: Map<string, ToolSpec>,
+  retryCounts: Map<string, number>,
+  deps: RunTurnDeps,
+  threadId: string,
+  turnId: string,
+): Promise<Message[]> {
+  const startedAt = Date.now();
+  const batch: ApprovalRequest[] = gatedCalls.map((call) => ({ tool: call.name, args: call.arguments }));
+  // Non-null: assertApprovalGateConfigured (called at the top of runTurn)
+  // guarantees a gate exists whenever a gated tool is configured.
+  const decision = await deps.approvalGate!.requestApproval(batch, { threadId, turnId }, deps.signal);
+
+  if (decision === "approved") {
+    return runToolCalls(gatedCalls, toolsByName, retryCounts, deps, threadId, turnId);
+  }
+
+  return gatedCalls.map((toolCall) =>
+    finishToolCall(toolCall, deps, threadId, turnId, startedAt, { content: APPROVAL_DENIED_MESSAGE }, false),
+  );
+}
+
+/**
+ * Splits one response's tool calls into gated (`requiresApproval: true`) and
+ * ungated, and dispatches both concurrently: the approval wait for any
+ * gated calls never blocks the ungated calls' execution (settled decision
+ * 16). An unknown tool name (no matching `ToolSpec`) is never gated — it
+ * falls through to the existing "unknown tool" ungated path unchanged.
+ * Results are recombined in the model's original call order before being
+ * appended to the conversation.
+ */
+async function executeToolCalls(
+  toolCalls: ToolCall[],
+  toolsByName: Map<string, ToolSpec>,
+  retryCounts: Map<string, number>,
+  deps: RunTurnDeps,
+  threadId: string,
+  turnId: string,
+): Promise<Message[]> {
+  const gatedIds = new Set(
+    toolCalls.filter((call) => toolsByName.get(call.name)?.requiresApproval).map((call) => call.id),
+  );
+  const gatedCalls = toolCalls.filter((call) => gatedIds.has(call.id));
+  const ungatedCalls = toolCalls.filter((call) => !gatedIds.has(call.id));
+
+  const [ungatedResults, gatedResults] = await Promise.all([
+    runToolCalls(ungatedCalls, toolsByName, retryCounts, deps, threadId, turnId),
+    gatedCalls.length > 0
+      ? runGatedToolCalls(gatedCalls, toolsByName, retryCounts, deps, threadId, turnId)
+      : Promise.resolve<Message[]>([]),
+  ]);
+
+  const byCallId = new Map(
+    [...ungatedResults, ...gatedResults].map(
+      (message) => [(message as { toolCallId: string }).toolCallId, message] as const,
+    ),
+  );
+  return toolCalls.map((call) => byCallId.get(call.id)!);
+}
+
+/**
  * The tool-execution loop: assembles the byte-stable prefix once, trims
  * stored history once, then calls the model up to `MAX_ITERATIONS` times.
  * The registry (`toolsByName`) and the retry counter (`retryCounts`) are
@@ -286,7 +392,7 @@ async function converse(
     // the matching `tool_calls` (see `packages/llm`'s adapter serialization).
     conversation.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
 
-    const toolResultMessages = await runToolCalls(
+    const toolResultMessages = await executeToolCalls(
       result.toolCalls,
       toolsByName,
       retryCounts,
@@ -319,6 +425,7 @@ export async function runTurn(
   chatId: string,
   userText: string,
 ): Promise<string> {
+  assertApprovalGateConfigured(definition, deps);
   const turnId = newId();
   const startedAt = Date.now();
   let threadId: string | null = null;

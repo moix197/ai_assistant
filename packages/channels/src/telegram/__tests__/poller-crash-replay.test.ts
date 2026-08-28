@@ -49,6 +49,8 @@ describe("createTelegramPoller — crash-before-persist replay", () => {
       getUpdates: getUpdates1,
       sendMessage: vi.fn(),
       deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
     };
     const handler1 = vi.fn().mockResolvedValue(undefined);
     const offsetRepo1: TelegramOffsetRepo = {
@@ -78,6 +80,8 @@ describe("createTelegramPoller — crash-before-persist replay", () => {
       getUpdates: getUpdates2,
       sendMessage: vi.fn(),
       deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
     };
     const handler2 = vi.fn().mockResolvedValue(undefined);
     const offsetRepo2: TelegramOffsetRepo = {

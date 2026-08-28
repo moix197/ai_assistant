@@ -7,6 +7,7 @@ import {
 } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
+import type { ApprovalGate } from "../approval-gate-port";
 import { HISTORY_BUDGET_CHARS } from "../context-trim";
 import { runTurn } from "../loop";
 import type { Thread, ThreadRepo } from "../thread-repo-port";
@@ -676,6 +677,156 @@ describe("runTurn — tool execution", () => {
     expect(toolCallEvents).toHaveLength(1);
     expect(toolCallEvents[0]).toMatchObject({ tool: "boom", approved: true });
     expect(toolCallEvents[0]?.error).toHaveLength(500);
+  });
+});
+
+describe("runTurn — approval gate", () => {
+  it("fails fast, before any I/O, when a tool requires approval but no approvalGate is supplied", async () => {
+    const gatedTool = tool({ name: "echo", requiresApproval: true });
+    const complete = vi.fn();
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+
+    await expect(
+      runTurn(
+        definition({ tools: [gatedTool] }),
+        { llmProvider, threadRepo, signal: new AbortController().signal },
+        "telegram",
+        "555",
+        "hello",
+      ),
+    ).rejects.toThrow(/approvalGate/i);
+
+    expect(threadRepo.getOrCreateThread).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("runs a gated tool's handler once the gate approves, sending the model's raw args as the batch", async () => {
+    const handler = vi.fn().mockResolvedValue("echoed");
+    const gatedTool = tool({ name: "echo", requiresApproval: true, handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "echo", arguments: { text: "hi" } }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    const text = await runTurn(
+      definition({ tools: [gatedTool] }),
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: new AbortController().signal,
+        approvalGate,
+      },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    expect(text).toBe("done");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(approvalGate.requestApproval).toHaveBeenCalledWith(
+      [{ tool: "echo", args: { text: "hi" } }],
+      expect.objectContaining({ threadId: "thread-1" }),
+      expect.anything(),
+    );
+
+    const toolCallEvents = recorder.record.mock.calls
+      .map(([event]) => event as TelemetryEvent)
+      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+    expect(toolCallEvents).toHaveLength(1);
+    expect(toolCallEvents[0]).toMatchObject({ tool: "echo", approved: true });
+  });
+
+  it("never runs the handler when the gate denies, feeds back 'user did not approve', and the loop continues", async () => {
+    const handler = vi.fn();
+    const gatedTool = tool({ name: "echo", requiresApproval: true, handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "echo", arguments: { text: "hi" } }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "not approved, sorry" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("denied") };
+
+    const text = await runTurn(
+      definition({ tools: [gatedTool] }),
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: new AbortController().signal,
+        approvalGate,
+      },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    expect(text).toBe("not approved, sorry");
+    expect(handler).not.toHaveBeenCalled();
+
+    const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+    expect(findToolMessage(secondRequest, "c1")?.content).toBe("user did not approve");
+
+    const toolCallEvents = recorder.record.mock.calls
+      .map(([event]) => event as TelemetryEvent)
+      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+    expect(toolCallEvents[0]).toMatchObject({ tool: "echo", approved: false });
+  });
+
+  it("collects a batch's ungated result even while the gated call's approval promise never resolves", async () => {
+    let ungatedCalled = false;
+    const gatedHandler = vi.fn();
+    const ungatedTool = tool({
+      name: "fine",
+      handler: vi.fn().mockImplementation(async () => {
+        ungatedCalled = true;
+        return "ok";
+      }),
+    });
+    const gatedTool = tool({ name: "echo", requiresApproval: true, handler: gatedHandler });
+    const complete = vi.fn().mockResolvedValueOnce(
+      completionResult({
+        toolCalls: [
+          { id: "g1", name: "echo", arguments: { text: "hi" } },
+          { id: "u1", name: "fine", arguments: {} },
+        ],
+        text: "",
+      }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    // Never resolves during this test — proves the ungated call isn't blocked on it.
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockReturnValue(new Promise(() => {})) };
+
+    // Not awaited to completion: the gate never resolves, so this turn can
+    // never finish — only that the ungated handler ran matters here.
+    void runTurn(
+      definition({ tools: [gatedTool, ungatedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    await vi.waitFor(() => expect(ungatedCalled).toBe(true));
+    expect(gatedHandler).not.toHaveBeenCalled();
   });
 });
 

@@ -27,6 +27,7 @@ function createRecordingChannel(): Channel & { sent: string[] } {
     sent,
     async send(_target, text) {
       sent.push(text);
+      return { messageId: "test-message-id" };
     },
   };
 }

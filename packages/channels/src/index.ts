@@ -2,9 +2,13 @@ export type {
   Channel,
   ChannelCapabilities,
   ChatType,
+  InboundCallback,
+  InboundCallbackHandler,
   InboundMessage,
   InboundMessageHandler,
   InboundMessageKind,
+  SendButton,
+  SendOptions,
 } from "./channel";
 export { isAllowed, parseAllowlist } from "./telegram/allowlist";
 export { chunkText } from "./telegram/chunk";
@@ -12,6 +16,8 @@ export {
   createTelegramClient,
   TelegramApiError,
   type GetUpdatesParams,
+  type SendMessageOptions,
+  type TelegramCallbackQuery,
   type TelegramChat,
   type TelegramClient,
   type TelegramClientOptions,
@@ -21,6 +27,7 @@ export {
 } from "./telegram/client";
 export {
   createTelegramPoller,
+  normalizeTelegramCallback,
   normalizeTelegramUpdate,
   type TelegramOffsetRepo,
   type TelegramPoller,

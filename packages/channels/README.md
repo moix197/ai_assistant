@@ -25,8 +25,26 @@ implements:
   built before this phase: echo/`/ping`/`/start` simply ignore the field,
   still safe by inspection (see "Guards" below) since none of them has an
   external side effect requiring a dedupe key.
-- `send(target, text)` — replies into `target` (the channel-specific chat
-  id, e.g. `InboundMessage.chatId`).
+- `send(target, text, options?)` — replies into `target` (the
+  channel-specific chat id, e.g. `InboundMessage.chatId`). Returns the sent
+  message's id: `Promise<{ messageId: string }>`. `options.buttons` (rows of
+  `{ label, callbackData }`, Phase 3) attaches an inline keyboard — only
+  meaningful on a channel whose `capabilities.buttons` is true. Additive over
+  the pre-Phase-3 shape: a caller that passes no `options` and ignores the
+  return value is unaffected.
+- `subscribeCallback(handler)`, `editMessage(target, messageId, text)`,
+  `answerCallback(callbackId, text?)` (Phase 3, all optional on the `Channel`
+  port) — the inline-keyboard surface `apps/hermes/src/agent/
+  telegram-approval-gate.ts` uses: `subscribeCallback` registers the single
+  handler invoked for every inbound button tap, normalized into
+  `InboundCallback { callbackId, callbackData, chatId, messageId,
+  channelUserId }`; `editMessage` edits a previously sent message in place
+  (used to make a resolved approval prompt's buttons inert); `answerCallback`
+  acknowledges a tap (Telegram requires every `callback_query` to be
+  answered). Optional on the base port so a `Channel` mock built before
+  inline keyboards existed is unaffected — `TelegramPoller` (below) narrows
+  all three to required, since the real Telegram implementation always
+  provides them.
 
 Business logic — the private-chat-only guard, command dispatch, echoing —
 lives in `apps/hermes/src/handlers/`, not in this package. Allowlist
@@ -37,11 +55,16 @@ messages in and out of Telegram."
 
 ## Telegram adapter
 
-- `telegram/client.ts` — a raw-`fetch` wrapper around `getUpdates` and
-  `sendMessage`. No telegraf/grammy: two endpoints don't justify a
+- `telegram/client.ts` — a raw-`fetch` wrapper around `getUpdates`,
+  `sendMessage`, `answerCallbackQuery`, and `editMessageText` (the last two,
+  Phase 3). Still no telegraf/grammy: four endpoints don't justify a
   mega-package. `sendMessage` chunks its text via `chunk.ts` before sending,
-  awaiting each part in order. Both `getUpdates` and `sendMessage` route
-  errors through the retry policy built on `@hermes/core`'s `nextDelay`: a
+  awaiting each part in order, and returns the last part's `message_id`; an
+  optional `options.replyMarkup` (an inline keyboard) is attached only to
+  that last part, so a keyboard never appears mid-message on a long send.
+  `getUpdates`, `sendMessage`, `answerCallbackQuery`, and `editMessageText`
+  all route errors through the retry policy built on `@hermes/core`'s
+  `nextDelay`: a
   `429` waits for Telegram's `retry_after` (falling back to computed backoff
   if absent); a
   `409` (another `getUpdates` consumer already running) gets a few bounded
@@ -64,10 +87,18 @@ messages in and out of Telegram."
   `packages/llm`'s adapter can share the same implementation instead of
   duplicating it.
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
-  `allowed_updates=["message","edited_message"]`) plus
-  `normalizeTelegramUpdate`, which converts a raw update into an
-  `InboundMessage` or returns `null` when it can't (see guards below),
-  populating `updateId` from the raw update's own `update_id`. The
+  `allowed_updates=["message","edited_message","callback_query"]`, the last
+  added Phase 3) plus `normalizeTelegramUpdate`, which converts a raw update
+  into an `InboundMessage` or returns `null` when it can't (see guards
+  below), populating `updateId` from the raw update's own `update_id`. Phase
+  3 adds `normalizeTelegramCallback`, the same shape for a `callback_query`
+  update: `null` when there's no `callback_query`, or one missing its
+  `message`/`data` (fail-closed, logged at debug, mirroring
+  `normalizeTelegramUpdate`'s own guard); otherwise an `InboundCallback`
+  dispatched to the single handler `subscribeCallback` registers, alongside
+  (never instead of) the existing message dispatch — a raw update is either a
+  message or a `callback_query`, never both, so only one handler ever fires
+  per update. The
   offset is loaded once at start via a `TelegramOffsetRepo` port (injected —
   `boot.ts` wires it to `@hermes/store`'s `getOffset`/`setOffset`, keeping
   this package decoupled from Postgres) and persisted after each update is
