@@ -68,6 +68,35 @@ describe.skipIf(!testDatabaseUrl)("google-account-repo (integration)", () => {
     expect(countResult.rows[0]?.count).toBe("1");
   });
 
+  it("reconnect upsert preserves the original created_at while advancing updated_at", async () => {
+    await upsertAccount(pool, account({ googleEmail: "first@example.com" }));
+    const before = await pool.query<{ created_at: Date; updated_at: Date }>(
+      "SELECT created_at, updated_at FROM google_accounts WHERE channel = $1 AND channel_user_id = $2",
+      ["telegram", "user-1"],
+    );
+
+    // now() is transaction-start time in Postgres, so back-to-back upserts in
+    // the same millisecond can otherwise report an identical updated_at.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await upsertAccount(
+      pool,
+      account({
+        googleEmail: "second@example.com",
+        tokenEnvelope: { v: 1, iv: "bmV3", tag: "dGFnMg==", ct: "Y3Qy" },
+      }),
+    );
+    const after = await pool.query<{ created_at: Date; updated_at: Date }>(
+      "SELECT created_at, updated_at FROM google_accounts WHERE channel = $1 AND channel_user_id = $2",
+      ["telegram", "user-1"],
+    );
+
+    expect(after.rows[0]?.created_at).toEqual(before.rows[0]?.created_at);
+    expect(after.rows[0]?.updated_at.getTime()).toBeGreaterThan(
+      before.rows[0]?.updated_at.getTime() ?? 0,
+    );
+  });
+
   it("deleteAccount removes the row", async () => {
     await upsertAccount(pool, account());
     await deleteAccount(pool, "telegram", "user-1");
