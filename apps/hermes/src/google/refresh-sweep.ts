@@ -93,11 +93,15 @@ export function createRefreshSweep(deps: RefreshSweepDeps): RefreshSweep {
   }
 
   function tick(): void {
-    inFlight = runOnce().catch((error) => {
-      logger.error("refresh sweep: runOnce failed", {
-        error: error instanceof Error ? error.message : String(error),
+    inFlight = runOnce()
+      .catch((error) => {
+        logger.error("refresh sweep: runOnce failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        inFlight = undefined;
       });
-    });
   }
 
   function start(intervalMs: number, signal: AbortSignal): void {

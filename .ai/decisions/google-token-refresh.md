@@ -105,6 +105,35 @@ a transient failure is logged and retried next tick.
   coordinator* — no correctness reason to share one (`getToken`/`refreshToken`
   are both stateless-per-call), and a shared instance would only couple two
   otherwise-independent construction sites for no benefit.
+- *A throwaway `OAuth2Client` constructed per refresh call, calling the
+  public `refreshAccessToken()` on that isolated instance instead of reaching
+  around the shared client's protected `refreshToken()`.* Re-examined during
+  Phase 4 code review specifically to see whether the protected-API cast
+  could be dropped. Verified against the installed
+  `google-auth-library@9.15.1` source
+  (`node_modules/.pnpm/google-auth-library@9.15.1/node_modules/google-auth-library/build/src/auth/oauth2client.js`):
+  the constructor (line ~45) is indeed cheap — field assignment plus a
+  `super(opts)` call, no I/O — and the public `refreshAccessToken()`
+  (line ~238, no callback given) delegates to `refreshAccessTokenAsync()`
+  (line ~246), which itself calls
+  `this.refreshToken(this.credentials.refresh_token)` — the very protected
+  method the cast reaches around, just invoked internally by the SDK on the
+  throwaway instance instead of externally by our code on the shared one.
+  Behaviorally sound in principle, but rejected because it breaks
+  `__tests__/refresh.test.ts` without editing it: every test there builds
+  `oauthClient` as `{ refreshToken } as unknown as OAuth2Client`
+  (`fakeOAuthClient`) and asserts directly against that mock function (call
+  count, call args, single-flight de-duplication). A per-call
+  throwaway-client implementation cannot reach that mock at all — it would
+  have to construct a brand-new *real* `OAuth2Client` and invoke its own
+  real `refreshToken`, which for a fake object carrying no
+  `_clientId`/`_clientSecret` would either throw building the request or
+  attempt a genuine `POST` to `https://oauth2.googleapis.com/token`, never
+  the injected fake. Making the swap pass would require rewriting
+  `refresh.test.ts` to mock HTTP transport instead of the client method —
+  exactly the "requires editing the tests to pass" condition this cleanup
+  was scoped to avoid. The cast-based implementation in `oauth-client.ts`
+  was left unchanged.
 
 **Constraints it creates:**
 
