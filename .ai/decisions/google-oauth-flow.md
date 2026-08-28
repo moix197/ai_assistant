@@ -116,4 +116,4 @@ context entirely.
   incremental consent reads from.
 - Token refresh (Phase 4) must go through the flow's own seam, not
   reimplement pending-connection or state-nonce logic — see
-  [google-token-refresh](google-token-refresh.md) once it exists.
+  [google-token-refresh](google-token-refresh.md).

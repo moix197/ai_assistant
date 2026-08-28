@@ -17,6 +17,15 @@ export {
   type PendingConnection,
   type PendingConnectionStore,
 } from "./pending-connections";
+export {
+  createRefreshCoordinator,
+  type GetValidAccessTokenResult,
+  REFRESH_SKEW_MS,
+  RefreshFailedError,
+  type RefreshCoordinator,
+  type RefreshCoordinatorDeps,
+  type RefreshFailureReason,
+} from "./refresh";
 export { hasRequiredScopes, IDENTITY_SCOPES, TOOL_REQUIRED_SCOPES } from "./scopes";
 export {
   openToken,

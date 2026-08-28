@@ -21,6 +21,15 @@ function createNoopTelemetryRecorder(): { stop: ReturnType<typeof vi.fn> } {
   return { stop: vi.fn().mockResolvedValue(undefined) };
 }
 
+/**
+ * `sweep` is required on `ShutdownDeps` (Phase 4), for the same reason
+ * `telemetryRecorder` is — see `shutdown-abort.test.ts` for the tests that
+ * actually exercise this wire's ordering/timeout.
+ */
+function createNoopSweep(): { stop: ReturnType<typeof vi.fn> } {
+  return { stop: vi.fn().mockResolvedValue(undefined) };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -50,6 +59,7 @@ describe("shutdown", () => {
     const logger = createMockLogger();
     const controller = { abort: vi.fn() };
     const telemetryRecorder = createNoopTelemetryRecorder();
+    const sweep = createNoopSweep();
 
     await shutdown({
       channel,
@@ -58,6 +68,7 @@ describe("shutdown", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       drainTimeoutMs: 1000,
     });
     callOrder.push("process.exit");
@@ -84,6 +95,7 @@ describe("shutdown", () => {
     const logger = createMockLogger();
     const controller = { abort: vi.fn() };
     const telemetryRecorder = createNoopTelemetryRecorder();
+    const sweep = createNoopSweep();
 
     await shutdown({
       channel,
@@ -92,6 +104,7 @@ describe("shutdown", () => {
       logger,
       controller,
       telemetryRecorder,
+      sweep,
       drainTimeoutMs: 20,
     });
 
@@ -131,6 +144,7 @@ describe("registerShutdown", () => {
       const logger = createMockLogger();
       const controller = { abort: vi.fn() };
       const telemetryRecorder = createNoopTelemetryRecorder();
+      const sweep = createNoopSweep();
 
       registerShutdown({
         channel,
@@ -139,6 +153,7 @@ describe("registerShutdown", () => {
         logger,
         controller,
         telemetryRecorder,
+        sweep,
         drainTimeoutMs: 10,
       });
       process.emit("SIGTERM");

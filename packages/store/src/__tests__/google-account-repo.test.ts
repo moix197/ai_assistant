@@ -1,7 +1,13 @@
 import type { GoogleAccount } from "@hermes/google-auth";
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { deleteAccount, getAccount, upsertAccount } from "../google-account-repo";
+import {
+  deleteAccount,
+  getAccount,
+  listAccountsExpiringBefore,
+  markDisconnected,
+  upsertAccount,
+} from "../google-account-repo";
 import { getDefaultMigrationsDir, runMigrations } from "../migrate";
 
 // Integration coverage — skipped unless TEST_DATABASE_URL is set. See
@@ -100,6 +106,29 @@ describe.skipIf(!testDatabaseUrl)("google-account-repo (integration)", () => {
   it("deleteAccount removes the row", async () => {
     await upsertAccount(pool, account());
     await deleteAccount(pool, "telegram", "user-1");
+
+    await expect(getAccount(pool, "telegram", "user-1")).resolves.toBeUndefined();
+  });
+
+  it("listAccountsExpiringBefore returns only accounts under the cutoff", async () => {
+    await upsertAccount(
+      pool,
+      account({ channelUserId: "expiring", expiresAt: new Date("2026-08-28T00:00:00.000Z") }),
+    );
+    await upsertAccount(
+      pool,
+      account({ channelUserId: "fresh", expiresAt: new Date("2026-10-01T00:00:00.000Z") }),
+    );
+
+    const results = await listAccountsExpiringBefore(pool, new Date("2026-09-01T00:00:00.000Z"));
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.channelUserId).toBe("expiring");
+  });
+
+  it("markDisconnected removes the row", async () => {
+    await upsertAccount(pool, account());
+    await markDisconnected(pool, "telegram", "user-1");
 
     await expect(getAccount(pool, "telegram", "user-1")).resolves.toBeUndefined();
   });

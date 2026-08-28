@@ -13,6 +13,7 @@ import {
   type ConnectFlow,
   createConnectFlow,
   createPendingConnectionStore,
+  createRefreshCoordinator,
 } from "@hermes/google-auth";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
@@ -25,6 +26,8 @@ import {
   createPool,
   getDefaultMigrationsDir,
   getOffset,
+  listAccountsExpiringBefore,
+  markDisconnected,
   runMigrations,
   setOffset,
   waitForDatabase,
@@ -36,6 +39,11 @@ import {
   type OauthCallbackRoute,
   createOauthCallbackRoute,
 } from "./google/build-oauth-callback-route";
+import {
+  REFRESH_SWEEP_INTERVAL_MS,
+  type RefreshSweep,
+  createRefreshSweep,
+} from "./google/refresh-sweep";
 import { createCompletionHandler } from "./handlers/complete";
 import { createConnectHandler } from "./handlers/connect";
 import { createDisconnectHandler } from "./handlers/disconnect";
@@ -78,6 +86,19 @@ const HARD_EXIT_TIMEOUT_MS = 8_000;
  * (5s) of the 8s ceiling, so this gets a deliberately short 1s of its own.
  */
 const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
+/**
+ * Bounds the shutdown-time refresh-sweep stop (`sweep.stop()`), run after
+ * `telemetryRecorder.stop()` and before `lock.release()`/`pool.end()`. A
+ * hung `stop()` (awaiting an in-flight `runOnce()` mid-refresh) degrades to
+ * "leave whatever accounts weren't reached this tick until the next boot's
+ * immediate sweep pass" rather than starving the rest of shutdown — the same
+ * tradeoff `TELEMETRY_FLUSH_TIMEOUT_MS` accepts. Sized the same 1s: with
+ * `DRAIN_TIMEOUT_MS` (5s) + `TELEMETRY_FLUSH_TIMEOUT_MS` (1s) already able to
+ * consume up to 6s of the 8s `HARD_EXIT_TIMEOUT_MS` ceiling, this leaves
+ * `lock.release()`/`pool.end()`/the final log at least 1s of margin before
+ * the hard-exit fallback fires.
+ */
+const SWEEP_STOP_TIMEOUT_MS = 1_000;
 
 /**
  * Splits incoming text on the **first** whitespace only: the head becomes
@@ -247,6 +268,16 @@ export interface ShutdownDeps {
    */
   telemetryRecorder: { stop(): Promise<void> };
   telemetryFlushTimeoutMs?: number;
+  /**
+   * The refresh sweep (Phase 4). Required, not optional, for the same reason
+   * `controller`/`telemetryRecorder` above are: an optional-with-a-silent-skip
+   * default would let `boot()`'s real registration drop this wire with
+   * nothing catching it. When Google's env group is unset, `boot()` passes a
+   * trivial `{ stop: async () => {} }` — the sweep itself never started, so
+   * there is nothing to stop, not a special case to thread through here.
+   */
+  sweep: { stop(): Promise<void> };
+  sweepStopTimeoutMs?: number;
 }
 
 /**
@@ -260,20 +291,25 @@ export interface ShutdownDeps {
  * buffer" instead of stalling the rest of shutdown — run after the drain (so
  * it can capture events from the in-flight work that just finished) and
  * before the pool closes (so its own write has a live pool to go through);
- * (3) release the advisory lock, only once no more DB work from this
- * instance is possible, so a restart-racing instance can't acquire it
- * mid-drain; (4) close the pool; (5) `process.exit(0)`. Each step is a
- * precondition for the next: releasing the lock before the drain finishes
- * would let a second instance start while we're still querying; closing the
- * pool before the telemetry flush or the drain finishes would crash an
+ * (3) stop the refresh sweep (`sweep.stop()`, Phase 4), bounded the same way,
+ * so an in-flight refresh tick doesn't block shutdown — must still run
+ * before the lock/pool close below, since a tick in progress is still
+ * issuing DB queries; (4) release the advisory lock, only once no more DB
+ * work from this instance is possible, so a restart-racing instance can't
+ * acquire it mid-drain; (5) close the pool; (6) `process.exit(0)`. Each step
+ * is a precondition for the next: releasing the lock before the drain or the
+ * sweep stop finishes would let a second instance start while we're still
+ * querying; closing the pool before any of them finishes would crash an
  * in-flight query.
  */
 export async function shutdown(deps: ShutdownDeps): Promise<void> {
   const drainTimeoutMs = deps.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
   const telemetryFlushTimeoutMs = deps.telemetryFlushTimeoutMs ?? TELEMETRY_FLUSH_TIMEOUT_MS;
+  const sweepStopTimeoutMs = deps.sweepStopTimeoutMs ?? SWEEP_STOP_TIMEOUT_MS;
   deps.controller.abort();
   await withTimeout(deps.channel.stop(), drainTimeoutMs);
   await withTimeout(deps.telemetryRecorder.stop(), telemetryFlushTimeoutMs);
+  await withTimeout(deps.sweep.stop(), sweepStopTimeoutMs);
   await deps.lock.release();
   await deps.pool.end();
   deps.logger.info("shutdown complete");
@@ -548,6 +584,46 @@ function buildConnectFlow(pool: Pool, config: Env): ConnectFlow | undefined {
 }
 
 /**
+ * Builds the boot-owned refresh sweep (Phase 4), or `undefined` when
+ * Google's all-or-none env group is unset — the same "cleanly absent, not a
+ * boot failure" contract `buildConnectFlow` follows. Constructs its own
+ * `OAuth2Client` via `buildGoogleOAuthClient` rather than sharing
+ * `buildConnectFlow`'s instance: the two are independent, stateless-per-call
+ * constructions (`getToken`/`refreshToken` take their own arguments; neither
+ * mutates the client), so there is no correctness reason to share one, and
+ * keeping each builder self-contained matches `buildConnectFlow`'s own
+ * shape.
+ */
+function buildRefreshSweep(
+  pool: Pool,
+  config: Env,
+  channel: Pick<TelegramPoller, "send">,
+  logger: Logger,
+): RefreshSweep | undefined {
+  const googleOAuth = buildGoogleOAuthClient(config);
+  if (!googleOAuth) return undefined;
+
+  const coordinator = createRefreshCoordinator({
+    oauthClient: googleOAuth.oauthClient,
+    cryptoKey: googleOAuth.cryptoKey,
+  });
+  const { upsertAccount } = buildGoogleAccountRepo(pool);
+
+  return createRefreshSweep({
+    repo: {
+      listAccountsExpiringBefore: (cutoff) => listAccountsExpiringBefore(pool, cutoff),
+      upsertAccount,
+      markDisconnected: (channelName, channelUserId) =>
+        markDisconnected(pool, channelName, channelUserId),
+    },
+    coordinator,
+    channel,
+    clock: systemClock,
+    logger,
+  });
+}
+
+/**
  * Builds the telemetry recorder and subscribes the gated message-handler
  * dispatch to the channel, in that order. Split out of the boot-wiring
  * orchestrator below so each of its steps reads independently; returns the
@@ -630,6 +706,15 @@ function wireRuntimeAndShutdown(
     connectFlow,
   );
 
+  // Constructed and started here, strictly after acquireInstanceLockOrExit
+  // (boot()'s call order, below) — the sweep's in-process single-flight map
+  // is only correct because the advisory lock guarantees exactly one Hermes
+  // process per database (Dependencies & Risks). runOnce() fires immediately
+  // inside start(), which is what makes "survives a restart" true without
+  // waiting out a full REFRESH_SWEEP_INTERVAL_MS.
+  const refreshSweep = buildRefreshSweep(pool, config, telegramChannel, logger);
+  refreshSweep?.start(REFRESH_SWEEP_INTERVAL_MS, shutdownController.signal);
+
   registerShutdown({
     channel: telegramChannel,
     lock: instanceLock,
@@ -637,6 +722,7 @@ function wireRuntimeAndShutdown(
     logger,
     controller: shutdownController,
     telemetryRecorder,
+    sweep: refreshSweep ?? { stop: async () => {} },
   });
 }
 

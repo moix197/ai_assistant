@@ -80,3 +80,37 @@ export async function deleteAccount(
     channelUserId,
   ]);
 }
+
+/**
+ * Rows whose `expires_at` falls before `cutoff` — `apps/hermes/src/google/
+ * refresh-sweep.ts` calls this with `cutoff` derived from
+ * `@hermes/google-auth`'s `REFRESH_SKEW_MS`, so the sweep's notion of
+ * "expiring soon" and `getValidAccessToken`'s own staleness check read from
+ * the same constant. Uses the `google_accounts_expires_at_idx` index from
+ * migration `007`.
+ */
+export async function listAccountsExpiringBefore(
+  pool: Pool,
+  cutoff: Date,
+): Promise<GoogleAccount[]> {
+  const result = await pool.query<GoogleAccountRow>(
+    "SELECT * FROM google_accounts WHERE expires_at < $1",
+    [cutoff],
+  );
+  return result.rows.map(toGoogleAccount);
+}
+
+/**
+ * A refresh failure classified `invalid_grant` (revoked or expired) leaves
+ * an account no more usable than one the operator ran `/disconnect` on —
+ * removing the row is the same action, keeping `whoami`/`/status` on the one
+ * "not connected" path with no separate disconnected-but-present state to
+ * reason about.
+ */
+export async function markDisconnected(
+  pool: Pool,
+  channel: string,
+  channelUserId: string,
+): Promise<void> {
+  await deleteAccount(pool, channel, channelUserId);
+}

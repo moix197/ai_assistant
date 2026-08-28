@@ -53,9 +53,49 @@ on: a tool whose required scopes aren't yet granted returns a structured
 "run /connect google", never a live escalation prompt the agent itself
 raises.
 
-## What Phase 4 adds
+## Token refresh (`refresh.ts`)
 
-A single-flight `getValidAccessToken` refresh coordinator, shared by a
-boot-owned sweep and any future request-path tool call, built on this same
-envelope and scope registry — see `.ai/decisions/google-oauth-flow.md` and
-`.ai/decisions/google-token-encryption.md`.
+`createRefreshCoordinator(deps)` exposes **one** public entry point:
+`getValidAccessToken(account): Promise<{ accessToken, account }>` — the
+single seam every caller needing a live access token goes through, today
+`apps/hermes/src/google/refresh-sweep.ts`'s boot-owned sweep, and any future
+request-path tool call with no design change. There is deliberately no
+second "force refresh" function.
+
+- **Fresh vs. stale is one constant.** `account.expiresAt.getTime() -
+  now() < REFRESH_SKEW_MS` (10 minutes, exported) decides it. A fresh
+  account decrypts and returns the cached token unchanged — zero network
+  calls. A stale one refreshes through a single-flight `Map<accountKey,
+  Promise<...>>` keyed on `(channel, channelUserId)`, entry deleted in a
+  `finally`, so concurrent callers for the same account share one underlying
+  refresh and a failed refresh never poisons a later, independent attempt.
+  `apps/hermes/src/google/refresh-sweep.ts`'s `listAccountsExpiringBefore`
+  cutoff imports this same `REFRESH_SKEW_MS` rather than hardcoding its own
+  duration — the sweep's "expiring soon" and this function's "needs
+  refresh" can never drift into two independently-tuned numbers.
+- **`refreshAccessToken` (`oauth-client.ts`)** wraps `OAuth2Client`'s
+  `protected refreshToken(refreshToken)` — the one SDK call that takes an
+  explicit refresh token and returns fresh credentials without mutating the
+  client's own `credentials` field, unlike the public
+  `refreshAccessToken()`/`getAccessToken()`. That matters because a single
+  `OAuth2Client` instance may refresh several accounts through this
+  coordinator; a call that reads/writes shared client state would race.
+- **`RefreshFailedError`** carries a `reason`: `"invalid_grant"` (Google
+  reports the refresh token revoked/expired, or the stored envelope fails to
+  decrypt — both leave the account equally unusable) drives
+  `refresh-sweep.ts`'s disconnect-and-alert branch; `"transient"` (network
+  failure, a Google 5xx) is retried on the next sweep tick with the stored
+  row untouched.
+- **Never persists.** `getValidAccessToken` returns the updated `GoogleAccount`
+  (a fresh `token_envelope`/`expiresAt`) but does not write it —
+  `refresh-sweep.ts` persists via the injected `repo.upsertAccount`, keeping
+  this package's "never imports `@hermes/store`" boundary intact even for
+  writes that happen mid-refresh.
+- **Correctness depends on exactly one Hermes process per database** — the
+  advisory lock `packages/store/src/advisory-lock.ts` already enforces (see
+  `.ai/decisions/google-token-refresh.md`). A future entrypoint that calls
+  `getValidAccessToken` from outside `boot()` (a standalone script, a second
+  worker process) would share neither this map nor that guarantee.
+
+See `.ai/decisions/google-oauth-flow.md`, `.ai/decisions/google-token-encryption.md`,
+and `.ai/decisions/google-token-refresh.md`.

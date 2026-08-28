@@ -55,7 +55,12 @@ in the entry point itself.
     events are emitted from the real paid path) and `registerShutdown()`,
     where it is a **required** dep so the flush step cannot be dropped
     silently.
-11. `registerShutdown()` — registers the SIGTERM/SIGINT handler (see below).
+11. `buildRefreshSweep()` (`04-google-auth` Phase 4) — constructed and
+    `start()`ed inside `wireRuntimeAndShutdown`, which only runs once
+    `acquireInstanceLockOrExit` has returned a held lock — see "Google token
+    refresh" below. `undefined` when Google's env group is unset, the same
+    "cleanly absent" contract `buildConnectFlow` follows.
+12. `registerShutdown()` — registers the SIGTERM/SIGINT handler (see below).
 
 ## Wiring modules
 
@@ -90,6 +95,8 @@ extracted into its own small module and unit-tested there:
   `buildGoogleAccountRepo`. Returns `{ agent, handleApprovalCallback }`, not
   a bare `Agent`: `boot.ts` needs the latter to route inbound button taps
   into the gate.
+- `src/google/refresh-sweep.ts` (`04-google-auth` Phase 4) — `createRefreshSweep`;
+  see "Google token refresh" below.
 
 ## Completion path
 
@@ -154,6 +161,59 @@ thrown errors — the model relays them as chat text.
 - `build-agent.ts` resolves a turn's `threadId` to its Telegram chat id via a
   small in-memory index populated as threads are loaded (`ApprovalGate`'s
   port is channel-agnostic — its context deliberately carries no chat id).
+
+## Google token refresh
+
+`04-google-auth` Phase 4 adds a boot-owned background sweep that keeps
+connected accounts' access tokens fresh without any request-path call ever
+needing to trigger a refresh itself.
+
+- **One seam, two callers.** `@hermes/google-auth`'s `createRefreshCoordinator`
+  exposes exactly one public entry point, `getValidAccessToken(account)`: a
+  fresh account (`expiresAt` well outside `REFRESH_SKEW_MS`, 10 minutes)
+  returns the cached token with zero network calls; a stale one refreshes
+  through a single-flight `Map` keyed on `(channel, channelUserId)`, entry
+  deleted in a `finally` so a failed refresh never poisons a later,
+  independent attempt. `src/google/refresh-sweep.ts`'s `createRefreshSweep`
+  is the only caller today, and any future request-path tool needing a live
+  Google client would call the exact same function — never a second "force
+  refresh" path.
+- **`buildRefreshSweep` (`src/boot.ts`)** builds the coordinator plus a
+  narrow `RefreshSweepRepo` (`listAccountsExpiringBefore`/`upsertAccount`/
+  `markDisconnected`, bound to `@hermes/store`'s pool-taking functions) and
+  returns `undefined` when Google's env group is unset — the same "cleanly
+  absent, not a boot failure" contract `buildConnectFlow` follows.
+- **Construction is gated by the single-instance advisory lock, by
+  inspection, not by convention.** `wireRuntimeAndShutdown` — where
+  `buildRefreshSweep(...).start(...)` runs — is only ever called from
+  `boot()` after `acquireInstanceLockOrExit` has returned a held lock (`boot()`
+  returns early otherwise); the single-flight map's correctness depends on
+  exactly one Hermes process running against a database, the same invariant
+  the advisory lock (`packages/store/src/advisory-lock.ts`) already
+  enforces. There is no standalone script or bin entry for the sweep — it is
+  reachable only from `boot()`.
+- **`runOnce()` runs immediately inside `start()`**, then on
+  `REFRESH_SWEEP_INTERVAL_MS` (5 minutes — deliberately half of
+  `REFRESH_SKEW_MS`, so one missed or slow tick still leaves a full interval
+  of buffer before a token actually expires). This immediacy is what makes
+  "a token forced expired via `psql` before a restart gets refreshed within
+  one sweep pass" true without waiting out a full interval.
+- **Failure classification.** `RefreshFailedError`'s `reason: "invalid_grant"`
+  (Google reports the refresh token revoked/expired, or the stored envelope
+  fails to decrypt) calls `markDisconnected` — the same `DELETE` `/disconnect`
+  uses, so `whoami`/`/status` land on the identical "not connected" path with
+  no separate disconnected-but-present state — then sends a reconnect prompt
+  to `account.chatId`. `reason: "transient"` (network failure, a Google 5xx)
+  is logged and the row is left untouched for the next tick; zero expiring
+  accounts is a no-op.
+- **Shutdown**: `sweep.stop()` clears the interval and awaits any in-flight
+  `runOnce()` call, bounded by `SWEEP_STOP_TIMEOUT_MS` (1s, see "Graceful
+  shutdown" below) so a stuck refresh mid-tick can't stall the rest of
+  shutdown — it degrades to "pick up where it left off on the next boot's
+  immediate sweep pass," the same tradeoff the telemetry flush accepts.
+
+See `.ai/decisions/google-token-refresh.md` for the full design and its
+dependency on the advisory lock.
 
 ## Handlers
 
@@ -226,11 +286,20 @@ order:
    rest of shutdown. Runs after the drain (so it can capture events from the
    in-flight work that just finished) and before the pool closes (so its own
    write still has a live pool to go through).
-4. The advisory lock's `release()` — only once no more DB work from this
+4. `sweep.stop()` (`04-google-auth` Phase 4) — clears the refresh sweep's
+   interval and awaits any in-flight `runOnce()` call. Bounded independently
+   to ~1s (`SWEEP_STOP_TIMEOUT_MS`) so a hung refresh mid-tick degrades to
+   "pick up where it left off on the next boot's immediate sweep pass"
+   instead of stalling the rest of shutdown. Must still run before the lock
+   releases/pool closes below — an in-flight tick is still issuing DB
+   queries. When Google's env group is unset, `boot()` wires a trivial
+   `{ stop: async () => {} }` here — the sweep never started, so there's
+   nothing to stop.
+5. The advisory lock's `release()` — only once no more DB work from this
    instance is possible, so a restart-racing second instance can't acquire
    the lock while this one is still draining.
-5. `pool.end()`.
-6. `process.exit(0)`, after a tick (`setImmediate`) to let the final log line
+6. `pool.end()`.
+7. `process.exit(0)`, after a tick (`setImmediate`) to let the final log line
    flush before the async stdout write is truncated.
 
 A hard-exit fallback timer (`HARD_EXIT_TIMEOUT_MS`, ~8s) forces
@@ -238,11 +307,12 @@ A hard-exit fallback timer (`HARD_EXIT_TIMEOUT_MS`, ~8s) forces
 `docker-compose.yml`'s explicit `stop_grace_period: 15s` for this service,
 so a stuck shutdown gets killed by the app's own fallback before Docker
 sends `SIGKILL`. (`stop_grace_period` must stay above `HARD_EXIT_TIMEOUT_MS`,
-which must stay above `DRAIN_TIMEOUT_MS + TELEMETRY_FLUSH_TIMEOUT_MS` with
-room left for `release()`/`pool.end()` — don't change one without the others.) The sequence is exported as `shutdown()` from `boot.ts` for unit
-testing: `src/__tests__/shutdown-order.test.ts` pins the step order,
-`src/__tests__/shutdown-abort.test.ts` pins the abort-first step and the
-telemetry flush's own time box.
+which must stay above `DRAIN_TIMEOUT_MS + TELEMETRY_FLUSH_TIMEOUT_MS +
+SWEEP_STOP_TIMEOUT_MS` with room left for `release()`/`pool.end()` — don't
+change one without the others.) The sequence is exported as `shutdown()`
+from `boot.ts` for unit testing: `src/__tests__/shutdown-order.test.ts` pins
+the step order, `src/__tests__/shutdown-abort.test.ts` pins the abort-first
+step and the telemetry flush's and refresh sweep's own time boxes.
 
 The poller's `onFatalError` callback (a persistent 409 conflict — another
 instance already holds the `getUpdates` stream) is a separate, unbounded exit

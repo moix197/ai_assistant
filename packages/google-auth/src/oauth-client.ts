@@ -81,3 +81,39 @@ export async function exchangeCode(
     idTokenClaims: decodeIdTokenClaims(tokens.id_token),
   };
 }
+
+export interface RefreshedAccessToken {
+  accessToken: string;
+  expiresAt: Date;
+}
+
+/**
+ * `OAuth2Client.refreshToken(refreshToken)` is the one SDK call that takes an
+ * explicit refresh token and returns fresh credentials **without** mutating
+ * the client's own `credentials` field — unlike the public
+ * `refreshAccessToken()`/`getAccessToken()`, which read/write `this.credentials`
+ * on the shared client instance and would race if `refresh.ts`'s single-flight
+ * coordinator (keyed per-account, not per-client) ever refreshed two accounts
+ * through the same `OAuth2Client` concurrently. It's typed `protected` in
+ * `google-auth-library` — an SDK-internal visibility marker, not a documented
+ * public/private API boundary (`refreshTokenNoCache`, which it delegates to,
+ * performs no `this.credentials` read or write) — so this narrow, documented
+ * reach-around is safer than the shared-mutable-state alternative the public
+ * methods force.
+ */
+export async function refreshAccessToken(
+  client: OAuth2Client,
+  refreshToken: string,
+): Promise<RefreshedAccessToken> {
+  const refreshable = client as unknown as {
+    refreshToken(refreshToken?: string | null): Promise<{
+      tokens: { access_token?: string | null; expiry_date?: number | null };
+    }>;
+  };
+  const { tokens } = await refreshable.refreshToken(refreshToken);
+
+  if (!tokens.access_token) throw new Error("refreshAccessToken: response carried no access_token");
+  if (!tokens.expiry_date) throw new Error("refreshAccessToken: response carried no expiry_date");
+
+  return { accessToken: tokens.access_token, expiresAt: new Date(tokens.expiry_date) };
+}
