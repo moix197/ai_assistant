@@ -33,4 +33,10 @@ Shared types with no dependency on any other Hermes package.
   `@hermes/llm`, precisely because `store` and (later) `agent` need to name
   them without depending on the adapter: `LlmUsageEntry` is re-exported by
   both `llm` and `store`, so neither side can drift a field apart without a
-  type error.
+  type error. `Message` carries two optional fields alongside `role`/
+  `content`: `toolCallId` (present when `role === "tool"`, the `ToolCall`
+  this message answers) and `toolCalls` (present when `role === "assistant"`
+  and the model requested tool calls this turn — this message must precede
+  the `role: "tool"` results answering it). `@hermes/llm`'s adapter maps
+  both onto the wire's `tool_call_id`/`tool_calls` keys rather than
+  spreading the domain shape verbatim.

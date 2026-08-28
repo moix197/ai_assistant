@@ -57,6 +57,19 @@ failure yields an empty argument object rather than throwing, leaving schema
 enforcement to the caller. A tool-call reply carries `content: null`, which is
 **not** malformed: the tool call is the message, and `text` is `""` for it.
 
+`buildRequestBody` maps every domain `Message` through `toWireMessage`
+rather than spreading `request.messages` verbatim — a domain `role: "tool"`
+message's `toolCallId` becomes the wire's `tool_call_id`, and an assistant
+message's `toolCalls` (`packages/agent`'s loop appends one ahead of the tool
+results answering it) becomes `tool_calls`, each entry wrapped as `{ id,
+type: "function", function: { name, arguments: JSON.stringify(args) } }`. A
+message carrying neither is serialized as plain `{ role, content }`.
+Spreading the domain shape verbatim used to leak `toolCallId` onto the wire
+unchanged and had no representation for an assistant tool-call request at
+all — every OpenAI-compatible provider 400s that shape ("tool message must
+be a response to a preceding message with tool_calls" / missing
+`tool_call_id`).
+
 Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
 `callWithRetry`, reusing `@hermes/core`'s `nextDelay`:
 

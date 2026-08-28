@@ -14,6 +14,12 @@ export interface Message {
   content: string;
   /** Present when `role === "tool"`: the id of the `ToolCall` this message answers. */
   toolCallId?: string;
+  /**
+   * Present when `role === "assistant"` and the model requested one or more
+   * tool calls this turn — the wire format's assistant `tool_calls` message
+   * that must precede the `role: "tool"` result messages answering it.
+   */
+  toolCalls?: ToolCall[];
 }
 
 export interface ToolCall {

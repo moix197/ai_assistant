@@ -93,9 +93,16 @@ a given call; the full, untrimmed history is always what gets persisted.
    but never into the Telegram poller.
 3. If a response's `toolCalls` is empty, the loop is done: that response's
    `text` is the turn's reply.
-4. Otherwise, every entry in `toolCalls` is resolved concurrently (see "Tool
-   execution" below) into a `role: "tool"` result message, all of which are
-   appended to the conversation before the next iteration.
+4. Otherwise, the response's own assistant tool-call request is appended to
+   the conversation first — `{ role: "assistant", content: result.text,
+   toolCalls: result.toolCalls }` — then every entry in `toolCalls` is
+   resolved concurrently (see "Tool execution" below) into a `role: "tool"`
+   result message, all of which are appended after it, before the next
+   iteration. This order is required, not cosmetic: every OpenAI-compatible
+   provider 400s a `role: "tool"` message that isn't preceded by the
+   assistant message requesting it (`@hermes/llm`'s adapter maps
+   `Message.toolCalls`/`toolCallId` to the wire's `tool_calls`/`tool_call_id`
+   keys — see that package's README).
 5. Reaching `MAX_ITERATIONS` without ever getting an empty `toolCalls`
    throws an internal `MaxIterationsReachedError` carrying the real
    accumulated `costUsd` and iteration count from the calls that did happen.
@@ -108,11 +115,13 @@ a given call; the full, untrimmed history is always what gets persisted.
    unchanged** — no new error-handling branch, so the existing completion
    handler's generic-failure reply still applies.
    `outcome: "max_iterations"` (`MaxIterationsReachedError`, `totalCostUsd`/
-   `iterations` from the error) is the one outcome with real cost/iteration
-   data; an already-aborted signal (`outcome: "aborted"`) or any other
-   provider failure — including `UnpricedModelError`, which gets no
-   special-casing — reports `outcome: "error"`, `totalCostUsd: 0`, exactly as
-   Phase 1 shipped it.
+   `iterations` from the error) and the generic `outcome: "error"`/`"aborted"`
+   paths both report the real accumulated `totalCostUsd`/`iterations` as of
+   the failing call — the latter via a `TurnProgress` accumulator threaded
+   into `converse()`, updated after every completed iteration, since a
+   provider failure (including `UnpricedModelError`, which gets no other
+   special-casing) can land several billed iterations into a turn, not just
+   the first.
 
 ## Tool execution
 
@@ -136,12 +145,20 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
    name — a different tool's first failure in the same turn still gets its
    own corrective round-trip.
 4. On successful validation, `spec.handler(args, { signal: deps.signal })`
-   runs inside a `Promise.race` against `delay(TOOL_HANDLER_TIMEOUT_MS,
-   deps.signal)` (`delay` reused from `@hermes/core`) — a handler that never
-   resolves feeds back `"tool timed out after <ms>ms"` instead of stalling
-   the turn. `deps.signal.aborted` is checked immediately before invocation.
-   A handler that **throws** feeds back the thrown error's message — like
-   every other failure mode here, this never aborts the turn.
+   runs inside a `Promise.race` against `delay(TOOL_HANDLER_TIMEOUT_MS, ...)`
+   (`delay` reused from `@hermes/core`) — a handler that never resolves feeds
+   back `"tool timed out after <ms>ms"` instead of stalling the turn.
+   `deps.signal.aborted` is checked immediately before invocation. A handler
+   that **throws** feeds back the thrown error's message — like every other
+   failure mode here, this never aborts the turn. The race's `delay` runs
+   against `deps.signal` composed (`AbortSignal.any`) with a controller
+   `invokeTool` owns and aborts once the race settles either way: this
+   cancels the timer immediately when the handler wins instead of leaking it
+   for up to `TOOL_HANDLER_TIMEOUT_MS`, and lets a turn-level shutdown that
+   lands mid-handler resolve the race early too — reported back as `"tool
+   aborted: agent turn was shut down before the handler finished"`, distinct
+   from a genuine timeout (`deps.signal.aborted` disambiguates the two once
+   the race settles).
 5. **Every tool call in one model response executes concurrently** via
    `Promise.all`/`.map()` — each call's synchronous work (registry lookup,
    `safeParse`, the abort check) runs before its first `await`, so there's no

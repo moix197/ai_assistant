@@ -41,10 +41,10 @@ export interface RunTurnDeps {
 /**
  * Thrown internally when the loop exhausts `MAX_ITERATIONS` without a final
  * text response. Carries the real accumulated cost/iteration count so the
- * `turn` event reflects the paid calls that actually happened, unlike the
- * generic `"error"`/`"aborted"` paths below (which never partially
- * accumulate cost — see the Dependencies & Risks note on `UnpricedModelError`
- * taking the same zero-cost generic path as any other provider throw).
+ * `turn` event reflects the paid calls that actually happened — the generic
+ * `"error"`/`"aborted"` paths below report the same real accumulated values
+ * via `TurnProgress`, since a provider throw (e.g. `UnpricedModelError`) can
+ * land after several iterations already billed, not just the first.
  */
 class MaxIterationsReachedError extends Error {
   constructor(
@@ -54,6 +54,24 @@ class MaxIterationsReachedError extends Error {
     super("agent turn reached MAX_ITERATIONS without a final response");
     this.name = "MaxIterationsReachedError";
   }
+}
+
+/**
+ * Mutable accumulator threaded into `converse()` so `runTurn`'s generic
+ * catch branch can report the real number of iterations reached and cost
+ * billed so far, even when `converse` throws something other than
+ * `MaxIterationsReachedError` (which already carries its own explicit
+ * values) partway through a multi-iteration turn. Without this, that branch
+ * previously hardcoded `iterations: 1, totalCostUsd: 0` — correct only for a
+ * failure on the very first call, and an under-report for any later one.
+ * `iterations` is set to the in-flight iteration number just before each
+ * `llmProvider.complete()` call, so a failure inside that call still counts
+ * as an attempted iteration; `totalCostUsd` only grows after a call
+ * actually succeeds and bills.
+ */
+interface TurnProgress {
+  totalCostUsd: number;
+  iterations: number;
 }
 
 /**
@@ -94,26 +112,43 @@ const TOOL_TIMEOUT = Symbol("tool-handler-timeout");
  * produces a timeout result instead of stalling the turn. A handler that
  * throws never aborts the turn either: its message becomes the tool result
  * (settled decision 15).
+ *
+ * The race's `delay` is driven by `raceSignal` — `signal` composed
+ * (`AbortSignal.any`, same composition `packages/llm`'s adapter uses) with a
+ * `handlerWon` controller this function owns — for two reasons: (1) when the
+ * handler wins the race, the `finally` below aborts `handlerWon`, which
+ * cancels `delay`'s still-pending timer immediately instead of leaking it
+ * for up to `TOOL_HANDLER_TIMEOUT_MS`; (2) when `signal` itself fires
+ * (shutdown) before the handler resolves, the same early-resolve path is
+ * taken, so `outcome === TOOL_TIMEOUT` is ambiguous between "really timed
+ * out" and "shut down mid-handler" — resolved below by checking `signal`
+ * itself, not the race outcome.
  */
 async function invokeTool(
   spec: ToolSpec,
   args: unknown,
   signal: AbortSignal,
 ): Promise<{ content: string; error?: string }> {
+  const handlerWon = new AbortController();
+  const raceSignal = AbortSignal.any([signal, handlerWon.signal]);
   try {
     const outcome = await Promise.race([
       spec.handler(args, { signal }),
-      delay(TOOL_HANDLER_TIMEOUT_MS, signal).then(() => TOOL_TIMEOUT),
+      delay(TOOL_HANDLER_TIMEOUT_MS, raceSignal).then(() => TOOL_TIMEOUT),
     ]);
 
     if (outcome === TOOL_TIMEOUT) {
-      const message = `tool timed out after ${TOOL_HANDLER_TIMEOUT_MS}ms`;
+      const message = signal.aborted
+        ? "tool aborted: agent turn was shut down before the handler finished"
+        : `tool timed out after ${TOOL_HANDLER_TIMEOUT_MS}ms`;
       return { content: message, error: message };
     }
     return { content: typeof outcome === "string" ? outcome : JSON.stringify(outcome) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { content: message, error: message };
+  } finally {
+    handlerWon.abort();
   }
 }
 
@@ -218,16 +253,17 @@ async function converse(
   thread: Thread,
   turnId: string,
   userText: string,
+  progress: TurnProgress,
 ): Promise<{ text: string; costUsd: number; iterations: number }> {
   const { system, toolDefs } = assemblePrefix(definition);
   const trimmed = trimHistory(thread.messages, HISTORY_BUDGET_CHARS);
   const conversation: Message[] = [...trimmed, { role: "user", content: userText }];
   const toolsByName = new Map(definition.tools.map((tool) => [tool.name, tool]));
   const retryCounts = new Map<string, number>();
-  let totalCostUsd = 0;
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     assertLlmCallAllowed(deps.signal);
+    progress.iterations = iteration;
 
     const result = await deps.llmProvider.complete({
       model: definition.model,
@@ -238,11 +274,17 @@ async function converse(
       threadId: thread.id,
       turnId,
     });
-    totalCostUsd += result.costUsd;
+    progress.totalCostUsd += result.costUsd;
 
     if (result.toolCalls.length === 0) {
-      return { text: result.text, costUsd: totalCostUsd, iterations: iteration };
+      return { text: result.text, costUsd: progress.totalCostUsd, iterations: iteration };
     }
+
+    // The assistant's own tool-call request must precede the tool-result
+    // messages answering it — every OpenAI-compatible provider 400s a `role:
+    // "tool"` message that isn't preceded by an assistant message carrying
+    // the matching `tool_calls` (see `packages/llm`'s adapter serialization).
+    conversation.push({ role: "assistant", content: result.text, toolCalls: result.toolCalls });
 
     const toolResultMessages = await runToolCalls(
       result.toolCalls,
@@ -255,7 +297,7 @@ async function converse(
     conversation.push(...toolResultMessages);
   }
 
-  throw new MaxIterationsReachedError(totalCostUsd, MAX_ITERATIONS);
+  throw new MaxIterationsReachedError(progress.totalCostUsd, MAX_ITERATIONS);
 }
 
 /**
@@ -264,9 +306,11 @@ async function converse(
  * error unchanged, so the existing completion handler's generic-failure
  * reply still applies — no new error-handling branch. `UnpricedModelError`
  * gets no special-casing — it takes the same generic `"error"` path as any
- * other provider failure, `totalCostUsd: 0`. `MaxIterationsReachedError` is
- * the one exception: it carries the real accumulated cost and iteration
- * count from the calls that actually happened, reported as `"max_iterations"`.
+ * other provider failure, reporting `iterations`/`totalCostUsd` from the
+ * shared `TurnProgress` accumulator (real values as of the failing call, not
+ * a hardcoded `1`/`0`). `MaxIterationsReachedError` reports the same kind of
+ * real accumulated values, just carried on the error itself rather than
+ * `TurnProgress`, as `"max_iterations"`.
  */
 export async function runTurn(
   definition: AgentDefinition,
@@ -278,12 +322,20 @@ export async function runTurn(
   const turnId = newId();
   const startedAt = Date.now();
   let threadId: string | null = null;
+  const progress: TurnProgress = { totalCostUsd: 0, iterations: 0 };
 
   try {
     const thread = await deps.threadRepo.getOrCreateThread(channel, chatId);
     threadId = thread.id;
 
-    const { text, costUsd, iterations } = await converse(definition, deps, thread, turnId, userText);
+    const { text, costUsd, iterations } = await converse(
+      definition,
+      deps,
+      thread,
+      turnId,
+      userText,
+      progress,
+    );
 
     await deps.threadRepo.appendMessages(thread.id, [
       { role: "user", content: userText },
@@ -318,8 +370,8 @@ export async function runTurn(
       name: "turn",
       threadId,
       turnId,
-      iterations: 1,
-      totalCostUsd: 0,
+      iterations: progress.iterations,
+      totalCostUsd: progress.totalCostUsd,
       outcome: error instanceof LlmAbortedError ? "aborted" : "error",
       durationMs: Date.now() - startedAt,
     });

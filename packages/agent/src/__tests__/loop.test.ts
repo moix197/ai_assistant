@@ -221,6 +221,50 @@ describe("runTurn — provider failure", () => {
     const event = recordedTurnEvent(recorder);
     expect(event).toMatchObject({ name: "turn", outcome: "error", totalCostUsd: 0 });
   });
+
+  it("reports the real accumulated iterations and cost when a later iteration's call fails, not a hardcoded 1/0", async () => {
+    const okTool = tool({ handler: vi.fn().mockResolvedValue("ok") });
+    const failure = new Error("provider exploded on iteration 3");
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "noop", arguments: {} }],
+          text: "",
+          costUsd: 0.01,
+        }),
+      )
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c2", name: "noop", arguments: {} }],
+          text: "",
+          costUsd: 0.02,
+        }),
+      )
+      .mockRejectedValueOnce(failure);
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+
+    await expect(
+      runTurn(
+        definition({ tools: [okTool] }),
+        {
+          llmProvider,
+          threadRepo,
+          telemetryRecorder: recorder,
+          signal: new AbortController().signal,
+        },
+        "telegram",
+        "555",
+        "hello",
+      ),
+    ).rejects.toBe(failure);
+
+    const event = recordedTurnEvent(recorder);
+    expect(event).toMatchObject({ name: "turn", outcome: "error", iterations: 3 });
+    expect((event as { totalCostUsd: number }).totalCostUsd).toBeCloseTo(0.03, 10);
+  });
 });
 
 describe("runTurn — tool execution", () => {
@@ -257,6 +301,46 @@ describe("runTurn — tool execution", () => {
 
     const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
     expect(findToolMessage(secondRequest, "call_1")?.content).toBe("tool output");
+  });
+
+  it("appends the assistant's tool-call message before the tool-result messages answering it", async () => {
+    const handler = vi.fn().mockResolvedValue("tool output");
+    const noopTool = tool({ handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "call_1", name: "noop", arguments: {} }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "final answer" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+
+    await runTurn(
+      definition({ tools: [noopTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal },
+      "telegram",
+      "555",
+      "hello",
+    );
+
+    const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+    const assistantIndex = secondRequest.messages.findIndex(
+      (m) => m.role === "assistant" && m.toolCalls?.some((call) => call.id === "call_1"),
+    );
+    const toolResultIndex = secondRequest.messages.findIndex(
+      (m) => m.role === "tool" && m.toolCallId === "call_1",
+    );
+
+    expect(assistantIndex).toBeGreaterThanOrEqual(0);
+    expect(toolResultIndex).toBeGreaterThan(assistantIndex);
+    expect(secondRequest.messages[assistantIndex]).toEqual({
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call_1", name: "noop", arguments: {} }],
+    });
   });
 
   it("passes real tool definitions to the provider once definition.tools is non-empty", async () => {

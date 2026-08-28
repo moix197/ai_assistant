@@ -1,3 +1,4 @@
+import type { Message } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LlmHttpError, LlmMalformedResponseError, LlmTimeoutError } from "../../errors";
 import { MAX_TOKENS_PER_TURN } from "../../max-tokens";
@@ -247,6 +248,73 @@ describe("createOpenAiCompatibleAdapter — tool-call responses", () => {
     const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
 
     await expect(adapter.complete(baseRequest())).rejects.toBeInstanceOf(LlmMalformedResponseError);
+  });
+});
+
+/**
+ * The wire format that shipped broken in Phase 2's first cut: `buildRequestBody`
+ * spread `request.messages` verbatim, so the domain's `toolCallId` (and an
+ * assistant tool-call request, which had no representation at all) went over
+ * the wire unchanged instead of as `tool_call_id`/`tool_calls` — every
+ * OpenAI-compatible provider 400s that shape. These assertions pin the real
+ * wire keys and message order so it cannot regress unnoticed again.
+ */
+describe("createOpenAiCompatibleAdapter — tool-call message wire format", () => {
+  it("maps an assistant tool-call message to `tool_calls` and a tool-result message to `tool_call_id`/`role: 'tool'`, in that order", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+
+    const messages: Message[] = [
+      { role: "user", content: "convert 100 usd to jpy" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_1", name: "convert_currency", arguments: { amount: 100, to: "JPY" } }],
+      },
+      { role: "tool", content: "15000 JPY", toolCallId: "call_1" },
+    ];
+
+    await adapter.complete({ ...baseRequest(), messages });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const parsed = JSON.parse(init.body as string);
+
+    // messages[0] is the system prompt; the domain messages follow in order.
+    const [, userMsg, assistantMsg, toolMsg] = parsed.messages;
+    expect(userMsg).toEqual({ role: "user", content: "convert 100 usd to jpy" });
+    expect(assistantMsg).toEqual({
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "call_1",
+          type: "function",
+          function: { name: "convert_currency", arguments: JSON.stringify({ amount: 100, to: "JPY" }) },
+        },
+      ],
+    });
+    expect(assistantMsg.toolCallId).toBeUndefined();
+    expect(toolMsg).toEqual({ role: "tool", content: "15000 JPY", tool_call_id: "call_1" });
+    expect(toolMsg.toolCallId).toBeUndefined();
+
+    // The assistant's tool-call request must precede the result answering it.
+    const assistantIndex = parsed.messages.indexOf(assistantMsg);
+    const toolIndex = parsed.messages.indexOf(toolMsg);
+    expect(assistantIndex).toBeLessThan(toolIndex);
+  });
+
+  it("serializes a plain assistant/user message with no tool calls unchanged, just role/content", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(validCompletionBody()));
+    const adapter = createOpenAiCompatibleAdapter(PROFILE, { ...PERMISSIVE_OPTS, fetchImpl });
+
+    const messages: Message[] = [{ role: "assistant", content: "an earlier reply" }];
+
+    await adapter.complete({ ...baseRequest(), messages });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const parsed = JSON.parse(init.body as string);
+
+    expect(parsed.messages[1]).toEqual({ role: "assistant", content: "an earlier reply" });
   });
 });
 

@@ -1,8 +1,10 @@
 import {
   type Clock,
   type Logger,
+  type Message,
   type TelemetryEvent,
   type TelemetryRecorder,
+  type ToolCall,
   delay,
   nextDelay,
   systemClock,
@@ -181,6 +183,38 @@ function toWireTool(tool: ToolDefinition): Record<string, unknown> {
   };
 }
 
+/** Serializes one port-level `ToolCall` into the OpenAI wire shape nested under an assistant message's `tool_calls`. */
+function toWireToolCall(toolCall: ToolCall): Record<string, unknown> {
+  return {
+    id: toolCall.id,
+    type: "function",
+    function: { name: toolCall.name, arguments: JSON.stringify(toolCall.arguments) },
+  };
+}
+
+/**
+ * Maps one domain `Message` onto the OpenAI-compatible wire shape — this is
+ * the one place the domain's `toolCallId`/`toolCalls` fields become the
+ * wire's `tool_call_id`/`tool_calls` keys. Spreading `request.messages`
+ * verbatim (as this used to) let `toolCallId` leak onto the wire unchanged,
+ * which every OpenAI-compatible provider rejects ("tool message must be a
+ * response to a preceding message with tool_calls" / missing `tool_call_id`)
+ * — see `.ai/decisions/` and `plans/03-agent-core.md`'s Phase 2 review.
+ */
+function toWireMessage(message: Message): Record<string, unknown> {
+  if (message.role === "tool") {
+    return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
+  }
+  if (message.toolCalls !== undefined && message.toolCalls.length > 0) {
+    return {
+      role: message.role,
+      content: message.content,
+      tool_calls: message.toolCalls.map(toWireToolCall),
+    };
+  }
+  return { role: message.role, content: message.content };
+}
+
 /**
  * Assembles the outgoing body with `tools` -> `messages` in that literal key
  * order (invariant #6: stable/shared prefix before variable per-request
@@ -196,7 +230,10 @@ function buildRequestBody(request: CompletionRequest): Record<string, unknown> {
   if (request.tools !== undefined) {
     body.tools = request.tools.map(toWireTool);
   }
-  body.messages = [{ role: "system", content: request.system }, ...request.messages];
+  body.messages = [
+    { role: "system", content: request.system },
+    ...request.messages.map(toWireMessage),
+  ];
   body.max_tokens = request.maxTokens;
   return body;
 }
