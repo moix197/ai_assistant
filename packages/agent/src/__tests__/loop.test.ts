@@ -359,9 +359,7 @@ describe("runTurn — tool execution", () => {
     );
 
     const request = complete.mock.calls[0]?.[0] as CompletionRequest;
-    expect(request.tools).toEqual([
-      expect.objectContaining({ name: "get_current_time" }),
-    ]);
+    expect(request.tools).toEqual([expect.objectContaining({ name: "get_current_time" })]);
   });
 
   it("feeds back an 'unknown tool' result and continues when the model calls an unregistered tool", async () => {
@@ -470,7 +468,8 @@ describe("runTurn — tool execution", () => {
     const badB = { other: 2 };
     const failureA = schemaA.safeParse(badA);
     const failureB = schemaB.safeParse(badB);
-    if (failureA.success || failureB.success) throw new Error("fixture bug: args must fail validation");
+    if (failureA.success || failureB.success)
+      throw new Error("fixture bug: args must fail validation");
     const expectedA = failureA.error.message;
     const expectedB = failureB.error.message;
 
@@ -561,9 +560,11 @@ describe("runTurn — tool execution", () => {
       return new Promise<never>(() => {});
     });
     const hangingTool = tool({ name: "hangs", handler: hangingHandler });
-    const complete = vi.fn().mockResolvedValueOnce(
-      completionResult({ toolCalls: [{ id: "c1", name: "hangs", arguments: {} }], text: "" }),
-    );
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({ toolCalls: [{ id: "c1", name: "hangs", arguments: {} }], text: "" }),
+      );
     const llmProvider: LlmProvider = { complete };
     const threadRepo = fakeThreadRepo();
     const recorder = fakeRecorder();
@@ -585,7 +586,9 @@ describe("runTurn — tool execution", () => {
 
     const toolCallEvents = recorder.record.mock.calls
       .map(([event]) => event as TelemetryEvent)
-      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+      .filter(
+        (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+      );
     expect(toolCallEvents).toHaveLength(1);
     expect(toolCallEvents[0]?.error).toContain("tool aborted");
     expect(toolCallEvents[0]?.error).not.toContain("tool timed out");
@@ -650,9 +653,12 @@ describe("runTurn — tool execution", () => {
     expect(handlerB).toHaveBeenCalledTimes(1);
   });
 
-  it("emits its own truncated tool.call telemetry event per call, approved: true unconditionally", async () => {
+  it("emits its own truncated tool.call telemetry event per call, approved: true for an ungated tool", async () => {
     const longError = "x".repeat(600);
-    const boomTool = tool({ name: "boom", handler: vi.fn().mockRejectedValue(new Error(longError)) });
+    const boomTool = tool({
+      name: "boom",
+      handler: vi.fn().mockRejectedValue(new Error(longError)),
+    });
     const complete = vi
       .fn()
       .mockResolvedValueOnce(
@@ -665,7 +671,12 @@ describe("runTurn — tool execution", () => {
 
     await runTurn(
       definition({ tools: [boomTool] }),
-      { llmProvider, threadRepo, telemetryRecorder: recorder, signal: new AbortController().signal },
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: new AbortController().signal,
+      },
       "telegram",
       "555",
       "hello",
@@ -673,7 +684,9 @@ describe("runTurn — tool execution", () => {
 
     const toolCallEvents = recorder.record.mock.calls
       .map(([event]) => event as TelemetryEvent)
-      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+      .filter(
+        (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+      );
 
     expect(toolCallEvents).toHaveLength(1);
     expect(toolCallEvents[0]).toMatchObject({ tool: "boom", approved: true });
@@ -743,7 +756,9 @@ describe("runTurn — approval gate", () => {
 
     const toolCallEvents = recorder.record.mock.calls
       .map(([event]) => event as TelemetryEvent)
-      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+      .filter(
+        (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+      );
     expect(toolCallEvents).toHaveLength(1);
     expect(toolCallEvents[0]).toMatchObject({ tool: "echo", approved: true });
   });
@@ -787,7 +802,9 @@ describe("runTurn — approval gate", () => {
 
     const toolCallEvents = recorder.record.mock.calls
       .map(([event]) => event as TelemetryEvent)
-      .filter((event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call");
+      .filter(
+        (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+      );
     expect(toolCallEvents[0]).toMatchObject({ tool: "echo", approved: false });
   });
 
@@ -814,7 +831,9 @@ describe("runTurn — approval gate", () => {
     const llmProvider: LlmProvider = { complete };
     const threadRepo = fakeThreadRepo();
     // Never resolves during this test — proves the ungated call isn't blocked on it.
-    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockReturnValue(new Promise(() => {})) };
+    const approvalGate: ApprovalGate = {
+      requestApproval: vi.fn().mockReturnValue(new Promise(() => {})),
+    };
 
     // Not awaited to completion: the gate never resolves, so this turn can
     // never finish — only that the ungated handler ran matters here.
@@ -834,9 +853,11 @@ describe("runTurn — approval gate", () => {
 describe("runTurn — max iterations", () => {
   it("emits outcome: max_iterations with iterations: 8 and rethrows when the model never stops calling tools", async () => {
     const alwaysToolCallTool = tool();
-    const complete = vi.fn().mockResolvedValue(
-      completionResult({ toolCalls: [{ id: "c", name: "noop", arguments: {} }], text: "" }),
-    );
+    const complete = vi
+      .fn()
+      .mockResolvedValue(
+        completionResult({ toolCalls: [{ id: "c", name: "noop", arguments: {} }], text: "" }),
+      );
     const llmProvider: LlmProvider = { complete };
     const threadRepo = fakeThreadRepo();
     const recorder = fakeRecorder();

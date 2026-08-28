@@ -501,11 +501,15 @@ function wireRuntimeAndShutdown(
   logger: Logger,
   instanceLock: InstanceLock,
 ): void {
-  // Boot-lifetime, not per-request: the poller is serial (never more than
-  // one in-flight completion call), so one shared controller is sufficient.
-  // Aborted as the first step of shutdown() (see above), before the drain
-  // wait on channel.stop() — created before the channel below so its signal
-  // can be threaded into the poller's getUpdates calls from the start.
+  // Boot-lifetime, not per-request: message updates dispatch concurrently
+  // (detached, not awaited by the poll loop — see
+  // .ai/decisions/poller-concurrent-message-dispatch.md), so there can be
+  // several in-flight completion calls at once. One shared controller is
+  // still sufficient because shutdown must abort all of them together, not
+  // just whichever one is "current". Aborted as the first step of
+  // shutdown() (see above), before the drain wait on channel.stop() —
+  // created before the channel below so its signal can be threaded into the
+  // poller's getUpdates calls from the start.
   const shutdownController = new AbortController();
 
   const telegramChannel = createTelegramChannel(

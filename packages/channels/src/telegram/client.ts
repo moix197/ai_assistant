@@ -380,7 +380,12 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
       }
       // `parts` is never empty — chunkText always returns at least one part,
       // even for an empty string — so lastMessage is always assigned here.
-      return { messageId: lastMessage!.message_id };
+      if (!lastMessage) {
+        throw new Error(
+          "sendMessage produced no parts; chunkText should never return an empty array",
+        );
+      }
+      return { messageId: lastMessage.message_id };
     },
 
     async deleteWebhook() {

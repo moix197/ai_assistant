@@ -276,18 +276,34 @@ async function runGatedToolCalls(
   threadId: string,
   turnId: string,
 ): Promise<Message[]> {
+  const { approvalGate } = deps;
+  if (!approvalGate) {
+    // assertApprovalGateConfigured (called at construction, in createAgent)
+    // guarantees a gate exists whenever a gated tool is configured, so this
+    // only fires if that invariant was somehow bypassed.
+    throw new Error("runGatedToolCalls invoked without an approvalGate configured");
+  }
   const startedAt = Date.now();
-  const batch: ApprovalRequest[] = gatedCalls.map((call) => ({ tool: call.name, args: call.arguments }));
-  // Non-null: assertApprovalGateConfigured (called at the top of runTurn)
-  // guarantees a gate exists whenever a gated tool is configured.
-  const decision = await deps.approvalGate!.requestApproval(batch, { threadId, turnId }, deps.signal);
+  const batch: ApprovalRequest[] = gatedCalls.map((call) => ({
+    tool: call.name,
+    args: call.arguments,
+  }));
+  const decision = await approvalGate.requestApproval(batch, { threadId, turnId }, deps.signal);
 
   if (decision === "approved") {
     return runToolCalls(gatedCalls, toolsByName, retryCounts, deps, threadId, turnId);
   }
 
   return gatedCalls.map((toolCall) =>
-    finishToolCall(toolCall, deps, threadId, turnId, startedAt, { content: APPROVAL_DENIED_MESSAGE }, false),
+    finishToolCall(
+      toolCall,
+      deps,
+      threadId,
+      turnId,
+      startedAt,
+      { content: APPROVAL_DENIED_MESSAGE },
+      false,
+    ),
   );
 }
 
@@ -326,7 +342,13 @@ async function executeToolCalls(
       (message) => [(message as { toolCallId: string }).toolCallId, message] as const,
     ),
   );
-  return toolCalls.map((call) => byCallId.get(call.id)!);
+  return toolCalls.map((call) => {
+    const message = byCallId.get(call.id);
+    if (!message) {
+      throw new Error(`no tool result produced for call "${call.id}" (${call.name})`);
+    }
+    return message;
+  });
 }
 
 /**

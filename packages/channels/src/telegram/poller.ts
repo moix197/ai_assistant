@@ -208,9 +208,9 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
    * `packages/channels/README.md`.
    */
   async function dispatchMessage(update: TelegramUpdate): Promise<void> {
-    const message = normalizeTelegramUpdate(update, logger);
-    if (!message || !handler) return;
     try {
+      const message = normalizeTelegramUpdate(update, logger);
+      if (!message || !handler) return;
       await handler(message);
     } catch (error) {
       logger.error("message handler failed after its offset was already advanced, not retried", {
@@ -354,13 +354,15 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
       stopping = true;
       await loopPromise;
       // Drains dispatches detached by the current (now-finished) loop
-      // iteration. `dispatchMessage` never rejects (it catches its own
-      // errors), so `Promise.all` is safe here — nothing to `allSettled`
-      // against. Snapshot the set before awaiting: `trackDispatch`'s
-      // `.finally` mutates it as each one settles, and iterating a Set
-      // that's being deleted from while iterating is fine in JS but would
-      // otherwise make the intent read as more fragile than it is.
-      await Promise.all([...inFlightDispatches]);
+      // iteration. `dispatchMessage` catches its own errors, so none of
+      // these should reject in practice — `allSettled` over `all` anyway,
+      // so one dispatch that somehow does reject can never make this drain
+      // (and shutdown itself) reject instead of resolving. Snapshot the set
+      // before awaiting: `trackDispatch`'s `.finally` mutates it as each one
+      // settles, and iterating a Set that's being deleted from while
+      // iterating is fine in JS but would otherwise make the intent read as
+      // more fragile than it is.
+      await Promise.allSettled([...inFlightDispatches]);
     },
   };
 }

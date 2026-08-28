@@ -45,7 +45,11 @@ async function waitForPromptSent(channel: { send: ReturnType<typeof vi.fn> }): P
   // (which synchronously calls `pending.set`) has already executed by the
   // time this resolves — same-promise `.then()` callbacks fire in
   // registration order.
-  await channel.send.mock.results[0]!.value;
+  const sendResult = channel.send.mock.results[0];
+  if (!sendResult) {
+    throw new Error("expected channel.send to have been called before waitForPromptSent");
+  }
+  await sendResult.value;
 }
 
 afterEach(() => {
@@ -100,7 +104,10 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
     await gate.handleCallback(makeCallback(approvalId, "approve"));
 
     expect(await decisionPromise).toBe("approved");
-    expect(channel.answerCallback).toHaveBeenCalledWith("cbq-1", expect.stringContaining("Approved"));
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      expect.stringContaining("Approved"),
+    );
     expect(channel.editMessage).toHaveBeenCalledWith(
       "555",
       "msg-1",

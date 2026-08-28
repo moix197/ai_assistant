@@ -205,7 +205,11 @@ function toWireMessage(message: Message): Record<string, unknown> {
   if (message.role === "tool") {
     return { role: "tool", content: message.content, tool_call_id: message.toolCallId };
   }
-  if (message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0) {
+  if (
+    message.role === "assistant" &&
+    message.toolCalls !== undefined &&
+    message.toolCalls.length > 0
+  ) {
     return {
       role: message.role,
       content: message.content,

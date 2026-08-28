@@ -123,14 +123,19 @@ export function createTelegramApprovalGate(
       // A tap already made its own editMessage call inside handleCallback —
       // only edit here when this race, not a tap, won the resolution.
       const label = "Denied (or expired).";
-      await channel.editMessage(target, messageId, formatResolvedText(batch, label)).catch(() => {});
+      await channel
+        .editMessage(target, messageId, formatResolvedText(batch, label))
+        .catch(() => {});
     }
     return decision;
   }
 
   async function handleCallback(callback: InboundCallback): Promise<void> {
     const separatorIndex = callback.callbackData.lastIndexOf(":");
-    const approvalId = separatorIndex === -1 ? callback.callbackData : callback.callbackData.slice(0, separatorIndex);
+    const approvalId =
+      separatorIndex === -1
+        ? callback.callbackData
+        : callback.callbackData.slice(0, separatorIndex);
     const action = separatorIndex === -1 ? "" : callback.callbackData.slice(separatorIndex + 1);
     const entry = pending.get(approvalId);
 

@@ -1,6 +1,11 @@
 import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TelegramApiError, type TelegramClient, type TelegramUpdate } from "../client";
+import {
+  TelegramApiError,
+  type TelegramClient,
+  type TelegramMessage,
+  type TelegramUpdate,
+} from "../client";
 import { type TelegramOffsetRepo, createTelegramPoller } from "../poller";
 
 function createMockLogger(): Logger {
@@ -35,6 +40,26 @@ function makeUpdate(updateId: number, userId = 111): TelegramUpdate {
 /** Never resolves — freezes the poll loop once a test has captured the calls it needs. */
 function pendingForever(): Promise<TelegramUpdate[]> {
   return new Promise(() => {});
+}
+
+/**
+ * A `message` update missing `chat` — a field `normalizeTelegramUpdate` reads
+ * unconditionally once `message.from` passes its own guard. Real Telegram
+ * payloads always carry it, but nothing before `normalizeTelegramUpdate`
+ * validates that against the wire response, so this models a malformed
+ * payload reaching it and throwing (`TypeError: Cannot read properties of
+ * undefined`) rather than returning `null` like the fields it does guard.
+ */
+function makeMalformedUpdate(updateId: number): TelegramUpdate {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      from: { id: 111, is_bot: false },
+      date: 0,
+      text: "x",
+    } as TelegramMessage,
+  };
 }
 
 afterEach(() => {
@@ -195,6 +220,87 @@ describe("createTelegramPoller — message handler failure (no redelivery under 
     // the rest of the batch, it just doesn't wait.
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
     expect(handler).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "text-31" }));
+  });
+
+  // Regression test: normalizeTelegramUpdate() used to run outside
+  // dispatchMessage's try block, so a malformed update that made it throw
+  // rejected the detached promise trackDispatch hands to `void
+  // ....finally(...)` — an unhandled rejection, and a promise Promise.all
+  // would have propagated as a stop() rejection had it fired mid-drain.
+  it("does not leak an unhandled rejection when normalizeTelegramUpdate throws on a malformed update, and stop() still resolves cleanly", async () => {
+    const update = makeMalformedUpdate(40);
+    // Mirrors the "graceful shutdown" describe below: the loop's second,
+    // in-flight getUpdates() call must settle promptly once aborted, or
+    // stop()'s await on the still-running loop iteration would hang this
+    // test regardless of what dispatchMessage did with update 40.
+    const controller = new AbortController();
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce([update])
+      .mockImplementation(
+        (params: { signal?: AbortSignal }) =>
+          new Promise<TelegramUpdate[]>((_resolve, reject) => {
+            params.signal?.addEventListener(
+              "abort",
+              () => {
+                const error = new Error("aborted");
+                error.name = "AbortError";
+                reject(error);
+              },
+              { once: true },
+            );
+          }),
+      );
+    const client: TelegramClient = {
+      getUpdates,
+      sendMessage: vi.fn(),
+      deleteWebhook: vi.fn(),
+      answerCallbackQuery: vi.fn(),
+      editMessageText: vi.fn(),
+    };
+    const logger = createMockLogger();
+    const handler = vi.fn().mockResolvedValue(undefined);
+    const setOffset = vi.fn().mockResolvedValue(undefined);
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandledRejections.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const poller = createTelegramPoller({
+        client,
+        logger,
+        offsetRepo: { getOffset: vi.fn().mockResolvedValue(0), setOffset },
+        retryDelayMs: 1,
+        signal: controller.signal,
+      });
+      poller.subscribe(handler);
+
+      // The offset still advances even though normalization threw before a
+      // message ever reached the handler — detached dispatch still "handled"
+      // this update as far as the loop is concerned.
+      await vi.waitFor(() => expect(setOffset).toHaveBeenCalledWith(41));
+      expect(handler).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(logger.error).toHaveBeenCalledWith(
+          "message handler failed after its offset was already advanced, not retried",
+          expect.objectContaining({ updateId: 40 }),
+        ),
+      );
+
+      // Give a leaked rejection a turn of the event loop to surface as
+      // `unhandledRejection` before asserting none did.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandledRejections).toEqual([]);
+
+      // Proves the detached dispatch settled (not rejected) from stop()'s
+      // point of view too — with the old code and Promise.all, a rejection
+      // here would have made stop() itself reject instead of resolve.
+      controller.abort();
+      await expect(poller.stop()).resolves.toBeUndefined();
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
   });
 });
 

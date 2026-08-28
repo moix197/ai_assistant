@@ -269,7 +269,9 @@ describe("createOpenAiCompatibleAdapter — tool-call message wire format", () =
       {
         role: "assistant",
         content: "",
-        toolCalls: [{ id: "call_1", name: "convert_currency", arguments: { amount: 100, to: "JPY" } }],
+        toolCalls: [
+          { id: "call_1", name: "convert_currency", arguments: { amount: 100, to: "JPY" } },
+        ],
       },
       { role: "tool", content: "15000 JPY", toolCallId: "call_1" },
     ];
@@ -289,7 +291,10 @@ describe("createOpenAiCompatibleAdapter — tool-call message wire format", () =
         {
           id: "call_1",
           type: "function",
-          function: { name: "convert_currency", arguments: JSON.stringify({ amount: 100, to: "JPY" }) },
+          function: {
+            name: "convert_currency",
+            arguments: JSON.stringify({ amount: 100, to: "JPY" }),
+          },
         },
       ],
     });
