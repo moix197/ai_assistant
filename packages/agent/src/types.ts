@@ -26,11 +26,13 @@ export interface ToolSpec {
 
 /**
  * The one configuration object per agent — the D4 multi-agent seam
- * (settled decision 10): reserved, not built. `apps/hermes` passes one
- * hardcoded `AgentDefinition[]` with a single entry at boot; nothing here
- * makes a second agent more than a second list entry away, but nothing here
- * adds that entry either. `packages/agent` never imports a feature package —
- * `tools` are defined in `apps/hermes` and passed in already-built.
+ * (settled decision 10): reserved, not built. `createAgent` takes one
+ * `AgentDefinition`, not a list; `apps/hermes` constructs exactly one at
+ * boot (`build-agent.ts`). Agent #2 is a second `createAgent` call plus
+ * whatever decides which agent a message goes to — not "one more list
+ * entry" — see `.ai/decisions/agent-multi-agent-seam.md`. `packages/agent`
+ * never imports a feature package — `tools` are defined in `apps/hermes`
+ * and passed in already-built.
  */
 export interface AgentDefinition {
   name: string;

@@ -1,9 +1,11 @@
 // Typed discriminated union on `name`, replacing the original free-form
 // `{ name, fields? }` shape now that Phase 1 (plans/02-telemetry.md) ships a
-// real recorder to widen it for. `threadId`/`turnId` are nullable on every
-// event because `packages/agent` (2c) — the only future owner of real
-// thread/turn ids — doesn't exist yet; `packages/llm`'s adapter, the only
-// producer this PRD ships, always passes `null` for both.
+// real recorder to widen it for. `threadId`/`turnId` stay nullable on every
+// event because `null` is a real value, not a placeholder for a missing
+// owner: `packages/agent`'s `runTurn` (`loop.ts`) generates `turnId` before
+// its thread loads and leaves `threadId` `null` until it does, then stamps
+// both onto `CompletionRequest` (`packages/llm/src/port.ts`), which
+// `packages/llm`'s adapter forwards onto the `llm.call` event it emits.
 
 /** One completed (or failed) LLM provider call. The only event this PRD emits a real producer for. */
 export interface LlmCallEvent {

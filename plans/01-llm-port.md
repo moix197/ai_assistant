@@ -1002,6 +1002,14 @@ which is `hil` regardless.
       controller needed). Combine with the adapter's existing per-request
       timeout `AbortController` via composition (e.g. abort whichever fires
       first), not by replacing the timeout mechanism
+      **Superseded (03-agent-core):** `c5be8b6` made message-update dispatch
+      in `packages/channels/src/telegram/poller.ts` concurrent, so "the
+      poller is serial — never more than one in-flight completion call at a
+      time" is no longer true. See
+      `.ai/decisions/poller-concurrent-message-dispatch.md`. The one shared
+      process-lifetime `AbortController` is still correct — that decision
+      confirms it — only the serial-poller premise above is false; left
+      as-is rather than edited, per this plan's own historical-record rule
 - [x] Confirm `DRAIN_TIMEOUT_MS`/`HARD_EXIT_TIMEOUT_MS` are **not** changed —
       per `Dependencies & Risks`, correctness here comes from dedupe on
       redelivery, not from extending the drain window

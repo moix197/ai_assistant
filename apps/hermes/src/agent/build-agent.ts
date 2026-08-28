@@ -75,8 +75,10 @@ export interface BuiltAgent {
 /**
  * The only place allowed to import both `@hermes/agent` and construct the
  * one hardcoded `AgentDefinition` — the D4 seam (settled decision 10):
- * `apps/hermes` passes a single-entry `AgentDefinition[]` at boot, nothing
- * here makes a second agent more than a second list entry away. `tools:
+ * `createAgent` takes one `AgentDefinition`, not a list, and this is the
+ * one call site. Agent #2 means a second `createAgent` call plus a routing
+ * decision, not "one more list entry" — see
+ * `.ai/decisions/agent-multi-agent-seam.md`. `tools:
  * [getCurrentTimeTool, echoTool]` — `echo` is the one gated tool this PRD
  * ships, so this is also the only place that constructs the
  * `TelegramApprovalGate` and wires it into `createAgent`'s deps.
