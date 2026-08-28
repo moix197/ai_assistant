@@ -801,7 +801,7 @@ connected, same email, no re-consent needed.
 
 **Steps:**
 
-- [ ] Thread `channel`/`channelUserId` through `runTurn`/`converse`/`invokeTool`
+- [x] Thread `channel`/`channelUserId` through `runTurn`/`converse`/`invokeTool`
       — **this is a required-field widening of `ToolSpec.handler`'s `ctx`,
       not a purely additive change**: `pnpm -r typecheck` will fail on the
       two direct-invocation test call sites
@@ -809,23 +809,23 @@ connected, same email, no re-consent needed.
       literal `ctx` objects gain both fields — fix those two files as part
       of this step, don't treat a red typecheck here as a surprise to debug
       later
-- [ ] `whoami`'s not-connected path returns a **structured** result
+- [x] `whoami`'s not-connected path returns a **structured** result
       (`{ ok: false, reason: "not_connected" }`), not a thrown error — the
       model relays it as "you're not connected, try /connect google,"
       consistent with settled decision 11's shape for the missing-scope
       case later phases will add
-- [ ] Write the fail-fast-construction analog check for `whoami`: confirm
+- [x] Write the fail-fast-construction analog check for `whoami`: confirm
       `createAgent`'s `assertApprovalGateConfigured` (from `03-agent-core`)
       does **not** fire for `whoami`, since `requiresApproval: false` — a
       quick assertion, not a new mechanism
-- [ ] `/disconnect` idempotency: calling it twice in a row produces the same
+- [x] `/disconnect` idempotency: calling it twice in a row produces the same
       reply both times, no error on the second call even though
       `deleteAccount` affects zero rows
-- [ ] `/status`'s scope list formatting: confirm it reads `scopes` from the
+- [x] `/status`'s scope list formatting: confirm it reads `scopes` from the
       stored row (an array), not from the scope registry — the row is the
       source of truth for what was actually granted, the registry is only
       what a tool *requires*
-- [ ] Manual verification for the exit criterion specifically requires
+- [x] Manual verification for the exit criterion specifically requires
       `docker compose up -d --build`, **not** `docker compose restart`
       (per `architecture.md`'s documented trap: restart replays the
       existing image and does not re-read `.env` or rebuilt code) — state
@@ -846,10 +846,10 @@ connected, same email, no re-consent needed.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] `pnpm lint` green
 - [ ] Manual: `/connect google` → ask "who am I connected as?" → real email
       in the reply; `psql` shows a `tool.call` row, `tool_name = 'whoami'`,
       `approved = true`
@@ -864,16 +864,18 @@ connected, same email, no re-consent needed.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: /status, /disconnect, whoami tool — Google identity exit criterion`
-- [ ] Phase marked complete
+- [x] Changes committed: `feat: /status, /disconnect, whoami tool — Google identity exit criterion`
+- [x] Phase marked complete
+
+**Outstanding for Phase 3 (deliberately unticked):** the four `Manual:` items — including the plan's **exit criterion** (`/connect google` → `whoami` → `docker compose up -d --build` → still connected) — need live Google credentials and a running bot, so they are the orchestrator's to run. The handoff/`/clear` boxes do not apply: executed and reviewed in one session. Code-review verdict: **green**, no blocking findings. The reviewer traced the full `channel`/`channelUserId` parameter chain across all 25 updated call sites and confirmed no transposition with `chatId`/`userText`. Sole nit (three separate `buildGoogleAccountRepo(pool)` calls) judged not worth changing — pure closure factory over the shared pool, matching `buildThreadRepo` precedent. Commit: `36467c1`.
 
 ---
 
