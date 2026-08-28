@@ -59,9 +59,10 @@ their connection closes, crash or not.
 
 `src/migrations/` holds, in apply order, `001_telegram_offset.sql`,
 `002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`,
-`005_telemetry_event_total_cost.sql`, `006_threads.sql`. A new migration is
-numbered one past whatever is actually highest in the directory — re-list it
-rather than trusting an assumed number.
+`005_telemetry_event_total_cost.sql`, `006_threads.sql`,
+`007_google_accounts.sql`. A new migration is numbered one past whatever is
+actually highest in the directory — re-list it rather than trusting an
+assumed number.
 
 ## LLM usage accounting
 
@@ -255,6 +256,45 @@ No size cap or archival policy yet — the same unbounded-growth posture as
   `apps/hermes/src/store/build-thread-repo.ts` wires this module into that
   port.
 
+## Google accounts
+
+`src/migrations/007_google_accounts.sql` creates `google_accounts` (`channel
+text not null, channel_user_id text not null, chat_id text not null,
+google_email text not null, scopes text[] not null, token_envelope jsonb not
+null, expires_at timestamptz not null, created_at timestamptz not null
+default now(), updated_at timestamptz not null default now(), primary key
+(channel, channel_user_id)`), plus an explicit index on `expires_at` for
+Phase 4's `listAccountsExpiringBefore` sweep query. One row per connected
+Google identity, keyed by `(channel, channel_user_id)` — the same identity
+the Telegram allowlist already gates on. `chat_id` is captured at connect
+time, not derived at alert time, so a background sweep with no active thread
+in memory can still reach the right chat.
+
+`token_envelope` is **opaque to this package** — a `{ v, iv, tag, ct }` blob
+from `@hermes/google-auth`'s AES-256-GCM `sealToken`/`openToken`. This
+package persists and reads it back byte-for-byte and never decrypts it;
+`TOKEN_ENCRYPTION_KEY` never enters `packages/store`'s config surface.
+
+- `getAccount(pool, channel, channelUserId)` — a plain `SELECT`, returning
+  `undefined` when no row matches.
+- `upsertAccount(pool, account)` — `INSERT ... ON CONFLICT (channel,
+  channel_user_id) DO UPDATE`. **The first `DO UPDATE` in this package**, a
+  deliberate exception to the `DO NOTHING`-only precedent `thread-repo.ts`/
+  `llm-dedupe-repo.ts` set: reconnecting the same identity must overwrite the
+  old token, chat id, scopes, and expiry — not silently keep the stale row.
+- `deleteAccount(pool, channel, channelUserId)` — removes the row (Phase 3's
+  `/disconnect`, and Phase 4's disconnect-on-refresh-failure path).
+- `packages/google-auth`'s `GoogleAccountRepo` port is what `packages/agent`
+  and future Google-backed tools depend on, never `@hermes/store` directly —
+  `apps/hermes/src/store/build-google-account-repo.ts` binds these three
+  functions to that port.
+
+Row reads go through the same `parseValidatedJson` helper `thread-repo.ts`
+uses, validated against `@hermes/google-auth`'s own schema-first
+`googleAccountSchema` — one generic helper, two schema-first types each
+declared in the package that owns them, no second hand-mirrored copy in this
+package.
+
 ## Row validation
 
 `src/validate-row.ts` exports `parseValidatedJson(schema, value, context)` —
@@ -270,11 +310,12 @@ indiscriminately, while the table/column name stays fully readable. Fails
 closed, per ROADMAP invariant 7: an invalid row is a thrown error, never a
 silently-returned best-effort value.
 
-`thread-repo.ts`'s `toThread` is the one caller today, validating
-`row.messages` against `@hermes/core`'s `messagesArraySchema`. The helper is
-deliberately schema-agnostic — it takes any matching schema — so a future
-repo (e.g. a `GoogleAccountRepo` validating its own schema-first type) can
-reuse it unmodified against a different schema.
+`thread-repo.ts`'s `toThread` validates `row.messages` against `@hermes/core`'s
+`messagesArraySchema`; `google-account-repo.ts`'s `toGoogleAccount` validates
+the whole mapped row against `@hermes/google-auth`'s `googleAccountSchema`.
+The helper is deliberately schema-agnostic — it takes any matching schema —
+so both reuse the one implementation unmodified, each against its own
+schema-first type.
 
 ## Testing
 
@@ -348,6 +389,12 @@ entries and bumps `updated_at`; a row hand-corrupted with a raw SQL `UPDATE`
 that breaks the `Message` shape (e.g. an unknown `role`) makes
 `getOrCreateThread`'s read throw a descriptive error instead of returning
 silently-cast garbage.
+
+`src/__tests__/google-account-repo.test.ts` is integration-only, gated the
+same way: `upsertAccount` called twice for the same `(channel,
+channel_user_id)` overwrites the row rather than duplicating it (the one
+`DO UPDATE` exception); `getAccount` round-trips `token_envelope` byte-for-
+byte as opaque JSON; `deleteAccount` removes the row.
 
 The guard and URL resolution in `src/__tests__/db-env.ts` are published to
 other packages through this package's `./testing` subpath export, so

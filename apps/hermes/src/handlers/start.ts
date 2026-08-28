@@ -12,8 +12,8 @@ import { checkDbConnectivity } from "../health";
 export function createStartHandler(
   channel: Channel,
   pool: Pool,
-): (message: InboundMessage) => Promise<void> {
-  return async function handleStart(message: InboundMessage): Promise<void> {
+): (message: InboundMessage, args?: string) => Promise<void> {
+  return async function handleStart(message: InboundMessage, _args?: string): Promise<void> {
     const dbConnected = await checkDbConnectivity(pool);
     const text = dbConnected
       ? "You're allowlisted and connected to the database."

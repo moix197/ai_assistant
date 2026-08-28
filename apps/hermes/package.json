@@ -16,9 +16,11 @@
     "@hermes/channels": "workspace:*",
     "@hermes/config": "workspace:*",
     "@hermes/core": "workspace:*",
+    "@hermes/google-auth": "workspace:*",
     "@hermes/llm": "workspace:*",
     "@hermes/store": "workspace:*",
     "@hermes/telemetry": "workspace:*",
+    "google-auth-library": "^9.15.0",
     "zod": "^3.25.0"
   }
 }

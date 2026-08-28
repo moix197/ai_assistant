@@ -59,6 +59,7 @@ describe("/stats is routed before the paid fallthrough (routing regression)", ()
       pingHandler: vi.fn(),
       startHandler: vi.fn(),
       statsHandler,
+      connectHandler: vi.fn(),
       completionHandler,
     });
 
@@ -88,6 +89,7 @@ describe("/stats is routed before the paid fallthrough (routing regression)", ()
       pingHandler: vi.fn(),
       startHandler: vi.fn(),
       statsHandler,
+      connectHandler: vi.fn(),
       completionHandler,
     });
 

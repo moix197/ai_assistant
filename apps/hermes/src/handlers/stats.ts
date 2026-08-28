@@ -12,8 +12,8 @@ export function createStatsHandler(
   statsRepo: StatsRepo,
   clock: Clock,
   capUsd: number,
-): (message: InboundMessage) => Promise<void> {
-  return async function handleStats(message: InboundMessage): Promise<void> {
+): (message: InboundMessage, args?: string) => Promise<void> {
+  return async function handleStats(message: InboundMessage, _args?: string): Promise<void> {
     const stats = await computeStats(statsRepo, clock, capUsd);
     await channel.send(message.chatId, formatStatsMessage(stats));
   };

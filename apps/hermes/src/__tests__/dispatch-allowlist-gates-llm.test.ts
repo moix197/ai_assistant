@@ -66,6 +66,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
       pingHandler: vi.fn(),
       startHandler: vi.fn(),
       statsHandler: vi.fn(),
+      connectHandler: vi.fn(),
       completionHandler,
     });
 
@@ -98,6 +99,7 @@ describe("allowlist gates the paid completion handler (invariant #1, paid-call-s
       pingHandler: vi.fn(),
       startHandler: vi.fn(),
       statsHandler: vi.fn(),
+      connectHandler: vi.fn(),
       completionHandler,
     });
 

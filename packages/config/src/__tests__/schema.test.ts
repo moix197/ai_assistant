@@ -137,6 +137,82 @@ describe("loadConfig — LLM provider profiles", () => {
   });
 });
 
+const VALID_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+
+const validEnvWithGoogle = {
+  ...validEnv,
+  GOOGLE_CLIENT_ID: "client-id.apps.googleusercontent.com",
+  GOOGLE_CLIENT_SECRET: "client-secret",
+  TOKEN_ENCRYPTION_KEY: VALID_TOKEN_ENCRYPTION_KEY,
+};
+
+describe("loadConfig — Google OAuth", () => {
+  it("parses cleanly with all three Google keys unset — features absent, boot still succeeds", () => {
+    const config = loadConfig(validEnv);
+    expect(config.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(config.GOOGLE_CLIENT_SECRET).toBeUndefined();
+    expect(config.TOKEN_ENCRYPTION_KEY).toBeUndefined();
+  });
+
+  it("parses cleanly with all three Google keys set", () => {
+    const config = loadConfig(validEnvWithGoogle);
+    expect(config.GOOGLE_CLIENT_ID).toBe(validEnvWithGoogle.GOOGLE_CLIENT_ID);
+    expect(config.GOOGLE_CLIENT_SECRET).toBe(validEnvWithGoogle.GOOGLE_CLIENT_SECRET);
+    expect(config.TOKEN_ENCRYPTION_KEY).toBe(validEnvWithGoogle.TOKEN_ENCRYPTION_KEY);
+  });
+
+  it("fails naming the missing keys when only GOOGLE_CLIENT_ID is set", () => {
+    const env = { ...validEnv, GOOGLE_CLIENT_ID: validEnvWithGoogle.GOOGLE_CLIENT_ID };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/GOOGLE_CLIENT_SECRET/);
+  });
+
+  it("fails naming the missing key when only GOOGLE_CLIENT_SECRET is set", () => {
+    const env = { ...validEnv, GOOGLE_CLIENT_SECRET: validEnvWithGoogle.GOOGLE_CLIENT_SECRET };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/GOOGLE_CLIENT_ID/);
+  });
+
+  it("fails naming the missing key when only TOKEN_ENCRYPTION_KEY is set", () => {
+    const env = { ...validEnv, TOKEN_ENCRYPTION_KEY: VALID_TOKEN_ENCRYPTION_KEY };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/GOOGLE_CLIENT_ID/);
+  });
+
+  it("fails naming the missing key when two of three Google keys are set", () => {
+    const env = {
+      ...validEnv,
+      GOOGLE_CLIENT_ID: validEnvWithGoogle.GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET: validEnvWithGoogle.GOOGLE_CLIENT_SECRET,
+    };
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
+  });
+
+  it("fails naming TOKEN_ENCRYPTION_KEY when it decodes to the wrong byte length", () => {
+    const env = {
+      ...validEnvWithGoogle,
+      TOKEN_ENCRYPTION_KEY: Buffer.alloc(16, 1).toString("base64"),
+    };
+    expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
+  });
+
+  it("fails naming TOKEN_ENCRYPTION_KEY when it is not valid base64", () => {
+    const env = { ...validEnvWithGoogle, TOKEN_ENCRYPTION_KEY: "not base64!!! @@@" };
+    expect(() => loadConfig(env)).toThrow(/TOKEN_ENCRYPTION_KEY/);
+  });
+
+  it("defaults OAUTH_REDIRECT_BASE_URL to http://localhost:3000 when unset", () => {
+    const config = loadConfig(validEnv);
+    expect(config.OAUTH_REDIRECT_BASE_URL).toBe("http://localhost:3000");
+  });
+
+  it("validates OAUTH_REDIRECT_BASE_URL independently of the Google key group", () => {
+    const env = { ...validEnv, OAUTH_REDIRECT_BASE_URL: "not-a-url" };
+    expect(() => loadConfig(env)).toThrow(/OAUTH_REDIRECT_BASE_URL/);
+  });
+});
+
 describe("toRedactedLog", () => {
   it("masks DATABASE_URL and TELEGRAM_BOT_TOKEN, and leaves other fields intact", () => {
     const config = loadConfig(validEnv);

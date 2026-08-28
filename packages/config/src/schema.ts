@@ -70,6 +70,58 @@ function checkFallbackAllOrNone(
   }
 }
 
+/** The three Google OAuth keys, grouped for the all-or-none presence check below. */
+const GOOGLE_OAUTH_KEYS = [
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "TOKEN_ENCRYPTION_KEY",
+] as const;
+
+/**
+ * Enforces Google OAuth's all-or-none rule: either none of the three keys
+ * are set (Google features cleanly absent, a valid, supported configuration)
+ * or all three are. A partial set fails boot naming each missing key — same
+ * precedent as `checkFallbackAllOrNone` above.
+ */
+function checkGoogleOAuthAllOrNone(
+  value: { [K in (typeof GOOGLE_OAUTH_KEYS)[number]]?: string },
+  ctx: z.RefinementCtx,
+): void {
+  const presentCount = GOOGLE_OAUTH_KEYS.filter((key) => value[key] !== undefined).length;
+  if (presentCount === 0 || presentCount === GOOGLE_OAUTH_KEYS.length) return;
+
+  for (const key of GOOGLE_OAUTH_KEYS) {
+    if (value[key] === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} is required: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/TOKEN_ENCRYPTION_KEY must all be set or all be absent (Google features are all-or-none)`,
+      });
+    }
+  }
+}
+
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * `optionalLlmString`, plus a shape check: when present, the value must be
+ * base64 decoding to exactly 32 bytes (AES-256's key size) — validated at
+ * boot, not at first token write, so a malformed key fails loudly with a
+ * named error weeks before it would otherwise be discovered.
+ */
+const tokenEncryptionKeySchema = optionalLlmString.superRefine((value, ctx) => {
+  if (value === undefined) return;
+  const isWellFormedBase64 = BASE64_PATTERN.test(value) && value.length % 4 === 0;
+  const decodedLength = isWellFormedBase64 ? Buffer.from(value, "base64").length : -1;
+  if (decodedLength !== 32) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key (generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\")",
+    });
+  }
+});
+
 /**
  * Defaults to a de-facto-unlimited cap (rather than failing boot) when the
  * key is entirely absent — same precedent as `PORT`/`LOG_LEVEL` above.
@@ -101,8 +153,16 @@ export const envSchema = z
       .number()
       .positive({ message: "LLM_MONTHLY_BUDGET_USD must be a positive number" })
       .default(DEFAULT_LLM_MONTHLY_BUDGET_USD),
+    GOOGLE_CLIENT_ID: optionalLlmString,
+    GOOGLE_CLIENT_SECRET: optionalLlmString,
+    TOKEN_ENCRYPTION_KEY: tokenEncryptionKeySchema,
+    OAUTH_REDIRECT_BASE_URL: z
+      .string()
+      .url({ message: "OAUTH_REDIRECT_BASE_URL must be a valid URL" })
+      .default("http://localhost:3000"),
   })
-  .superRefine(checkFallbackAllOrNone);
+  .superRefine(checkFallbackAllOrNone)
+  .superRefine(checkGoogleOAuthAllOrNone);
 
 export type Env = z.infer<typeof envSchema>;
 
@@ -124,6 +184,10 @@ export const IS_SECRET_ENV_KEY: Record<keyof Env, boolean> = {
   LLM_FALLBACK_API_KEY: true,
   LLM_FALLBACK_MODEL: false,
   LLM_MONTHLY_BUDGET_USD: false,
+  GOOGLE_CLIENT_ID: false,
+  GOOGLE_CLIENT_SECRET: true,
+  TOKEN_ENCRYPTION_KEY: true,
+  OAUTH_REDIRECT_BASE_URL: false,
 };
 
 /** Env keys whose values must never appear unmasked in a log line. */

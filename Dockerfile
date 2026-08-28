@@ -15,6 +15,7 @@ COPY packages/channels/package.json packages/channels/package.json
 COPY packages/llm/package.json packages/llm/package.json
 COPY packages/telemetry/package.json packages/telemetry/package.json
 COPY packages/agent/package.json packages/agent/package.json
+COPY packages/google-auth/package.json packages/google-auth/package.json
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm -r build
