@@ -7,8 +7,6 @@
  * they are not domain types other packages need to share.
  */
 
-export type MessageRole = "system" | "user" | "assistant" | "tool";
-
 export interface SystemMessage {
   role: "system";
   content: string;

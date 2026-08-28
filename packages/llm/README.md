@@ -30,9 +30,11 @@ mega-package.
   the result reuses the exact number `recordCompletionUsage` resolves and
   records — never re-derived a second time by a caller.
 - `ToolDefinition` (a tool's name/description/JSON-schema parameters) is
-  wire-format-complete in this phase — the adapter serializes `tools` and
-  can parse `tool_calls` back out of a response — but has no real caller
-  until `packages/agent` (2c) builds the bounded tool loop.
+  wire-format-complete — the adapter serializes `tools` and can parse
+  `tool_calls` back out of a response. `packages/agent`'s bounded tool loop
+  (03-agent-core Phase 2) is the real caller: its `converse()` derives
+  `toolDefs` (`src/prompt.ts`) and passes them as `CompletionRequest.tools`
+  on every turn that declares tools.
 
 ## OpenAI-compatible adapter
 

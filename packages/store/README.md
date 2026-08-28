@@ -201,11 +201,11 @@ application-side scan of a blob column.
   and cast to numeric. It deliberately carries **no cost or dollar field**;
   see `sumCostSince` above and the decision doc.
 - `getTopToolsSince(pool, sinceUtc, limit)` → `TopToolCount[]` — groups
-  `name = 'tool.call'` rows by `tool_name`, most-called first. Returns `[]`
-  (not an error, not `null`) today: `packages/agent` has landed and its
-  `runTurn` produces the `turn` rows, but `tool.call` gets no producer until
-  that package's tool loop (03-agent-core Phase 2); it needs no change here
-  when one lands.
+  `name = 'tool.call'` rows by `tool_name`, most-called first. `[]` means "no
+  tool calls in the window" now, not "no producer exists" — `packages/agent`'s
+  tool loop (`finishToolCall` in `src/loop.ts`, 03-agent-core Phase 2) emits a
+  `tool.call` event for every tool invocation alongside `runTurn`'s `turn`
+  rows, so this needed no change here when that producer landed.
 
 `src/migrations/005_telemetry_event_total_cost.sql` adds `total_cost_usd
 numeric(12,6)` (03-agent-core Phase 1, settled decision 1). A `turn` row

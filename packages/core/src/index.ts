@@ -21,7 +21,6 @@ export { delay } from "./delay";
 export type {
   LlmUsageEntry,
   Message,
-  MessageRole,
   ToolCall,
   ToolResult,
   Usage,

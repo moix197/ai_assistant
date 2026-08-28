@@ -212,7 +212,14 @@ function toWireMessage(message: Message): Record<string, unknown> {
       tool_calls: message.toolCalls.map(toWireToolCall),
     };
   }
-  return { role: message.role, content: message.content };
+  if (message.role === "system" || message.role === "user" || message.role === "assistant") {
+    return { role: message.role, content: message.content };
+  }
+  // Exhaustiveness guard: a fifth `Message` variant must fail to compile here
+  // rather than silently fall through this function's shared { role, content }
+  // shape and drop whatever new field it carries.
+  const exhaustiveCheck: never = message;
+  throw new Error(`toWireMessage: unhandled message role ${JSON.stringify(exhaustiveCheck)}`);
 }
 
 /**
