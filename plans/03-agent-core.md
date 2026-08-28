@@ -849,21 +849,21 @@ by timed-out approvals. Not fixed here — worth a decision.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–3 together
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] All tests pass: `pnpm test` (default, hermetic), `pnpm test:db` (gated
       on `TEST_DATABASE_URL`)
-- [ ] No CLAUDE.md invariants violated
-- [ ] Feature tested manually: golden path (multi-turn memory survives
+- [x] No CLAUDE.md invariants violated
+- [x] Feature tested manually: golden path (multi-turn memory survives
       restart, cache-hit rate moves, both tools callable, approval gate
       approves/denies/times out correctly), plus edge cases (unknown tool
       name from a model hallucination, invalid tool args, two gated calls in
       one batch, a shutdown mid-turn)
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
+- [x] Overall success criteria met
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
       table below
 - [ ] All phase checkboxes above are ticked
 
@@ -943,3 +943,23 @@ throwaways by design: enough to prove the registry, the validation, the
 parallel execution, and the approval flow actually work, without pretending
 this PRD is where Hermes gets its first real capability. That's deliberately
 next.
+
+**Closeout evidence (2026-08-28):**
+- Gates: `pnpm lint` 0 errors, **311 tests** passing, `pnpm -r typecheck` green,
+  `pnpm test:db` green across store/telemetry/hermes.
+- Live manual verification against DeepSeek: `get_current_time` approved=true;
+  Approve runs `echo`; **Deny** approved=false at 2262ms with the turn still
+  completing; 5-minute timeout approved=false at 301723ms; a two-call batch
+  emitted one prompt.
+- **Cache hit rate: 83.8%** (14208 cached / 16948 prompt tokens) — the number
+  `02-telemetry` shipped stuck at `0.0%`. This PRD's headline criterion.
+- End-to-end code review: green, no blockers. Cost identity verified across all
+  paths; `packages/agent` deps confirmed core/llm/zod only; no package cycles.
+
+**Deferred, recorded, not blocking merge:**
+1. `tool.call.duration_ms` on a gated call measures the approval wait, not
+   handler time (only `approved: false` rows; nothing aggregates the column
+   today). Recorded in `.ai/decisions/telemetry-event-schema.md`.
+2. `thread-repo.ts` types persisted jsonb rows as `Message[]` unvalidated, so
+   the discriminated union's guarantee stops at the DB boundary (pre-existing).
+
