@@ -6,11 +6,16 @@ in ways that produce *no error at all*.
 
 **Decision:**
 
-1. The poll offset is persisted **after** an update is fully handled, per
-   update, never before and never batched.
+1. The poll offset is persisted per update, never batched — and, for a
+   `callback_query` update, **after** it is fully handled. 03-agent-core Phase 3
+   carved message updates out of that rule: their offset advances immediately
+   while the handler runs detached, because the approval gate deadlocks
+   otherwise. The reasoning and the trade-off live in
+   [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md);
+   the section below is why the rule existed and why callbacks still keep it.
 2. Exactly one Hermes process may poll a given bot token, enforced at boot by a
    Postgres session advisory lock on a dedicated connection.
-3. Handlers must be idempotent, because a crash replays one update.
+3. Handlers must be idempotent, because a redelivered update is replayed.
 
 ## Why offset-after-handling
 
@@ -28,10 +33,17 @@ So the two orderings fail asymmetrically:
   update on restart. Visible, bounded, recoverable.
 
 Duplicates are recoverable; losses are not. That asymmetry is the whole
-argument. `handleUpdate` in `packages/channels/src/telegram/poller.ts` therefore
-ends with `setOffset(update_id + 1)`, and a throwing handler aborts the rest of
-the batch — continuing would advance a later update's offset past the one that
-just failed, re-creating the loss it was avoiding.
+argument, and it still holds — `pollOnce` in
+`packages/channels/src/telegram/poller.ts` awaits a `callback_query`'s handler
+before `setOffset(update_id + 1)`, and a throwing callback handler aborts the
+rest of the batch, since continuing would advance a later update's offset past
+the one that just failed.
+
+Message updates are the one place the project knowingly took the losing side of
+that asymmetry, because keeping it made human tool approval impossible to
+implement at all — see
+[poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md) for
+the deadlock, the options, and what a crash now costs.
 
 **This ordering is not observable from unit tests alone.** Phase 2's mutation
 testing established that while the offset lived in memory, moving the write
@@ -40,9 +52,12 @@ closure-private and only read by the next `getUpdates`, which is sequenced after
 the await either way. Persistence is what turns it into a real crash window.
 It is now guarded by two tests that must both survive any refactor —
 `poller-offset-ordering.test.ts` (asserts `setOffset` resolves after the
-handler) and `poller-crash-replay.test.ts` (proves the replay actually happens).
-Crash-replay alone is **not** a sufficient guard: its instance-1 `setOffset`
-always rejects, so a reordered write would still pass it.
+callback handler) and `poller-crash-replay.test.ts` (proves the replay actually
+happens). Crash-replay alone is **not** a sufficient guard: its instance-1
+`setOffset` always rejects, so a reordered write would still pass it. Both now
+exercise `callback_query` updates, since that is the only kind the guarantee
+still covers; each file carries a second case pinning the message side's
+deliberately different behavior.
 
 ## Why single-instance, and why an advisory lock
 
@@ -86,11 +101,16 @@ completed *after* the reply is sent. Two cases, not equally covered:
   Postgres guarantee, not an application check-then-insert race; the replay
   resends the stored reply and makes zero provider calls.
 - **A crash between claim and complete** — *not* closed. **Named accepted risk.**
-  The row is left `pending`, and a `pending` row is claimable again: the retry
+  The row is left `pending`, and a `pending` row is claimable again: a redelivery
   runs the call a second time. Fail-**open** on purpose. Fail-closed would wedge
   that message permanently — no reply, no way to retry — and by construction it
   is a message the user is waiting on. The cost of the chosen side is bounded
   and one-shot: one duplicate completion, at development message volumes.
+  Since Phase 3 detached message dispatch, a *crash* mid-turn no longer produces
+  that redelivery at all — the offset was already advanced, so the update is
+  gone and the `pending` row is simply never reclaimed. The dedupe machinery now
+  earns its keep against exact-duplicate **delivery** (a `setOffset` that itself
+  failed, replaying the batch), not against the crash window.
 
 Ordering is what makes both work: recording completion *before* the send would
 mark a turn done that the user never received, converting a rare double charge
@@ -123,7 +143,12 @@ Don't build it without a real incident.
   `/ping` and `/start` are safe by inspection (a duplicate reply is visible and
   harmless). Any handler with an external side effect MUST carry its own
   idempotency key. This decision does not solve idempotency generally, only for
-  reply-only handlers.
+  reply-only handlers. Still required after Phase 3: a failed `setOffset`
+  replays the batch even though a crash no longer does.
+- **A message handler must also tolerate never being invoked again.** Its
+  update's offset advances while it runs, so a failure or a crash is terminal
+  for that update — nothing retries it. See
+  [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md).
 - **`InboundMessage` carries `updateId`** so a paid handler can derive one.
   Required, not optional: an absent id would collapse every such message to the
   same key and short-circuit unrelated messages with someone else's stored reply.

@@ -19,6 +19,7 @@ packages/store     pg pool, migration runner, repos, advisory lock
 packages/channels  Channel port + telegram/ adapter
 packages/llm       LlmProvider port + OpenAI-compatible adapter over fetch
 packages/telemetry buffered recorder behind core's port + /stats rollup math
+packages/agent     bounded turn loop + tool execution + ThreadRepo/ApprovalGate PORTS
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -31,12 +32,12 @@ Strictly downward; no package imports one above it.
 
 ```
                         apps/hermes
-                             │  (imports all six; the ONLY place they are wired together)
-     ┌───────────┬───────────┼───────────┬───────────┬──────────┐
-     ▼           ▼           ▼           ▼           ▼          ▼
-  config       store     channels       llm      telemetry     core
-     │           │       (only dep)  (only dep)  (only dep)
-     └───────────┴───────────┴───────────┴───────────┴──────────► core
+                             │  (imports all seven; the ONLY place they are wired together)
+     ┌───────────┬───────────┼───────────┬───────────┬──────────┬──────────┐
+     ▼           ▼           ▼           ▼           ▼          ▼          ▼
+  config       store     channels       llm      telemetry    agent       core
+     │           │       (only dep)  (only dep)  (only dep)  (core+llm)
+     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────► core
 ```
 
 - `packages/core` depends on nothing. It is where ports live so lower packages
@@ -88,22 +89,53 @@ Strictly downward; no package imports one above it.
   `sumCostSince` into both, which is what makes the cost-source split hold in
   practice and not just in prose — see
   [telemetry-event-schema](decisions/telemetry-event-schema.md).
+- **`packages/agent` depends on `packages/core` and `packages/llm` only** —
+  never `@hermes/store` and, the newer temptation, never `@hermes/channels`.
+  Both are reached through injected ports declared inside `agent`:
+  - `ThreadRepo` (`{ getOrCreateThread, appendMessages }`), bound in
+    `apps/hermes/src/store/build-thread-repo.ts`.
+  - `ApprovalGate` (`{ requestApproval }`), whose `ApprovalRequest` carries only
+    `{ tool, args }` and whose context carries only `{ threadId, turnId }` — no
+    chat id, no message id, nothing a second channel could not supply. The
+    Telegram implementation lives in
+    `apps/hermes/src/agent/telegram-approval-gate.ts`; see
+    [approval-gate-design](decisions/approval-gate-design.md), including the
+    `threadId → chatId` stopgap that boundary forces on `apps/hermes`.
+  `apps/hermes/src/agent/build-agent.ts` is the one place allowed to construct
+  the `AgentDefinition` and bind both ports, and the only place a tool
+  definition lives — `packages/agent` never imports a feature package.
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
 
 ## Data flow
 
-Inbound, one update at a time:
+`getUpdates` returns two kinds of update, and the loop treats them
+asymmetrically — a message is dispatched **detached** (its offset advances at
+once, several can be in flight), a `callback_query` is awaited inline. That
+asymmetry is the approval gate's precondition, not an optimization; read
+[poller-concurrent-message-dispatch](decisions/poller-concurrent-message-dispatch.md)
+before touching either branch.
 
 ```
 Telegram getUpdates (long poll, 30s)
    │
    ▼  packages/channels/src/telegram/client.ts   ← retry/backoff, token redaction
-   ▼  .../poller.ts  normalizeTelegramUpdate     ← drops updates with no message.from
+   │
+   ├─ callback_query ─► normalizeTelegramCallback  ← drops one with no message/data
+   │        ▼  InboundCallback  →  channel.subscribeCallback  →  apps/hermes
+   │        │     telegram-approval-gate.handleCallback: resolve the pending
+   │        │     approval, answerCallback, editMessage (buttons made inert).
+   │        │     NOT behind withAllowlist/withPrivateChat — it answers a
+   │        │     prompt this bot sent into an already-allowlisted chat.
+   │        ▼  AWAITED inline, then setOffset. Crash-replay preserved.
+   │
+   ▼  message / edited_message  →  normalizeTelegramUpdate
+   │                                              ← drops updates with no message.from
    │                                                (no user id ⇒ fail-open risk)
    ▼  InboundMessage (provider-neutral; carries updateId — the dedupe key's
    │                   only source, hence required, not optional)
+   │  DETACHED here: setOffset(update_id + 1) runs now, not after the handler
    │
    ▼  apps/hermes  withAllowlist( withPrivateChat( dispatchCommand ) )
    │                    │              │
@@ -117,6 +149,17 @@ Telegram getUpdates (long poll, 30s)
    │                                    │     →  packages/store  →  llm_dedupe
    │                                    │     already completed ⇒ resend the
    │                                    │     stored reply, zero provider calls
+   │                                    ▼  agent.handleMessage → packages/agent
+   │                                    │     runTurn: load thread, trim, then up
+   │                                    │     to MAX_ITERATIONS model calls
+   │                                    │     ├─ tool calls, run concurrently:
+   │                                    │     │   ungated → invoke straight away
+   │                                    │     │   requiresApproval → ApprovalGate
+   │                                    │     │     → prompt with inline keyboard
+   │                                    │     │     → PARKED until the tap comes
+   │                                    │     │       back via the branch above
+   │                                    │     │       (or 5min ⇒ denied, or abort)
+   │                                    │     └─ each emits one tool.call event
    │                                    ▼  packages/llm adapter
    │                                    ▼  budget check: SUM(cost_usd) since the
    │                                    │     1st of this month, UTC (injected
@@ -138,8 +181,8 @@ Telegram getUpdates (long poll, 30s)
    │                                    ▼  dedupe complete, storing the reply —
    │                                    │     AFTER the send, never before
    │
-   ▼  offsetRepo.setOffset(update_id + 1)  →  packages/store  →  telegram_offset
-       ^^ AFTER the handler resolves. Never before. See the polling decision doc.
+   ▼  nothing left to ack: this update's offset advanced back at the DETACHED
+       mark. A failure anywhere below it is terminal — logged, never retried.
 ```
 
 `echo.ts` is still in the tree as a reference/fallback but is no longer wired:
@@ -157,7 +200,11 @@ one row per `(channel, chat_id)`, written by `packages/store`'s
 `thread-repo.ts` and reached only through an injected `ThreadRepo` port, so
 `packages/agent` never imports `@hermes/store` and the dependency direction
 holds. Persisting rather than holding history in process is what makes memory
-survive a restart — the reason it is a table and not a `Map`.
+survive a restart — the reason it is a table and not a `Map`. The `ApprovalGate`
+port is injected the same way and for the same reason, and is the one step in
+that loop that can park a turn for minutes; the approval prompt and the tap that
+answers it travel the *outbound* and *callback* paths above, not this one. See
+[approval-gate-design](decisions/approval-gate-design.md).
 
 The `llm.call` event that rides alongside that write is deliberately **not** the
 same shape of guarantee, and the three differences are the whole point of
@@ -185,9 +232,13 @@ ceiling — see [monthly-budget-ceiling](decisions/monthly-budget-ceiling.md)
 for why the check sits before `fetch` and why it bounds spend to within one
 call's cost of the cap rather than stopping exactly at it.
 
-The offset write is the last step of handling an update, and a handler throwing
-aborts the rest of the batch so no later update's offset can leapfrog the one
-that failed.
+For a `callback_query`, the offset write is still the last step of handling the
+update, and a throwing callback handler aborts the rest of the batch so no later
+update's offset can leapfrog the one that failed. For a message it is the
+*first* step: the handler runs detached and its failures are logged, never
+retried, and never allowed to stop the batch. Both halves of that asymmetry are
+load-bearing — see
+[poller-concurrent-message-dispatch](decisions/poller-concurrent-message-dispatch.md).
 
 ## Boot and shutdown order
 
@@ -242,7 +293,15 @@ health server → poller → telemetry recorder + handlers → shutdown registra
 - `controller.abort()`'s signal is threaded into the poller's in-flight
   `getUpdates` call (`packages/channels/src/telegram/{client,poller}.ts`), so
   `channel.stop()`'s drain resolves as soon as abort fires on an idle bot
-  instead of always burning the full 5s bound.
+  instead of always burning the full 5s bound. The same abort is what resolves
+  any approval a turn is parked on — as `"denied"`, immediately, with no further
+  Telegram calls — so `channel.stop()` never waits out the gate's 5-minute
+  window.
+- `channel.stop()` now drains more than the in-flight poll iteration: message
+  dispatches detached from it are tracked and awaited too, or shutdown would
+  report the channel drained while a paid turn was still running against a pool
+  about to close. That drain shares the one 5s bound, so a turn slower than that
+  is cut off, not waited for.
 - 5s / 1s / 8s are sized against `docker-compose.yml`'s explicit
   `stop_grace_period: 15s` for the `hermes` service — revisit all four
   together if any one of them changes.

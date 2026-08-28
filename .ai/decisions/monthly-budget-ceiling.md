@@ -33,10 +33,17 @@ non-obvious about it follows from that being true:
 - **Granularity is accepted, not overlooked.** The ceiling gates the *next*
   call against spend already recorded, never spend in flight. A call that
   passed the check completes and is recorded even if its own cost crosses the
-  cap. Cumulative monthly spend is therefore bounded to within one call's cost
-  of the cap, not stopped exactly at it. In 2a that window is exactly one call
-  wide because the completion handler is single-shot; a 2c multi-call turn is
-  where a per-turn-aware cap would be revisited.
+  cap. Cumulative monthly spend is therefore bounded to within the cost of the
+  calls already in flight, not stopped exactly at the cap — and that window has
+  widened twice since it was one call wide. `packages/agent`'s `runTurn` makes a
+  turn up to `MAX_ITERATIONS` calls, each checked against spend the previous
+  ones may not have recorded yet; 03-agent-core Phase 3 then made the poller
+  dispatch message updates concurrently, so several turns can be in flight at
+  once (see
+  [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md)).
+  Still accepted, not overlooked: the ceiling is a runaway-bill defense, not an
+  accountant. A per-turn-aware or reservation-style cap is where this would be
+  revisited if the overshoot ever showed up as real money.
 - **The user-facing reply carries no figures.** `BudgetExceededError.message`
   holds `capUsd`/`spentUsd` for logs; the handler replies with a fixed string.
   Spend is operator information, and `/stats` (02-telemetry) is where it is

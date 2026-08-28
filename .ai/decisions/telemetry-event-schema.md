@@ -4,20 +4,22 @@
 `name` (`llm.call` / `tool.call` / `turn`), and every variant lands in one
 `telemetry_events` table shaped wide-plus-jsonb-tail: the columns a rollup
 filters or aggregates on (`name`, `created_at`, `thread_id`, `turn_id`,
-`tool_name`, `duration_ms`, `cost_usd`, `is_error`) are real columns; everything
-event-specific goes in a `fields` jsonb bag. `/stats` reads its **spend** from
-`llm_usage` and everything else from `telemetry_events` — never the reverse.
+`tool_name`, `duration_ms`, `cost_usd`, `total_cost_usd`, `is_error`) are real
+columns; everything event-specific goes in a `fields` jsonb bag. `/stats` reads
+its **spend** from `llm_usage` and everything else from `telemetry_events` —
+never the reverse.
 
 **Why:**
 
 - **A union, not the original free-form `{ name, fields? }`.** `packages/agent`
-  (2c) is the future producer of `tool.call` and `turn`, and it does not exist
-  yet. Defining all three now means 2c emits into a contract that already
-  matches the table's columns instead of inventing a shape and forcing a
-  migration. It also makes `toRow`'s column mapping exhaustive: a fourth event
-  kind fails to compile until it is given one. `threadId`/`turnId` are nullable
-  on every variant for the same reason — no real ids exist until 2c, and the
-  only producer shipped (`packages/llm`'s adapter) passes `null` for both.
+  was the future producer of `tool.call` and `turn` and did not exist when this
+  table was designed. Defining all three up front meant it later emitted into a
+  contract that already matched the table's columns instead of inventing a shape
+  and forcing a migration — which is how it actually played out (the one
+  migration it did need, `005`, is in the constraints below). It also makes `toRow`'s column mapping exhaustive: a fourth event
+  kind fails to compile until it is given one. `threadId`/`turnId` stay nullable
+  on every variant because they were introduced before any producer could supply
+  them; all three producers pass real ids now, threaded down from `runTurn`.
 - **Wide-plus-jsonb, not pure jsonb and not a column per field.** The whole
   reason this table exists is that Postgres, not Node, should do the rollup
   math; a pure-jsonb blob makes every aggregate a scan and defeats the indexes.
@@ -59,7 +61,7 @@ event-specific goes in a `fields` jsonb bag. `/stats` reads its **spend** from
   at this size. The event shape is flat enough that an exporter can bolt on
   later; none is built.
 - *A table per event kind* — three tables to join for a single `/stats` reply,
-  and a fourth for every event 2c adds.
+  and a fourth for every event kind added after.
 - *Deriving `/stats`' spend from `telemetry_events.cost_usd`* — it would be
   convenient (one source for the whole reply) and it would be wrong: the event
   write is lossy on purpose, so a dropped batch would understate spend against
@@ -79,6 +81,20 @@ event-specific goes in a `fields` jsonb bag. `/stats` reads its **spend** from
   reply is late or lost.
 - New event kinds get a `toRow` case and, if they carry a queryable dimension,
   a column — not a `fields` key that someone later regrets.
+- **`cost_usd` means exactly one thing: the cost of a single `llm.call`.** A
+  `turn`'s total lives in its own `total_cost_usd` column (migration `005`) and
+  leaves `cost_usd` NULL, which is what closed the double-count hazard
+  02-telemetry deferred — a naive `SUM(cost_usd)` no longer counts a call twice.
+  A future event kind carrying money must pick one of those two meanings rather
+  than overloading either.
+- **No event may carry an unbounded payload.** `tool.call` deliberately records
+  `{ tool, durationMs, approved, error? }` and never the tool's actual result,
+  with `error` truncated to 500 chars. That is what keeps `maxBufferSize`
+  bounding a count rather than needing a byte cap; an event kind that ever
+  carries a real result reopens that question and must answer it first.
+- **`approved` is a `fields` key, not a column** — nothing aggregates on it
+  today. A rollup that wants "denied tool calls per week" needs the column and
+  the migration, per the first constraint above.
 
 **Open items (accepted, not solved here):**
 
@@ -86,19 +102,6 @@ event-specific goes in a `fields` jsonb bag. `/stats` reads its **spend** from
   migration `004` onward. This is a known, named gap, not an oversight —
   whoever needs a bounded table (or the first operator to notice the disk)
   owns picking a window and writing the pruner.
-- **`cost_usd` is shared by two event kinds with different meanings.**
-  `llm.call.costUsd` (one call) and `turn.totalCostUsd` (the sum over a turn's
-  calls) both map to the same `cost_usd` column. Nothing double-counts today
-  because 2c ships no `turn` producer — but the moment one exists, a naive
-  `SUM(cost_usd)` across all event kinds counts each call's cost twice. Every
-  query in the tree today filters `name = 'llm.call'` first, which is what
-  makes it safe; recorded here so the hazard is found before it bites rather
-  than after. Whoever wires the `turn` producer should decide then whether to
-  split the column or keep the discipline of always filtering on `name`.
-- **`maxBufferSize` bounds an event *count*, not bytes.** Every event shipped
-  today has a small fixed-shape payload, so this is not yet a live risk. 2c's
-  `ToolCallEvent` will carry a tool result, which can be large and unbounded;
-  revisit a byte-size cap at that point.
 - **`created_at` is flush time, not event time.** Buffering means an event
   occurring within one flush interval of a UTC day/month boundary can land in
   the adjacent bucket. Accepted for an instrument; it would not be for a
