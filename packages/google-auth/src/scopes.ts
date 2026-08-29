@@ -37,12 +37,14 @@ export function resolveConnectScopes(argument: string): string[] | undefined {
 /**
  * Which Google scopes a given tool needs, consulted at tool-selection time
  * starting Phase 3. Seeded with `whoami`; `05-google-sheets` Phase 4 adds
- * `sheets_inspect`/`sheets_read` — the agent can never escalate its own
- * scopes (Dependencies & Risks), so this map is the single place a tool's
- * requirement is declared, never inferred at call time.
+ * `sheets_inspect`/`sheets_read`, Phase 5 adds `sheets_write` — the agent
+ * can never escalate its own scopes (Dependencies & Risks), so this map is
+ * the single place a tool's requirement is declared, never inferred at call
+ * time.
  */
 export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new Map([
   ["whoami", IDENTITY_SCOPES],
   ["sheets_inspect", SHEETS_SCOPES],
   ["sheets_read", SHEETS_SCOPES],
+  ["sheets_write", SHEETS_SCOPES],
 ]);

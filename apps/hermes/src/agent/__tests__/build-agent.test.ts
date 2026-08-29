@@ -1,10 +1,26 @@
+import { createAgent } from "@hermes/agent";
 import type { TelegramPoller } from "@hermes/channels";
-import type { AccessTokenPort, SheetRegistryPort, SheetsClient } from "@hermes/google-sheets";
+import type {
+  AccessTokenPort,
+  SheetRegistryPort,
+  SheetWriteLogPort,
+  SheetsClient,
+} from "@hermes/google-sheets";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { describe, expect, it, vi } from "vitest";
 import { type SheetsDeps, buildAgent } from "../build-agent";
+
+// Spies through to the real `createAgent` (no behavior change) so a test can
+// inspect the `AgentDefinition` it was actually called with — in particular
+// each `ToolSpec.requiresApproval`, a field `assemblePrefix` strips before
+// anything reaches the provider request, so it's otherwise unobservable from
+// outside `buildAgent`.
+vi.mock("@hermes/agent", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@hermes/agent")>();
+  return { ...actual, createAgent: vi.fn(actual.createAgent) };
+});
 
 /** `rows` seeds every `pool.query` call, mirroring `build-llm-provider.test.ts`'s shape. */
 function createMockPool(rows: unknown[] = []): Pool & { query: ReturnType<typeof vi.fn> } {
@@ -24,8 +40,18 @@ function createFakeSheetsDeps(): SheetsDeps {
     listAll: vi.fn().mockResolvedValue([]),
   };
   const accessTokenPort: AccessTokenPort = { getAccessToken: vi.fn() };
-  const sheetsClient: SheetsClient = { getSpreadsheetMeta: vi.fn(), getValues: vi.fn() };
+  const sheetsClient: SheetsClient = {
+    getSpreadsheetMeta: vi.fn(),
+    getValues: vi.fn(),
+    appendValues: vi.fn(),
+    updateValues: vi.fn(),
+  };
   return { sheetRegistry, accessTokenPort, sheetsClient };
+}
+
+/** Never exercised by these tests (no sheets_write tool call is triggered) — just needs to satisfy the type. */
+function createFakeSheetWriteLogRepo(): SheetWriteLogPort {
+  return { claim: vi.fn(), complete: vi.fn() };
 }
 
 /** Never exercised by these tests (no gated tool call is triggered) — just needs to satisfy the type. */
@@ -64,6 +90,7 @@ describe("buildAgent — wiring", () => {
       new AbortController().signal,
       createMockChannel(),
       createFakeSheetsDeps(),
+      createFakeSheetWriteLogRepo(),
     );
     const reply = await agent.handleMessage("telegram", "555", "111", "hello");
 
@@ -87,7 +114,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, whoami) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -108,6 +135,7 @@ describe("buildAgent — wiring", () => {
       new AbortController().signal,
       createMockChannel(),
       createFakeSheetsDeps(),
+      createFakeSheetWriteLogRepo(),
     );
     await agent.handleMessage("telegram", "999", "111", "hi");
 
@@ -116,18 +144,30 @@ describe("buildAgent — wiring", () => {
         model: "another-model",
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
         // for deterministic output — "echo" precedes "get_current_time"
-        // precedes "sheets_inspect" precedes "sheets_read" precedes "whoami".
-        // The existing prefix (echo, get_current_time, whoami) is byte-stable —
-        // 05-google-sheets Phase 4 only inserts the two new entries.
+        // precedes "sheets_inspect" precedes "sheets_read" precedes
+        // "sheets_write" precedes "whoami". The existing prefix (echo,
+        // get_current_time, whoami) is byte-stable — 05-google-sheets Phase 4
+        // inserted the two read entries, Phase 5 inserts sheets_write.
         tools: [
           expect.objectContaining({ name: "echo" }),
           expect.objectContaining({ name: "get_current_time" }),
           expect.objectContaining({ name: "sheets_inspect" }),
           expect.objectContaining({ name: "sheets_read" }),
+          expect.objectContaining({ name: "sheets_write" }),
           expect.objectContaining({ name: "whoami" }),
         ],
       }),
     );
+
+    // sheets_write is the one Sheets tool gated behind approval — the two
+    // read tools never are. `requiresApproval` never reaches the provider
+    // request (assemblePrefix strips it), so this reads it off the actual
+    // AgentDefinition `createAgent` was called with instead.
+    const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
+    const byName = (name: string) => definitionArg?.tools.find((tool) => tool.name === name);
+    expect(byName("sheets_write")?.requiresApproval).toBe(true);
+    expect(byName("sheets_inspect")?.requiresApproval).toBe(false);
+    expect(byName("sheets_read")?.requiresApproval).toBe(false);
   });
 
   it("constructing the agent does not itself touch the Sheets deps — nothing is called until a turn actually invokes a Sheets tool", async () => {
@@ -143,6 +183,7 @@ describe("buildAgent — wiring", () => {
     });
     const llmProvider: LlmProvider = { complete };
     const sheetsDeps = createFakeSheetsDeps();
+    const sheetWriteLogRepo = createFakeSheetWriteLogRepo();
 
     const { agent } = buildAgent(
       pool,
@@ -152,6 +193,7 @@ describe("buildAgent — wiring", () => {
       new AbortController().signal,
       createMockChannel(),
       sheetsDeps,
+      sheetWriteLogRepo,
     );
     await agent.handleMessage("telegram", "888", "111", "hi");
 
@@ -160,5 +202,9 @@ describe("buildAgent — wiring", () => {
     expect(sheetsDeps.accessTokenPort.getAccessToken).not.toHaveBeenCalled();
     expect(sheetsDeps.sheetsClient.getSpreadsheetMeta).not.toHaveBeenCalled();
     expect(sheetsDeps.sheetsClient.getValues).not.toHaveBeenCalled();
+    expect(sheetsDeps.sheetsClient.appendValues).not.toHaveBeenCalled();
+    expect(sheetsDeps.sheetsClient.updateValues).not.toHaveBeenCalled();
+    expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
+    expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
   });
 });

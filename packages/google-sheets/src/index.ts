@@ -7,6 +7,7 @@ export {
 export type { SheetRegistryEntry, SheetRegistryPort } from "./sheet-registry-port";
 export {
   createSheetsClient,
+  SheetsAmbiguousWriteError,
   SheetsApiError,
   type CreateSheetsClientOptions,
   type SheetCellValue,
@@ -14,6 +15,8 @@ export {
   type SheetProperties,
   type SheetsClient,
   type SheetsValuesResult,
+  type SheetsWriteResult,
+  type ValueInputOption,
   type ValueRenderOption,
 } from "./sheets-client";
 export {
@@ -24,3 +27,11 @@ export {
   createSheetsReadTool,
   type CreateSheetsReadToolDeps,
 } from "./tools/sheets-read";
+export {
+  createSheetsWriteTool,
+  type AmbiguousWriteResult,
+  type CreateSheetsWriteToolDeps,
+  type ReadOnlySheetResult,
+  type SheetsWriteSuccessResult,
+  type SheetWriteLogPort,
+} from "./tools/sheets-write";

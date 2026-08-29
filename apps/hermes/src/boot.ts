@@ -19,7 +19,7 @@ import {
   createPendingConnectionStore,
   createRefreshCoordinator,
 } from "@hermes/google-auth";
-import { createSheetsClient } from "@hermes/google-sheets";
+import { type SheetWriteLogPort, createSheetsClient } from "@hermes/google-sheets";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
@@ -27,7 +27,9 @@ import {
   type Pool,
   acquireInstanceLock,
   claim as claimDedupe,
+  claimSheetWrite,
   complete as completeDedupe,
+  completeSheetWrite,
   createPool,
   getDefaultMigrationsDir,
   getOffset,
@@ -518,6 +520,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     signal,
     channel,
     sheetsDeps,
+    buildSheetWriteLogRepo(pool),
   );
 
   return {
@@ -714,6 +717,22 @@ export function buildSheetsDeps(
     sheetRegistry: buildSheetRegistryRepo(pool),
     accessTokenPort,
     sheetsClient: createSheetsClient(),
+  };
+}
+
+/**
+ * Wires `@hermes/google-sheets`'s injected `SheetWriteLogPort` to
+ * `@hermes/store`'s real `claimSheetWrite`/`completeSheetWrite` functions —
+ * the same inline-object-over-`pool` shape `createMessageHandlers` already
+ * uses for `llm_dedupe`'s `dedupeRepo` below, not a new binder file: this
+ * port has exactly one caller (`sheetsWriteTool`), the same reasoning that
+ * kept `dedupeRepo` inline rather than its own `apps/hermes/src/store/
+ * build-*.ts` file.
+ */
+function buildSheetWriteLogRepo(pool: Pool): SheetWriteLogPort {
+  return {
+    claim: (dedupeKey, input) => claimSheetWrite(pool, dedupeKey, input),
+    complete: (dedupeKey, outcome) => completeSheetWrite(pool, dedupeKey, outcome),
   };
 }
 

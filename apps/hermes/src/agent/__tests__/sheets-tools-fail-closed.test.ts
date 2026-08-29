@@ -60,7 +60,15 @@ function fakeSheetsDeps(): FakeSheetsDeps {
   return {
     sheetRegistry: { getBySlug: vi.fn(), listAll: vi.fn() },
     accessTokenPort: { getAccessToken: vi.fn() },
-    sheetsClient: { getSpreadsheetMeta: vi.fn(), getValues: vi.fn() },
+    // appendValues/updateValues never exercised here (this suite only
+    // covers the fail-closed read path) — just need to satisfy
+    // SheetsClient, widened by 05-google-sheets Phase 5.
+    sheetsClient: {
+      getSpreadsheetMeta: vi.fn(),
+      getValues: vi.fn(),
+      appendValues: vi.fn(),
+      updateValues: vi.fn(),
+    },
   };
 }
 

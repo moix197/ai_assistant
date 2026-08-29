@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SheetsApiError, createSheetsClient } from "../sheets-client";
+import { SheetsAmbiguousWriteError, SheetsApiError, createSheetsClient } from "../sheets-client";
+
+/** The shape our own timeout (`REQUEST_TIMEOUT_MS` firing, or an external signal) produces — `requestJson` preserves this identity so `classifyWrite` can key off it. */
+function abortError(): Error {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -199,6 +206,204 @@ describe("createSheetsClient", () => {
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).not.toContain("secret-token-xyz");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // appendValues/updateValues (05-google-sheets Phase 5) — request
+  // construction, then the per-mode retryable-vs-ambiguous split settled
+  // decision 15 draws: a pre-send failure (429, connection refused) is
+  // retryable for both; a post-send ambiguous failure (timeout, 5xx) is
+  // never retried for appendValues (not idempotent) and retried exactly
+  // once, internally, for updateValues (a fixed-range PUT converges either
+  // way).
+
+  it("appendValues POSTs to :append with valueInputOption, insertDataOption (defaulting to INSERT_ROWS), and the values body, unwrapping the API's nested `updates` result", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      jsonResponse(200, {
+        updates: {
+          updatedRange: "Sheet1!A2:B2",
+          updatedRows: 1,
+          updatedColumns: 2,
+          updatedCells: 2,
+        },
+      }),
+    );
+    const client = createSheetsClient({ fetchImpl });
+
+    const result = await client.appendValues(
+      "secret-token",
+      "sheet-abc",
+      "Sheet1!A1:B1",
+      [["Jane", "555-0100"]],
+      "USER_ENTERED",
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://sheets.googleapis.com/v4/spreadsheets/sheet-abc/values/Sheet1!A1%3AB1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS",
+    );
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret-token");
+    expect(JSON.parse(init.body as string)).toEqual({ values: [["Jane", "555-0100"]] });
+    expect(result).toEqual({
+      updatedRange: "Sheet1!A2:B2",
+      updatedRows: 1,
+      updatedColumns: 2,
+      updatedCells: 2,
+    });
+  });
+
+  it("appendValues honors an explicit insertDataOption override", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(200, { updates: {} }));
+    const client = createSheetsClient({ fetchImpl });
+
+    await client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW", "OVERWRITE");
+
+    const [url] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("insertDataOption=OVERWRITE");
+  });
+
+  it("updateValues PUTs to the fixed range with valueInputOption and the values body", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      jsonResponse(200, {
+        updatedRange: "Sheet1!A1:B1",
+        updatedRows: 1,
+        updatedColumns: 2,
+        updatedCells: 2,
+      }),
+    );
+    const client = createSheetsClient({ fetchImpl });
+
+    const result = await client.updateValues(
+      "secret-token",
+      "sheet-abc",
+      "Sheet1!A1:B1",
+      [["Jane", "555-0100"]],
+      "USER_ENTERED",
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://sheets.googleapis.com/v4/spreadsheets/sheet-abc/values/Sheet1!A1%3AB1?valueInputOption=USER_ENTERED",
+    );
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ values: [["Jane", "555-0100"]] });
+    expect(result).toEqual({
+      updatedRange: "Sheet1!A1:B1",
+      updatedRows: 1,
+      updatedColumns: 2,
+      updatedCells: 2,
+    });
+  });
+
+  it.each([
+    [
+      "appendValues",
+      (client: ReturnType<typeof createSheetsClient>) =>
+        client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ],
+    [
+      "updateValues",
+      (client: ReturnType<typeof createSheetsClient>) =>
+        client.updateValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ],
+  ] as const)(
+    "%s classifies a pre-send failure (connection refused, never reaching Google) as retryable, same as a 429 — settled decision 15",
+    async (_name, call) => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+          .mockResolvedValueOnce(jsonResponse(200, { updates: {} }));
+        const client = createSheetsClient({ fetchImpl });
+
+        const resultPromise = call(client);
+        await vi.runAllTimersAsync();
+        await resultPromise;
+
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("appendValues throws SheetsAmbiguousWriteError on a post-send 5xx, without retrying — a resend could double-append the row", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(500, { error: "internal" }));
+    const client = createSheetsClient({ fetchImpl });
+
+    await expect(
+      client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ).rejects.toBeInstanceOf(SheetsAmbiguousWriteError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("appendValues throws SheetsAmbiguousWriteError on this client's own timeout (AbortError), without retrying", async () => {
+    const fetchImpl = vi.fn().mockRejectedValueOnce(abortError());
+    const client = createSheetsClient({ fetchImpl });
+
+    await expect(
+      client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ).rejects.toBeInstanceOf(SheetsAmbiguousWriteError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("updateValues retries a post-send 5xx exactly once, internally, with the identical range/values, and resolves to a normal success — no ambiguity surfaces to the caller", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(500, { error: "internal" }))
+        .mockResolvedValueOnce(jsonResponse(200, { updatedRange: "Sheet1!A1:B1", updatedRows: 1 }));
+      const client = createSheetsClient({ fetchImpl });
+
+      const resultPromise = client.updateValues(
+        "token",
+        "sheet-abc",
+        "Sheet1!A1:B1",
+        [["Jane", "555-0100"]],
+        "USER_ENTERED",
+      );
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+
+      expect(result).toEqual({ updatedRange: "Sheet1!A1:B1", updatedRows: 1 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      // The retry reused the identical attempt (same URL/method/body), not a
+      // freshly re-derived call.
+      const calls = fetchImpl.mock.calls as [string, RequestInit][];
+      const [firstUrl, firstInit] = calls[0] as [string, RequestInit];
+      const [secondUrl, secondInit] = calls[1] as [string, RequestInit];
+      expect(secondUrl).toBe(firstUrl);
+      expect(secondInit.body).toBe(firstInit.body);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("updateValues throws a genuine fatal error (no ambiguity hedge) when a second post-send 5xx follows the one internal retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(500, { error: "internal" }))
+        .mockResolvedValueOnce(jsonResponse(500, { error: "internal again" }));
+      const client = createSheetsClient({ fetchImpl });
+
+      const resultPromise = client
+        .updateValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW")
+        .catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      const error = await resultPromise;
+
+      expect(error).toBeInstanceOf(SheetsApiError);
+      expect(error).not.toBeInstanceOf(SheetsAmbiguousWriteError);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

@@ -29,4 +29,10 @@ export {
   type UpsertSheetRegistryEntryInput,
 } from "./sheet-registry-repo";
 export { acquireInstanceLock, INSTANCE_LOCK_KEY, type InstanceLock } from "./advisory-lock";
+export {
+  claim as claimSheetWrite,
+  complete as completeSheetWrite,
+  type SheetWriteLogClaimInput,
+  type SheetWriteLogClaimResult,
+} from "./sheet-write-log-repo";
 export type { Pool } from "pg";

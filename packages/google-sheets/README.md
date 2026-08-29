@@ -68,14 +68,30 @@ freely within the tool's own timeout budget (settled decision 15 — the
 retryable-vs-ambiguous split that decision also draws applies to
 `sheets_write`'s mutating calls, Phase 5, not this read-only client).
 
+Two write methods (Phase 5), backing `sheets_write`:
+
+- `appendValues(accessToken, spreadsheetId, range, values, valueInputOption, insertDataOption?, signal?)`
+  — `POST /v4/spreadsheets/{spreadsheetId}/values/{range}:append?valueInputOption=...&insertDataOption=...`,
+  `insertDataOption` defaulting to `INSERT_ROWS`.
+- `updateValues(accessToken, spreadsheetId, range, values, valueInputOption, signal?)`
+  — `PUT /v4/spreadsheets/{spreadsheetId}/values/{range}?valueInputOption=...`.
+
+Own `classifyWrite`/`sendWriteRequestWithRetry`, separate from the read
+path's `classify`/`getWithRetry`: a fetch-level throw that isn't this
+client's own timeout `AbortError` is `preSendNetwork` (retryable, same
+posture as a 429); a 5xx or this client's own timeout is
+`postSendAmbiguous`, whose retry policy is supplied per call — see
+"`sheets_write` (Phase 5)" below for the per-mode split and
+`SheetsAmbiguousWriteError`.
+
 ## Timeout rationale
 
-Both `sheets_inspect` and `sheets_read` set `ToolSpec.timeoutMs: 30_000`
-(`packages/agent`, Phase 4) — a real Sheets API round trip, including this
-client's own internal retries, can legitimately take longer than the 10s
-default meant for local computation. The client's own per-request timeout
-(`REQUEST_TIMEOUT_MS`, 10s) is independent and smaller — it bounds one HTTP
-attempt, not the whole handler call.
+`sheets_inspect`, `sheets_read`, and `sheets_write` (Phase 5) all set
+`ToolSpec.timeoutMs: 30_000` (`packages/agent`) — a real Sheets API round
+trip, including this client's own internal retries, can legitimately take
+longer than the 10s default meant for local computation. The client's own
+per-request timeout (`REQUEST_TIMEOUT_MS`, 10s) is independent and smaller —
+it bounds one HTTP attempt, not the whole handler call.
 
 ## Tools
 
@@ -86,24 +102,85 @@ attempt, not the whole handler call.
   `access`), fetches values. `valueRenderOption` defaults to
   `FORMATTED_VALUE` — the agent relays results to a human, so values as a
   human would see them (settled decision 16).
+- `sheets_write { mode: "append" | "update", sheet, range, values,
+  valueInputOption? }` (Phase 5) — the one write tool; see its own section
+  below for the full design (access enforcement, dedupe/audit, the per-mode
+  ambiguous-write split).
 
-Both are the *base*, ungated `ToolSpec` — `apps/hermes/src/agent/
+All three are the *base*, ungated `ToolSpec` — `apps/hermes/src/agent/
 build-agent.ts` wraps each in `withRequiredScopes(name, { googleAccountRepo,
 requiredScopes: SHEETS_SCOPES })`, the same split `whoami` uses: the
 capability lives in this package, the scope gate lives in `apps/hermes`.
-Neither tool checks scopes itself, and neither calls the Sheets API (or even
-fetches an access token) for an unconnected or under-scoped account — the
-gate runs first and short-circuits before this package's handler is ever
-invoked.
+None of the three tools checks scopes itself, and none calls the Sheets API
+(or even fetches an access token) for an unconnected or under-scoped account
+— the gate runs first and short-circuits before this package's handler is
+ever invoked.
 
-## What Phase 5 adds
+## `sheets_write` (Phase 5)
 
-`sheets_write` (`requiresApproval: true`): access enforcement
-(`read`-access sheets refused before any API call), a claim/complete
-idempotency key over `(channel, channelUserId, turnId, tool, canonical
-args)` guarding against a same-turn retry double-applying a write, and a
-per-mode retryable-vs-ambiguous split for `appendValues`/`updateValues` —
-see `plans/05-google-sheets.md`'s Phase 5 for the full design.
+`sheets_write { mode: "append" | "update", sheet, range, values,
+valueInputOption? }` — `requiresApproval: true`, so every call routes
+through `apps/hermes`'s `ApprovalGate` before this package's handler ever
+runs; the prompt it shows is the tool call's own args (`ApprovalRequest.args`
+via `telegram-approval-gate.ts`'s `formatBatchPrompt`, unchanged by this
+phase), which already names the resolved sheet slug, `mode`, `range`, and
+`values` — nothing extra needed for a human to judge what they're approving.
+
+**Handler order is load-bearing**, in this sequence: resolve the slug
+(unknown ⇒ the same `resolveSheet` short-circuit `sheets_inspect`/
+`sheets_read` use) → **enforce `access === "readwrite"`** (`{ok: false,
+reason: "read_only_sheet"}` otherwise) → **claim the dedupe key** → resolve
+`valueInputOption` → fetch an access token → call the Sheets API. Both gates
+run before any API call or dedupe claim — a `read`-access refusal never
+touches `sheet_write_log` or the Sheets client.
+
+**Dedupe/audit**: `canonical-args.ts`'s `computeDedupeKey` hashes `(channel,
+channelUserId, turnId, tool, canonicalized args)` — `sha256`, mirroring
+`llm-dedupe-repo`'s claim/complete shape — and `SheetWriteLogPort` (declared
+in `tools/sheets-write.ts`, the consumer-declares-its-port convention again)
+claims it against `@hermes/store`'s `sheet_write_log` table (`apps/hermes/
+src/boot.ts` binds it inline over `claimSheetWrite`/`completeSheetWrite`, the
+same shape `llm_dedupe`'s `dedupeRepo` already uses). `turnId` is part of the
+key **on purpose**, not incidentally: a same-turn model retry with identical
+args short-circuits on the claim (the Sheets API is never called a second
+time, and the stored outcome is returned instead); a later, genuinely
+repeated user request — a different `turnId` — is allowed to proceed and
+write again. This table is also this plan's durable write audit for
+invariant 3: `telemetry_events` is buffered and at-most-once, so it can't be
+the audit of record for a mutation; claim-before-call plus a stored outcome
+can.
+
+**Per-mode retryable-vs-ambiguous split** (settled decision 15) —
+`sheets-client.ts`'s `appendValues`/`updateValues` both retry a **pre-send**
+failure (429, or a connection refused before the request ever left) freely,
+the same posture the read client takes. A **post-send** failure (this
+client's own timeout firing, or any 5xx — necessarily received after the
+request reached Google) is where the two modes diverge, because `POST
+:append` and `PUT` (fixed range) have different idempotency:
+
+- `updateValues` — a fixed-range `PUT` converges to the same end state
+  whether or not the first attempt landed, so a post-send-ambiguous failure
+  is retried **once, internally**, with the identical `range`/`values` (the
+  same `attempt` closure, not a second call). `sheets-write.ts`'s handler
+  never sees this as an ambiguity at all — it only ever sees `updateValues`'s
+  own success or a genuine fatal error (no `try`/`catch` around that branch).
+- `appendValues` — not idempotent (a resend of an already-applied append
+  doubles the row), so a post-send-ambiguous failure throws
+  `SheetsAmbiguousWriteError` immediately, **never retried** by the client.
+  `sheets-write.ts` catches this one error type and returns a structured
+  `{ok: false, reason: "ambiguous_write", message}` — "may or may not have
+  landed, check the sheet" — recording it via `complete` the same as any
+  other outcome, so a same-turn duplicate claim returns the same hedge
+  without a second API call.
+
+**`valueInputOption` stakes** (settled decision 17): `USER_ENTERED` parses
+cell content the way a human typing it would (real dates/numbers land
+correctly, but e.g. a phone number like `+1-555-0100` can misparse as a
+formula, and a leading zero like `0123` is dropped); `RAW` stores literally
+(safe for phone numbers/IDs, but a date lands as a text string, breaking any
+`SUM`/sort/chart already built over that column). The registry row's
+`value_input_option` is the per-sheet default; the tool arg's
+`valueInputOption`, when given, overrides it for that one call.
 
 ## Dependencies
 

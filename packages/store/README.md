@@ -74,9 +74,10 @@ their connection closes, crash or not.
 `src/migrations/` holds, in apply order, `001_telegram_offset.sql`,
 `002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`,
 `005_telemetry_event_total_cost.sql`, `006_threads.sql`,
-`007_google_accounts.sql`, `008_sheet_registry.sql`. A new migration is
-numbered one past whatever is actually highest in the directory — re-list it
-rather than trusting an assumed number.
+`007_google_accounts.sql`, `008_sheet_registry.sql`,
+`009_sheet_write_log.sql`. A new migration is numbered one past whatever is
+actually highest in the directory — re-list it rather than trusting an
+assumed number.
 
 ## LLM usage accounting
 
@@ -402,6 +403,47 @@ Nothing reads this table yet — Phase 3 only makes the registry exist and be
 operable. A future phase's tools read it live, at call-time, never a
 boot-time snapshot.
 
+## Sheet write log
+
+`src/migrations/009_sheet_write_log.sql` creates `sheet_write_log`
+(`dedupe_key text primary key, channel text not null, channel_user_id text
+not null, turn_id text not null, tool text not null, canonical_args jsonb not
+null, status text not null check (status in ('pending', 'complete')), outcome
+jsonb, created_at timestamptz not null default now(), completed_at
+timestamptz`). One row per dedupe key `sheets_write` (`@hermes/google-sheets`,
+Phase 5) has claimed — the durable write audit invariant 3 needs:
+`telemetry_events` is buffered and at-most-once (see that table's own section
+above), so it cannot be the audit of record for a mutation; claim-before-call
+plus a stored outcome can.
+
+`dedupe_key` is a hash of `(channel, channelUserId, turnId, tool, canonical
+args JSON)` — computed by `@hermes/google-sheets`'s `canonical-args.ts`, never
+by this package. `turnId` is part of the key **on purpose**: it's a retry
+guard against the *model* calling `sheets_write` twice with identical args in
+one turn, not a permanent "this exact row can only ever be written once"
+block — a later, genuinely repeated user request (a different `turnId`) is
+allowed to proceed and write again.
+
+- `claimSheetWrite(pool, dedupeKey, { channel, channelUserId, turnId, tool,
+  canonicalArgs })` (exported as `claim` from `sheet-write-log-repo.ts`,
+  aliased at the `index.ts` boundary since `llm-dedupe-repo.ts` already
+  exports a `claim` of its own) — `INSERT ... ON CONFLICT (dedupe_key) DO
+  NOTHING RETURNING`, the same shape `llm-dedupe-repo.ts`'s `claim` uses.
+  Three outcomes: the INSERT wins -> `"claimed"` (first call for this key);
+  the row is `complete` -> `{alreadyComplete: true, outcome}`, the stored
+  result of the original call, so the tool never calls the Sheets API again;
+  the row is still `pending` -> `"claimed"` again — the same fail-open
+  (retry, not permanently block) posture the "Claim-to-complete crash window"
+  section above documents for `llm_dedupe`.
+- `completeSheetWrite(pool, dedupeKey, outcome)` (exported as `complete`,
+  aliased the same way) — marks the row `complete` and stores `outcome`,
+  retrievable by a later duplicate claim within the same turn.
+
+This table is also this plan's durable write audit: every claimed
+`sheets_write` call leaves a `psql`-inspectable row recording exactly what
+was asked (`canonical_args`) and what happened (`outcome`), whether or not
+the write itself ever completes.
+
 ## Row validation
 
 `src/validate-row.ts` exports `parseValidatedJson(schema, value, context)` —
@@ -519,6 +561,12 @@ prior values; `getSheetRegistryEntryBySlug` round-trips; `listSheetRegistryEntri
 returns `[]` on an empty table and every row otherwise;
 `removeSheetRegistryEntry` deletes and is idempotent on a slug that was never
 registered.
+
+`src/__tests__/sheet-write-log-repo.test.ts` is integration-only, gated the
+same way: `claim` on a fresh key returns `"claimed"`; a repeat `claim` on the
+same key before `complete()` also returns `"claimed"` (the pending-retry
+case); after `complete()`, a further `claim` returns `{alreadyComplete: true,
+outcome}` with the stored outcome.
 
 `src/__tests__/sheets-cli.test.ts` is a plain unit-test file (no database,
 always runs): `parseArgs` for `add`/`list`/`remove`, including the

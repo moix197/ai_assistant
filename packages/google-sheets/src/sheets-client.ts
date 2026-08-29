@@ -1,4 +1,4 @@
-import { withHttpRetry } from "@hermes/core";
+import { type RetryClassConfig, withHttpRetry } from "@hermes/core";
 
 const SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 
@@ -67,21 +67,37 @@ function classify(error: unknown): { class: SheetsRetryClass; retryAfterMs?: num
   return { class: "transient" };
 }
 
+interface RequestInitOverride {
+  method?: "POST" | "PUT";
+  body?: unknown;
+}
+
 async function requestJson(
   fetchImpl: typeof fetch,
   url: string,
   accessToken: string,
   signal: AbortSignal,
+  init?: RequestInitOverride,
 ): Promise<unknown> {
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      method: init?.method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(redact(`Sheets request failed: ${message}`, accessToken));
+    const wrapped = new Error(redact(`Sheets request failed: ${message}`, accessToken));
+    // Preserves "this was our own timeout abort" as a discriminable identity
+    // (`classifyWrite` below keys off it) instead of collapsing every fetch
+    // failure into one indistinguishable shape.
+    if (error instanceof Error && error.name === "AbortError") wrapped.name = "AbortError";
+    throw wrapped;
   }
 
   if (!response.ok) {
@@ -119,6 +135,87 @@ async function getWithRetry(
   });
 }
 
+/**
+ * Thrown by `appendValues` when a post-send failure (timeout after send, or
+ * a 5xx necessarily received after the request reached Google) leaves the
+ * write's outcome genuinely unknown, and — unlike `updateValues` — is never
+ * retried by this client: `POST :append` is not idempotent, so resending an
+ * already-applied append would double the row (settled decision 15).
+ * `sheets-write.ts` catches this specific type to surface the "may or may
+ * not have landed, check the sheet" outcome to the model instead of a bare
+ * fatal error.
+ */
+export class SheetsAmbiguousWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SheetsAmbiguousWriteError";
+  }
+}
+
+type WriteRetryClass = "rateLimit" | "preSendNetwork" | "postSendAmbiguous";
+
+/**
+ * Same 429/5xx split `classify` (above) draws, but a fetch-level throw that
+ * isn't this client's own timeout abort is classified `preSendNetwork`
+ * (connection refused, DNS failure, ...) rather than folded into the same
+ * bucket as a post-send 5xx or a timeout: per settled decision 15, only
+ * "the request definitely reached Google and we don't know what happened
+ * next" (a 5xx, or our own `AbortError` from `REQUEST_TIMEOUT_MS` firing) is
+ * actually ambiguous. A failure the request never left for is exactly as
+ * safe to retry as a 429.
+ */
+function classifyWrite(error: unknown): { class: WriteRetryClass; retryAfterMs?: number } {
+  if (error instanceof SheetsApiError) {
+    if (error.status === 429) {
+      return {
+        class: "rateLimit",
+        retryAfterMs: error.retryAfter !== undefined ? error.retryAfter * 1000 : undefined,
+      };
+    }
+    if (error.status >= 500) return { class: "postSendAmbiguous" };
+    throw error;
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    return { class: "postSendAmbiguous" };
+  }
+  return { class: "preSendNetwork" };
+}
+
+/**
+ * Shared by `appendValues`/`updateValues` — the same `withHttpRetry`
+ * mechanism `getWithRetry` uses, with a caller-supplied
+ * `ambiguousRetryConfig` for the one class whose retry policy differs per
+ * mode (settled decision 15): `appendValues` passes `{maxAttempts: 0}` (a
+ * `buildExhaustedError` turning the very first ambiguous failure into a
+ * `SheetsAmbiguousWriteError`, never retried); `updateValues` passes
+ * `{maxAttempts: 1}` (no override — a second ambiguous failure just rethrows
+ * the original error as a genuine fatal one), so the identical `attempt`
+ * closure — same URL, method, and body — is what actually performs
+ * `updateValues`'s "retry once with the identical range/values" safe retry,
+ * not a second, separately-constructed call.
+ */
+async function sendWriteRequestWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  accessToken: string,
+  method: "POST" | "PUT",
+  body: unknown,
+  externalSignal: AbortSignal | undefined,
+  ambiguousRetryConfig: RetryClassConfig,
+): Promise<unknown> {
+  return withHttpRetry<unknown, WriteRetryClass>({
+    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal, { method, body }),
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    externalSignal,
+    classes: {
+      rateLimit: { maxAttempts: MAX_RATE_LIMIT_RETRIES },
+      preSendNetwork: { maxAttempts: MAX_TRANSIENT_RETRIES },
+      postSendAmbiguous: ambiguousRetryConfig,
+    },
+    classify: classifyWrite,
+  });
+}
+
 export interface SheetProperties {
   sheetId: number;
   title: string;
@@ -143,6 +240,20 @@ export interface SheetsValuesResult {
 }
 
 export type ValueRenderOption = "FORMATTED_VALUE" | "UNFORMATTED_VALUE" | "FORMULA";
+
+export type ValueInputOption = "RAW" | "USER_ENTERED";
+
+/** Normalized shape both `appendValues` (unwrapped from the API's nested `updates` object) and `updateValues` (the API's own top-level shape) resolve to — one consistent result for `sheets-write.ts` to relay regardless of mode. */
+export interface SheetsWriteResult {
+  updatedRange?: string;
+  updatedRows?: number;
+  updatedColumns?: number;
+  updatedCells?: number;
+}
+
+interface SheetsAppendApiResponse {
+  updates?: SheetsWriteResult;
+}
 
 export interface SheetsClient {
   /**
@@ -174,6 +285,41 @@ export interface SheetsClient {
     valueRenderOption: ValueRenderOption,
     signal?: AbortSignal,
   ): Promise<SheetsValuesResult>;
+  /**
+   * `POST /v4/spreadsheets/{spreadsheetId}/values/{range}:append
+   * ?valueInputOption=...&insertDataOption=...` — backs `sheets_write`'s
+   * `mode: "append"`. `insertDataOption` defaults to `INSERT_ROWS`, the
+   * shape that actually inserts new rows rather than overwriting whatever
+   * already occupies the next empty rows inside `range`. Not idempotent: a
+   * resend of an already-applied append doubles the row, so a post-send
+   * ambiguous failure here throws `SheetsAmbiguousWriteError` rather than
+   * retrying (settled decision 15).
+   */
+  appendValues(
+    accessToken: string,
+    spreadsheetId: string,
+    range: string,
+    values: unknown[][],
+    valueInputOption: ValueInputOption,
+    insertDataOption?: "INSERT_ROWS" | "OVERWRITE",
+    signal?: AbortSignal,
+  ): Promise<SheetsWriteResult>;
+  /**
+   * `PUT /v4/spreadsheets/{spreadsheetId}/values/{range}?valueInputOption=...`
+   * — backs `sheets_write`'s `mode: "update"`. A fixed-range `PUT` converges
+   * to the same end state regardless of whether a prior attempt landed, so a
+   * post-send ambiguous failure here is retried once, internally, with the
+   * identical `range`/`values` — invisible to the caller as an ambiguity at
+   * all (settled decision 15).
+   */
+  updateValues(
+    accessToken: string,
+    spreadsheetId: string,
+    range: string,
+    values: unknown[][],
+    valueInputOption: ValueInputOption,
+    signal?: AbortSignal,
+  ): Promise<SheetsWriteResult>;
 }
 
 export interface CreateSheetsClientOptions {
@@ -219,6 +365,50 @@ export function createSheetsClient(opts: CreateSheetsClientOptions = {}): Sheets
     async getValues(accessToken, spreadsheetId, range, valueRenderOption, signal) {
       const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?valueRenderOption=${encodeURIComponent(valueRenderOption)}`;
       return (await getWithRetry(fetchImpl, url, accessToken, signal)) as SheetsValuesResult;
+    },
+    async appendValues(
+      accessToken,
+      spreadsheetId,
+      range,
+      values,
+      valueInputOption,
+      insertDataOption,
+      signal,
+    ) {
+      const resolvedInsertDataOption = insertDataOption ?? "INSERT_ROWS";
+      const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=${encodeURIComponent(valueInputOption)}&insertDataOption=${encodeURIComponent(resolvedInsertDataOption)}`;
+      const response = (await sendWriteRequestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        "POST",
+        { values },
+        signal,
+        {
+          maxAttempts: 0,
+          buildExhaustedError: () =>
+            new SheetsAmbiguousWriteError(
+              "Sheets append may or may not have landed: the request timed out or Google returned a server error after it was sent, and a resend is not safe (it could double-append the row) — check the sheet before retrying.",
+            ),
+        },
+      )) as SheetsAppendApiResponse;
+      return response.updates ?? {};
+    },
+    async updateValues(accessToken, spreadsheetId, range, values, valueInputOption, signal) {
+      const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?valueInputOption=${encodeURIComponent(valueInputOption)}`;
+      return (await sendWriteRequestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        "PUT",
+        { values },
+        signal,
+        // A fixed-range PUT converges to the same end state regardless of
+        // whether the first attempt landed, so one internal retry with the
+        // identical range/values (the same `attempt` closure, not a new
+        // call) safely resolves the ambiguity rather than surfacing it.
+        { maxAttempts: 1 },
+      )) as SheetsWriteResult;
     },
   };
 }

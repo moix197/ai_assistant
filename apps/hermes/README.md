@@ -102,19 +102,24 @@ extracted into its own small module and unit-tested there:
   `@hermes/agent` and construct the one hardcoded `AgentDefinition` (the D4
   multi-agent seam, reserved not built): `model` from the active provider
   profile, `systemPrompt` a fixed placeholder, `tools: [getCurrentTimeTool,
-  echoTool, whoamiTool, sheetsInspectTool, sheetsReadTool]`, `channels:
-  ["telegram"]` — reusing the exact `"telegram"` string `complete.ts`'s
-  dedupe key already spells out, not a new constant. Also the only place
-  that constructs the `TelegramApprovalGate` (Phase 3, `03-agent-core`) and
-  wires it into the agent's deps — see "Approval gate" below — and
-  (`04-google-auth` Phase 3) the `whoamiTool` itself, via `createWhoamiTool`
-  closed over a `pool`-backed `buildGoogleAccountRepo`. `05-google-sheets`
-  Phase 4 adds `sheetsInspectTool`/`sheetsReadTool`, built from
-  `@hermes/google-sheets`'s base tool factories over a `sheetsDeps` object
-  (`boot.ts` constructs it and passes it in already-built — see "Google
-  Sheets tools" below) and gated the same way `whoamiTool` is, appended to
-  the **end** of the tools array so the existing prefix stays byte-stable.
-  Returns `{ agent, handleApprovalCallback }`, not a bare `Agent`:
+  echoTool, whoamiTool, sheetsInspectTool, sheetsReadTool, sheetsWriteTool]`,
+  `channels: ["telegram"]` — reusing the exact `"telegram"` string
+  `complete.ts`'s dedupe key already spells out, not a new constant. Also the
+  only place that constructs the `TelegramApprovalGate` (Phase 3,
+  `03-agent-core`) and wires it into the agent's deps — see "Approval gate"
+  below — and (`04-google-auth` Phase 3) the `whoamiTool` itself, via
+  `createWhoamiTool` closed over a `pool`-backed `buildGoogleAccountRepo`.
+  `05-google-sheets` Phase 4 adds `sheetsInspectTool`/`sheetsReadTool`, built
+  from `@hermes/google-sheets`'s base tool factories over a `sheetsDeps`
+  object (`boot.ts` constructs it and passes it in already-built — see
+  "Google Sheets tools" below) and gated the same way `whoamiTool` is,
+  appended to the **end** of the tools array so the existing prefix stays
+  byte-stable; Phase 5 adds `sheetsWriteTool` the same way, built over
+  `{ ...sheetsDeps, sheetWriteLogRepo }` — `sheetWriteLogRepo` is a separate
+  `buildAgent` parameter (not folded into `sheetsDeps`, since the read tools
+  never need it), constructed inline in `boot.ts` over `@hermes/store`'s
+  `claimSheetWrite`/`completeSheetWrite` — see "Google Sheets write tool"
+  below. Returns `{ agent, handleApprovalCallback }`, not a bare `Agent`:
   `boot.ts` needs the latter to route inbound button taps into the gate.
 - `src/google/refresh-sweep.ts` (`04-google-auth` Phase 4) — `createRefreshSweep`;
   see "Google token refresh" below.
@@ -131,19 +136,24 @@ resolve "who is asking" (`04-google-auth` Phase 3) — replies with its text,
 then marks the dedupe key completed — the same load-bearing claim → reply →
 complete ordering this handler has always used, unchanged. History now
 persists per `(channel, chat_id)` in Postgres (`packages/store`'s `threads`
-table) and survives a restart. The turn now has five tools
-(`get_current_time`, `echo`, `whoami`, `sheets_inspect`, `sheets_read` —
-`05-google-sheets` Phase 4) and an approval gate for the one that's gated
-(`echo`) — see "Approval gate" below.
+table) and survives a restart. The turn now has six tools (`get_current_time`,
+`echo`, `whoami`, `sheets_inspect`, `sheets_read` — `05-google-sheets` Phase
+4 — and `sheets_write` — Phase 5) and an approval gate for the two that are
+gated (`echo`, `sheets_write`) — see "Approval gate" below.
 
 ## Approval gate
 
-`echo` is the one tool this PRD ships with `requiresApproval: true`. Before
-`packages/agent`'s loop runs it, `src/agent/build-agent.ts`'s
-`createTelegramApprovalGate` (`src/agent/telegram-approval-gate.ts`) sends
-one Telegram message per batch of gated calls, with Approve/Deny buttons
-naming every call in it — a batch of two gated calls in one model turn still
-gets exactly one combined prompt, never two.
+`echo` and `sheets_write` (`05-google-sheets` Phase 5) are the two tools
+this codebase ships with `requiresApproval: true`. Before `packages/agent`'s
+loop runs either, `src/agent/build-agent.ts`'s `createTelegramApprovalGate`
+(`src/agent/telegram-approval-gate.ts`) sends one Telegram message per batch
+of gated calls, with Approve/Deny buttons naming every call in it — a batch
+of two gated calls in one model turn still gets exactly one combined prompt,
+never two. The prompt text is each call's raw tool name plus its args
+(`formatBatchPrompt`, unchanged by Phase 5) — for `sheets_write` that already
+means the resolved sheet slug, `mode`, `range`, and `values` are shown
+verbatim, with no Sheets-specific formatting added: enough for a human to
+judge what they're approving without a second lookup.
 
 `whoami` (`04-google-auth` Phase 3) is deliberately `requiresApproval: false`
 — a pure, idempotent read of the Google identity already granted at
@@ -333,6 +343,45 @@ message.
   that tool requires human approval; both Phase 4 tools are
   `requiresApproval: false`, the same posture `whoami` has (a read has no
   consequence to confirm).
+
+## Google Sheets write tool (`05-google-sheets` Phase 5)
+
+`sheets_write { mode: "append" | "update", sheet, range, values,
+valueInputOption? }` — the one write-capable tool, gated the same way the
+read tools are (`withRequiredScopes("sheets_write", ...)`, see "Google
+Sheets tools" above) **and** behind the approval gate (`requiresApproval:
+true`, see "Approval gate" above). Full design lives in
+`@hermes/google-sheets`'s own README; this section covers only what's wired
+here in `apps/hermes`.
+
+- **Access enforcement runs before any dedupe claim or API call.** A sheet
+  registered `read` (or unknown) is refused (`{ok: false, reason:
+  "read_only_sheet"}`) before `sheet_write_log` is ever touched and before
+  an access token is ever fetched — proved by
+  `packages/google-sheets/src/tools/__tests__/sheets-write.test.ts`
+  asserting zero calls to the dedupe port and the Sheets client on that
+  path.
+- **`sheetWriteLogRepo` is wired inline in `boot.ts`** (`buildSheetWriteLogRepo`),
+  over `@hermes/store`'s `claimSheetWrite`/`completeSheetWrite` — the same
+  inline-object-over-`pool` shape `createMessageHandlers`'s `dedupeRepo`
+  already uses for `llm_dedupe`, not a new `src/store/build-*.ts` file (this
+  port has exactly one caller). It backs the claim/complete idempotency key
+  over `(channel, channelUserId, turnId, tool, canonical args)` — a same-turn
+  model retry with identical args never calls the Sheets API twice; a later,
+  genuinely repeated request (a different turn) does call it again. This
+  table is also the durable write audit invariant 3 needs, since
+  `telemetry_events` is buffered and at-most-once.
+- **`TOOL_REQUIRED_SCOPES` gains `sheets_write` -> `SHEETS_SCOPES`**
+  (`@hermes/google-auth`), the same reference-map entry `sheets_inspect`/
+  `sheets_read` already have — still documentation, not consulted at gate
+  time (see "Scope-gated tools" above).
+- **Manual verification** (no live-provider test lane changes — same posture
+  Phase 4 took): ask the bot to add a row to a `readwrite`-registered sheet,
+  approve the prompt, confirm the row lands; repeat the same request in the
+  same turn (a model retry or re-approve) and confirm no duplicate row and
+  exactly one `sheet_write_log` row for that key (`psql`); attempt a write
+  against a `read`-registered sheet and confirm the refusal with no new
+  `sheet_write_log` row.
 
 ## Handlers
 

@@ -45,6 +45,10 @@ function fakeSheetsClient(values: SheetsValuesResult): SheetsClient & {
   return {
     getSpreadsheetMeta: vi.fn(),
     getValues: vi.fn().mockResolvedValue(values),
+    // Never exercised here (sheets_read never writes) — just needs to
+    // satisfy SheetsClient, widened by 05-google-sheets Phase 5.
+    appendValues: vi.fn(),
+    updateValues: vi.fn(),
   };
 }
 
