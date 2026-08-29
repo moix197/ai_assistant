@@ -673,15 +673,15 @@ only path that can reach it with a disallowed sheet).
 
 **Steps:**
 
-- [ ] Write the regression test *first* against the pre-fix code: a
+- [x] Write the regression test *first* against the pre-fix code: a
       read-only-sheet write today reaches the prompt and only refuses after
       approval — prove that, then fix, then prove the prompt is now never
       sent
-- [ ] Grep `sheets-write.ts`'s handler after the change to confirm the
+- [x] Grep `sheets-write.ts`'s handler after the change to confirm the
       inline access check is actually gone, not left dead alongside
       `prepare`'s copy (same discipline `05-google-sheets` used for
       `whoami`'s inline scope check)
-- [ ] Confirm `ReadOnlySheetResult`'s shape and the existing
+- [x] Confirm `ReadOnlySheetResult`'s shape and the existing
       `sheets-write.test.ts` "read-only refusal before claim/API" case
       still make sense as a `prepare`-level assertion rather than a
       handler-level one — move/rename the test, don't duplicate it
@@ -695,26 +695,26 @@ only path that can reach it with a disallowed sheet).
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm lint` green
 - [ ] Manual: attempt a write against the registered `read`-access sheet
       (HIL Prerequisites) via natural language in Telegram and confirm no
       approval prompt appears at all — the model relays a refusal directly
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `refactor: move read-only-sheet refusal into sheets_write.prepare`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `refactor: move read-only-sheet refusal into sheets_write.prepare`
+- [x] Phase marked complete
 
 ---
 
