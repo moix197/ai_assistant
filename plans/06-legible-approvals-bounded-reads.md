@@ -577,39 +577,39 @@ generic formatter — Phases 5 and 6 add no new renderer logic, only richer
 
 **Steps:**
 
-- [ ] Write the "scoped tool keeps `prepare`, and a missing scope refuses
+- [x] Write the "scoped tool keeps `prepare`, and a missing scope refuses
       `prepare` itself" regression test *first*, against the current
       (pre-fix) whitelist, prove it fails, then fix the whitelist and prove
       it passes — this is the test settled decision 13 calls out by name,
       extended to cover `prepare` per the resolution in Dependencies & Risks
-- [ ] Confirm `packages/agent/src/__tests__/loop.test.ts:966-970`'s exact
+- [x] Confirm `packages/agent/src/__tests__/loop.test.ts:966-970`'s exact
       assertion passes with zero edits after this phase
-- [ ] Write the loop-level test: a `prepare` that throws, times out, or
+- [x] Write the loop-level test: a `prepare` that throws, times out, or
       returns `{ok:false}` **never** results in a call to
       `approvalGate.requestApproval` for that call; if it's the *only* call
       in the batch, `requestApproval` is never called at all
-- [ ] Write the loop-level test: a batch of two gated calls where one
+- [x] Write the loop-level test: a batch of two gated calls where one
       `prepare`s successfully and one refuses sends a prompt naming only the
       surviving call, and the refused call's result comes back immediately
       without waiting on the prompt
-- [ ] **Write the raw-vs-parsed-args regression test named in Dependencies &
+- [x] **Write the raw-vs-parsed-args regression test named in Dependencies &
       Risks:** a `sheets_write` call whose raw `arguments` and `safeParse`d
       form differ (e.g. relying on a schema default the raw args omit) —
       assert the `ApprovalRequest` sent to `requestApproval` carries the
       *raw* form, not the parsed one, while `prepare`/`handler` receive the
       parsed form
-- [ ] **Write the mid-`prepare` abort test named in Dependencies & Risks:**
+- [x] **Write the mid-`prepare` abort test named in Dependencies & Risks:**
       abort the turn's signal while a call's `prepare` is in flight; assert
       it resolves as a `prepare_failed`-shaped refusal (or an equivalent
       abort-specific reason — decide and record which), never a hang and
       never a prompt sent
-- [ ] **Write the malformed-summary defensive test:** a `prepare` that
+- [x] **Write the malformed-summary defensive test:** a `prepare` that
       resolves `{ok:true, plan, summary:{action:"", effects:[]}}` (empty
       `action`) falls back to the raw-JSON rendering, the same as a
       prepare-less tool — never a blank or broken prompt line
-- [ ] Confirm `get-current-time.test.ts`/`echo.test.ts`'s hand-built `ctx`
+- [x] Confirm `get-current-time.test.ts`/`echo.test.ts`'s hand-built `ctx`
       literals still typecheck (add `plan: undefined` if required)
-- [ ] Exact-string test for the Phase-3 prompt shape: a known sheet with a
+- [x] Exact-string test for the Phase-3 prompt shape: a known sheet with a
       non-empty description (two-line identity block); a known sheet with
       an **empty** description (single-line, no `target` — settled decision
       26's "empty description fallback" case); the prepare-less `echo`
@@ -630,26 +630,26 @@ generic formatter — Phases 5 and 6 add no new renderer logic, only richer
 
 **Verification:**
 
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [ ] Manual golden path above
-- [ ] `[~]` In-turn dedupe unaffected by this phase — not manually
+- [~] `[~]` In-turn dedupe unaffected by this phase — not manually
       verifiable from Telegram; covered by existing `sheet-write-log`
       unit tests, unchanged by this phase
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: add ToolSpec.prepare hook, generic ApprovalSummary contract, legible Spanish approval identity line`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: add ToolSpec.prepare hook, generic ApprovalSummary contract, legible Spanish approval identity line`
+- [x] Phase marked complete
 
 ---
 
