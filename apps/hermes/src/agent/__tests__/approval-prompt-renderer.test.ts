@@ -215,6 +215,38 @@ describe("formatBatchPrompt", () => {
     expect(rendered).not.toMatch(/[A-Z]+\d+:[A-Z]+\d+/);
   });
 
+  it("zero-row edge case: items is [] and itemsTotal is omitted — no preview block and no count line, only the question, target, and mode-description effect (06-legible-approvals-bounded-reads Phase 5)", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: { mode: "append", sheet: "clients", range: "A1:B1", values: [] },
+        summary: {
+          action: "¿Agregar 0 filas a clients?",
+          target: "Clients",
+          items: [],
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      },
+    ];
+
+    const rendered = formatBatchPrompt(batch);
+
+    expect(rendered).toBe(
+      [
+        "¿Agregar 0 filas a clients?",
+        "Clients",
+        "",
+        "Agrega una fila nueva al final. No cambia nada de lo existente.",
+      ].join("\n"),
+    );
+    expect(rendered).toContain("¿Agregar 0 filas a clients?");
+    expect(rendered).toContain("Clients");
+    expect(rendered).toContain("Agrega una fila nueva al final. No cambia nada de lo existente.");
+    expect(rendered).not.toContain("  "); // no indented preview-item lines
+    expect(rendered).not.toContain("más");
+    expect(rendered).not.toContain("en total");
+  });
+
   it("empty-description fallback re-asserted against the richer items/effects shape: no target line, but items and effects still render", () => {
     const batch: ApprovalRequest[] = [
       {

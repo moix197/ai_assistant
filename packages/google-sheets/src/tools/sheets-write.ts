@@ -117,9 +117,9 @@ const UPDATE_MODE_EFFECT = "Sobrescribe una fila que ya existe.";
  * (settled decision 22), so `update`'s summary never leaks A1 notation. Uses
  * natural Spanish singular/plural agreement (`una fila` / `N filas`) rather
  * than the literal `fila(s)` placeholder, per the phase's own success-
- * criteria examples (`¿Agregar una fila a Clients?`, `¿Reemplazar 1 fila en
- * Clients?`) — those, not the shorthand in an earlier draft of this table,
- * are the settled copy.
+ * criteria examples (`¿Agregar una fila a Clients?`, `¿Reemplazar una fila en
+ * Clients?`) — both modes spell out the singular ("una") and use numerals
+ * only for the plural count, for consistency between them.
  */
 function buildWriteAction(mode: "append" | "update", rowCount: number, slug: string): string {
   if (mode === "append") {
@@ -127,17 +127,27 @@ function buildWriteAction(mode: "append" | "update", rowCount: number, slug: str
       ? `¿Agregar una fila a ${slug}?`
       : `¿Agregar ${rowCount} filas a ${slug}?`;
   }
-  const fila = rowCount === 1 ? "fila" : "filas";
-  return `¿Reemplazar ${rowCount} ${fila} en ${slug}?`;
+  if (rowCount === 1) {
+    return `¿Reemplazar una fila en ${slug}?`;
+  }
+  return `¿Reemplazar ${rowCount} filas en ${slug}?`;
 }
 
 /**
- * Joins one row's cells (comma-separated) then truncates the *joined* string
- * to `ROW_PREVIEW_CHAR_LIMIT` — truncation happens per row, after joining,
- * never per cell, so a row of many short cells still truncates as one unit.
+ * Joins one row's cells (comma-separated), collapses any whitespace run
+ * (including newlines/tabs) to a single space, then truncates the *joined*
+ * string to `ROW_PREVIEW_CHAR_LIMIT` — truncation happens per row, after
+ * joining, never per cell, so a row of many short cells still truncates as
+ * one unit. Collapsing whitespace *before* truncating is load-bearing: a
+ * cell value containing a newline would otherwise inject extra lines into
+ * the rendered approval prompt, letting a crafted cell forge prompt-looking
+ * content the user never actually approved.
  */
 function formatRowPreview(row: Array<string | number | boolean>): string {
-  const joined = row.map((cell) => String(cell)).join(", ");
+  const joined = row
+    .map((cell) => String(cell))
+    .join(", ")
+    .replace(/\s+/g, " ");
   return joined.length > ROW_PREVIEW_CHAR_LIMIT
     ? `${joined.slice(0, ROW_PREVIEW_CHAR_LIMIT)}…`
     : joined;

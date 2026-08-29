@@ -195,18 +195,24 @@ decisions, the generic renderer needs zero changes:**
 - `action` is mode-specific and never contains the A1 `range` (settled
   decision 22): `append` reads `¿Agregar una fila a ${slug}?` for one row or
   `` `¿Agregar ${rowCount} filas a ${slug}?` `` for more than one; `update`
-  reads `` `¿Reemplazar ${rowCount} fila en ${slug}?` `` for one row (e.g.
-  `¿Reemplazar 1 fila en Clients?`) or `` `¿Reemplazar ${rowCount} filas en
-  ${slug}?` `` for more than one. Natural Spanish singular/plural agreement
-  is used throughout rather than a literal `fila(s)` placeholder — the
-  phase's own success-criteria examples settle this.
+  reads `¿Reemplazar una fila en ${slug}?` for one row (e.g. `¿Reemplazar una
+  fila en Clients?`) or `` `¿Reemplazar ${rowCount} filas en ${slug}?` `` for
+  more than one. Both modes spell out the singular ("una") and use numerals
+  only for the plural count — natural Spanish singular/plural agreement is
+  used throughout rather than a literal `fila(s)` placeholder, and the two
+  modes' phrasing is kept consistent with each other.
 - `effects[0]` is a fixed mode description, independent of row count:
   `"Agrega una fila nueva al final. No cambia nada de lo existente."` for
   `append`, `"Sobrescribe una fila que ya existe."` for `update`.
 - `items` previews at most the first 3 rows of `values`; each row's cells are
-  joined (`", "`-separated) *then* the joined string is truncated to ~100
-  chars with `…` — truncation is per row, after joining, never per cell, so
-  a row of many short cells still truncates as one unit.
+  joined (`", "`-separated), whitespace runs (including newlines/tabs) are
+  collapsed to a single space, and *then* the collapsed string is truncated
+  to ~100 chars with `…` — truncation is per row, after joining, never per
+  cell, so a row of many short cells still truncates as one unit. Collapsing
+  whitespace before truncating is load-bearing, not cosmetic: without it, a
+  cell value containing a newline could inject extra lines into the rendered
+  approval prompt, forging content that looks like a legitimate part of the
+  prompt the user never actually approved.
 - `itemsTotal` is `values.length` whenever `values.length > 0` — present even
   when every row is already shown in `items`, so the renderer's own
   `itemsTotal > items.length` check is the single source of truth for
@@ -214,19 +220,21 @@ decisions, the generic renderer needs zero changes:**
   empty `values` array (schema-permitted but degenerate) yields `items: []`
   and `itemsTotal` **omitted** (not `0`) — the renderer then shows no
   preview block and no count line, only the question and the mode-
-  description effect. Both of `resolveSheet`'s failure modes refuse the call
-*before* any prompt is sent, with their shapes unchanged: an unknown slug
-returns `{ok: false, result: resolved}` (`unknown_sheet`), and — as of Phase
-4 — a `read`-access sheet returns `{ok: false, result: {ok: false, reason:
-"read_only_sheet"}}` right after slug resolution, closing the "asked to
-approve a write already destined to fail" gap Phase 3 deliberately left open
-for read-only sheets. The handler then reads `ctx.plan` instead of
-re-resolving or re-checking access: it never calls `resolveSheet` a second
-time and never recomputes `overrideOption ?? entry.valueInputOption` itself
-(`sheets-write.test.ts` asserts the registry is queried exactly once per
-call, not twice), and its own inline `access !== "readwrite"` check (Phase 3)
-has been deleted as dead code — `prepare` is the only path that can reach the
-handler, and it never does so with a disallowed sheet.
+  description effect.
+
+Both of `resolveSheet`'s failure modes refuse the call *before* any prompt is
+sent, with their shapes unchanged: an unknown slug returns `{ok: false,
+result: resolved}` (`unknown_sheet`), and — as of Phase 4 — a `read`-access
+sheet returns `{ok: false, result: {ok: false, reason: "read_only_sheet"}}`
+right after slug resolution, closing the "asked to approve a write already
+destined to fail" gap Phase 3 deliberately left open for read-only sheets.
+The handler then reads `ctx.plan` instead of re-resolving or re-checking
+access: it never calls `resolveSheet` a second time and never recomputes
+`overrideOption ?? entry.valueInputOption` itself (`sheets-write.test.ts`
+asserts the registry is queried exactly once per call, not twice), and its
+own inline `access !== "readwrite"` check (Phase 3) has been deleted as dead
+code — `prepare` is the only path that can reach the handler, and it never
+does so with a disallowed sheet.
 
 **Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
 names the sheet by its registry description (or the slug, when the

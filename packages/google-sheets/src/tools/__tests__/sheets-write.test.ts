@@ -250,7 +250,7 @@ describe("sheets_write", () => {
           effectiveValueInputOption: "USER_ENTERED",
         },
         summary: {
-          action: "¿Reemplazar 1 fila en clients?",
+          action: "¿Reemplazar una fila en clients?",
           target: "Clients",
           items: ["Jane, 555-0100"],
           itemsTotal: 1,
@@ -340,6 +340,23 @@ describe("sheets_write", () => {
       expect(summary.action).toBe("¿Agregar 40 filas a clients?");
       expect(summary.items).toEqual(["Name0, 555-0100", "Name1, 555-0101", "Name2, 555-0102"]);
       expect(summary.itemsTotal).toBe(40);
+    });
+
+    it("row preview: collapses embedded newlines/whitespace runs in a cell to a single space before the ~100-char truncation, so a crafted cell can't inject extra lines into the approval prompt", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const values = [["line one\nline two", "tabs\t\tand   spaces"]];
+
+      const result = await tool.prepare({ ...APPEND_ARGS, values }, CTX);
+      const summary = (result as { summary: { items: string[] } }).summary;
+
+      expect(summary.items).toEqual(["line one line two, tabs and spaces"]);
+      expect(summary.items[0]).not.toContain("\n");
     });
 
     it("zero-rows edge case: items is [] and itemsTotal is omitted (a degenerate but schema-permitted call)", async () => {
