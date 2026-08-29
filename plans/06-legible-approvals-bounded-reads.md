@@ -1034,19 +1034,19 @@ against the shipped code, not a test.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes
       are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block (scoped to
       end-to-end review)
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt
       into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review have
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review have
       been reflected back into this plan file
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
-- [ ] No CLAUDE.md invariants violated
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
+- [x] No CLAUDE.md invariants violated
 - [ ] Manual golden path on a real phone against a real Telegram bot: an
       append with a date value (shows identity + preview + consequence
       sentence in Spanish) → approve → confirm it lands → an update against
