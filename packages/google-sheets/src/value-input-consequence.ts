@@ -1,4 +1,5 @@
 import type { ValueInputOption } from "./sheets-client";
+import { truncateForPrompt } from "./truncate";
 
 /**
  * Tool-side detector for `sheets_write`'s approval-prompt consequence
@@ -44,7 +45,7 @@ type Consequence = "formula" | "fecha" | "numero";
  * decisive, so the detector mirrors that rather than picking whichever
  * heuristic happens to run first.
  */
-function detectsFormulaTrigger(cellText: string): boolean {
+function startsWithFormulaTrigger(cellText: string): boolean {
   return FORMULA_TRIGGER_CHARS.has(cellText.charAt(0));
 }
 
@@ -57,24 +58,26 @@ function looksLikeReformattableNumber(cellText: string): boolean {
 }
 
 function classifyCell(cellText: string): Consequence | null {
-  if (detectsFormulaTrigger(cellText)) return "formula";
+  if (startsWithFormulaTrigger(cellText)) return "formula";
   if (looksLikeDate(cellText)) return "fecha";
   if (looksLikeReformattableNumber(cellText)) return "numero";
   return null;
 }
 
 /**
- * Collapses whitespace runs (mirrors `sheets-write.ts`'s `formatRowPreview`
- * — the identical class of bug: an embedded newline in a cell could
- * otherwise inject extra lines into the rendered approval prompt) and then
- * caps the quoted value's length, so a single enormous cell can't blow up
- * the prompt either.
+ * Strips `"` characters before quoting — the displayed value is already a
+ * lossy/truncated preview, not meant to round-trip exactly, so dropping
+ * quote characters is a fine trade-off against a crafted cell value using an
+ * embedded `"` to break out of the sentence's own quoting and forge text
+ * that reads as part of the approval prompt's safety-control sentence.
+ * Deliberately a separate step from `truncateForPrompt`: truncation is
+ * generic (shared with `sheets-write.ts`'s row preview, which has no quoting
+ * of its own to protect), while quote-stripping is specific to this
+ * function's quoted-display use case.
  */
 function formatQuotedValue(cellText: string): string {
-  const collapsed = cellText.replace(/\s+/g, " ");
-  return collapsed.length > MAX_QUOTED_VALUE_CHARS
-    ? `${collapsed.slice(0, MAX_QUOTED_VALUE_CHARS)}…`
-    : collapsed;
+  const withoutQuotes = cellText.replace(/"/g, "");
+  return truncateForPrompt(withoutQuotes, MAX_QUOTED_VALUE_CHARS);
 }
 
 function buildSentence(consequence: Consequence, quotedValue: string): string {
@@ -98,7 +101,16 @@ export function detectValueInputConsequence(
   for (const row of values) {
     for (const cell of row) {
       const cellText = String(cell);
-      const consequence = classifyCell(cellText);
+      // Classify the trimmed text: Sheets itself trims surrounding
+      // whitespace before parsing, so " 1990-05-12" still becomes a real
+      // date under USER_ENTERED even though the raw string fails the
+      // anchored patterns below. Classifying the untrimmed string would
+      // under-flag that case — a false negative, which settled decision 19
+      // forbids (when in doubt, over-flag, never under-flag). The displayed
+      // value stays untrimmed (only whitespace-collapsed by
+      // `formatQuotedValue`) so the user still sees the actual value,
+      // whitespace anomaly included.
+      const consequence = classifyCell(cellText.trim());
       if (consequence) {
         return buildSentence(consequence, formatQuotedValue(cellText));
       }

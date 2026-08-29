@@ -121,4 +121,46 @@ describe("detectValueInputConsequence", () => {
     const result = detectValueInputConsequence([[longFormula]], "USER_ENTERED");
     expect(result).toBe(`"${longFormula.slice(0, 60)}…" se guardará como fórmula.`);
   });
+
+  it("flags a date with leading whitespace — Sheets trims surrounding whitespace before parsing, so this still becomes a real date under USER_ENTERED even though the raw string fails the anchored date pattern (fail-safe: never under-flag)", () => {
+    expect(detectValueInputConsequence([[" 1990-05-12"]], "USER_ENTERED")).toBe(
+      '" 1990-05-12" se guardará como fecha.',
+    );
+  });
+
+  it("flags a date with trailing whitespace, for the same reason", () => {
+    expect(detectValueInputConsequence([["1990-05-12 "]], "USER_ENTERED")).toBe(
+      '"1990-05-12 " se guardará como fecha.',
+    );
+  });
+
+  it("flags a leading-zero number with leading whitespace", () => {
+    expect(detectValueInputConsequence([[" 0123"]], "USER_ENTERED")).toBe(
+      '" 0123" se guardará como número.',
+    );
+  });
+
+  it("flags a leading-zero number with trailing whitespace", () => {
+    expect(detectValueInputConsequence([["0123 "]], "USER_ENTERED")).toBe(
+      '"0123 " se guardará como número.',
+    );
+  });
+
+  it('flags a formula-trigger string with leading whitespace — Sheets trims before parsing, so " =A1+1" still becomes a formula', () => {
+    expect(detectValueInputConsequence([[" =A1+1"]], "USER_ENTERED")).toBe(
+      '" =A1+1" se guardará como fórmula.',
+    );
+  });
+
+  it("strips embedded \"-characters from the displayed value so a crafted cell can't break out of the sentence's own quoting", () => {
+    const result = detectValueInputConsequence(
+      [['=1" es seguro." se guardará como fórmula']],
+      "USER_ENTERED",
+    );
+    expect(result).toBe('"=1 es seguro. se guardará como fórmula" se guardará como fórmula.');
+    // No raw, unescaped `"` survives from the original cell content — only
+    // the sentence's own wrapping quotes remain, so a crafted value can't
+    // forge text that reads as part of the approval prompt's own sentence.
+    expect(result?.split('"')).toHaveLength(3);
+  });
 });

@@ -7,6 +7,7 @@ import {
   type SheetsWriteResult,
   type ValueInputOption,
 } from "../sheets-client";
+import { truncateForPrompt } from "../truncate";
 import { detectValueInputConsequence } from "../value-input-consequence";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
@@ -135,9 +136,9 @@ function buildWriteAction(mode: "append" | "update", rowCount: number, slug: str
 }
 
 /**
- * Joins one row's cells (comma-separated), collapses any whitespace run
- * (including newlines/tabs) to a single space, then truncates the *joined*
- * string to `ROW_PREVIEW_CHAR_LIMIT` — truncation happens per row, after
+ * Joins one row's cells (comma-separated), then hands the joined string to
+ * `truncateForPrompt` to collapse whitespace runs (including newlines/tabs)
+ * and cap it at `ROW_PREVIEW_CHAR_LIMIT` — truncation happens per row, after
  * joining, never per cell, so a row of many short cells still truncates as
  * one unit. Collapsing whitespace *before* truncating is load-bearing: a
  * cell value containing a newline would otherwise inject extra lines into
@@ -145,13 +146,8 @@ function buildWriteAction(mode: "append" | "update", rowCount: number, slug: str
  * content the user never actually approved.
  */
 function formatRowPreview(row: Array<string | number | boolean>): string {
-  const joined = row
-    .map((cell) => String(cell))
-    .join(", ")
-    .replace(/\s+/g, " ");
-  return joined.length > ROW_PREVIEW_CHAR_LIMIT
-    ? `${joined.slice(0, ROW_PREVIEW_CHAR_LIMIT)}…`
-    : joined;
+  const joined = row.map((cell) => String(cell)).join(", ");
+  return truncateForPrompt(joined, ROW_PREVIEW_CHAR_LIMIT);
 }
 
 /**

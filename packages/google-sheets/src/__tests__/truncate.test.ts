@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_CELLS, MAX_VALUE_CHARS, truncateBySize } from "../truncate";
+import { MAX_CELLS, MAX_VALUE_CHARS, truncateBySize, truncateForPrompt } from "../truncate";
 
 function rowMeasure(row: unknown[]) {
   return { cells: row.length, chars: JSON.stringify(row).length };
@@ -89,5 +89,32 @@ describe("truncateBySize", () => {
     const result = truncateBySize([boundaryRow], rowMeasure);
     expect(result.truncated).toBe(false);
     expect(result.returnedCount).toBe(1);
+  });
+});
+
+describe("truncateForPrompt", () => {
+  it("returns a short string unchanged", () => {
+    expect(truncateForPrompt("hello", 10)).toBe("hello");
+  });
+
+  it("collapses whitespace runs (including newlines/tabs) to a single space", () => {
+    expect(truncateForPrompt("line one\nline two\t\tand   spaces", 100)).toBe(
+      "line one line two and spaces",
+    );
+  });
+
+  it("stays untruncated exactly at the limit", () => {
+    const exact = "x".repeat(10);
+    expect(truncateForPrompt(exact, 10)).toBe(exact);
+  });
+
+  it("truncates and appends an ellipsis once over the limit", () => {
+    const over = "x".repeat(11);
+    expect(truncateForPrompt(over, 10)).toBe(`${"x".repeat(10)}…`);
+  });
+
+  it("collapses whitespace before truncating, so the cap applies to the collapsed length", () => {
+    expect(truncateForPrompt("a\n\n\n\n\n\nb", 3)).toBe("a b");
+    expect(truncateForPrompt("a\n\n\n\n\n\nbc", 3)).toBe("a b…");
   });
 });

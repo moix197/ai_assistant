@@ -61,3 +61,17 @@ export function truncateBySize<T>(
     totalCount: items.length,
   };
 }
+
+/**
+ * Collapses whitespace runs (including newlines/tabs) to a single space,
+ * then truncates to `limit` chars with a trailing "…" if it still exceeds —
+ * shared by every approval-prompt preview that needs to cap an arbitrary
+ * string's length. Collapsing whitespace before truncating is load-bearing:
+ * an embedded newline in a cell would otherwise inject extra lines into the
+ * rendered approval prompt. Used by `tools/sheets-write.ts`'s row preview and
+ * `value-input-consequence.ts`'s quoted cell value.
+ */
+export function truncateForPrompt(text: string, limit: number): string {
+  const collapsed = text.replace(/\s+/g, " ");
+  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
+}
