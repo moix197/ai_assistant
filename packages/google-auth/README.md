@@ -73,11 +73,15 @@ requests. `SHEETS_SCOPES` (`spreadsheets`) is the incremental scope
 requested-scope list, returning `undefined` for anything else so the caller
 falls back to its usage-help message. `hasRequiredScopes(granted, required)`
 and `TOOL_REQUIRED_SCOPES` (a tool name → required scopes map, seeded since
-`04-google-auth` with only `whoami`) are the primitives later phases build
+`04-google-auth` with only `whoami`, now also holding `sheets_inspect`/
+`sheets_read`/`sheets_write`) are the primitives later phases build
 incremental consent on: a tool whose required scopes aren't yet granted
 returns a structured `{ ok: false, reason: "missing_scope", scope }` for the
 model to relay as "run /connect google", never a live escalation prompt the
-agent itself raises.
+agent itself raises. `apps/hermes/src/agent/build-agent.ts` reads
+`TOOL_REQUIRED_SCOPES` per tool name at agent-build time to wire each gated
+tool's `withRequiredScopes` decorator — the single place a tool's scope
+requirement is declared, not re-hardcoded at each call site.
 
 `buildAuthUrl` sets `include_granted_scopes: "true"` on the authorize URL, so
 a user who already granted identity and now runs `/connect google sheets`

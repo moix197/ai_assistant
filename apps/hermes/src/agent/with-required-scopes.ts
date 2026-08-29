@@ -61,11 +61,14 @@ function describeConnectCommand(requiredScopes: string[]): string {
  * Wraps a `ScopedToolSpec`'s `handler` behind a connected-account +
  * required-scope check, run before the wrapped handler ever executes — no
  * token fetched, no API call on either failure branch (fail-closed, ROADMAP
- * invariant 7). This is `TOOL_REQUIRED_SCOPES`'s first real read path
- * (`packages/google-auth/src/scopes.ts` seeded that map since
- * `04-google-auth` with nothing consulting it): `whoami` is refactored onto
- * this decorator to prove the pattern against a tool that already works,
- * before the Sheets tools (Phase 4/5) lean on it for their own gating.
+ * invariant 7). `whoami` is refactored onto this decorator to prove the
+ * pattern against a tool that already works, before the Sheets tools
+ * (Phase 4/5) lean on it for their own gating. `deps.requiredScopes` is
+ * supplied by the caller, not derived here — for the Sheets tools,
+ * `apps/hermes/src/agent/build-agent.ts` reads it from
+ * `TOOL_REQUIRED_SCOPES` (`packages/google-auth/src/scopes.ts`) per tool
+ * name, so each tool's scope requirement is declared in that one map, not
+ * duplicated at each `withRequiredScopes` call site.
  *
  * Fetches the account **once**: on success it's threaded into the wrapped
  * handler's `ctx.googleAccount` rather than re-fetched — a scoped handler

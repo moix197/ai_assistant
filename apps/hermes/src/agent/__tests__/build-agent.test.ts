@@ -5,12 +5,13 @@ import type {
   SheetRegistryPort,
   SheetWriteLogPort,
   SheetsClient,
+  SheetsToolDeps,
 } from "@hermes/google-sheets";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { describe, expect, it, vi } from "vitest";
-import { type SheetsDeps, buildAgent } from "../build-agent";
+import { buildAgent } from "../build-agent";
 
 // Spies through to the real `createAgent` (no behavior change) so a test can
 // inspect the `AgentDefinition` it was actually called with — in particular
@@ -34,7 +35,7 @@ function createMockRecorder(): TelemetryRecorderHandle & { record: ReturnType<ty
 }
 
 /** Never exercised by these tests (no Sheets tool call is triggered) — just needs to satisfy the type. */
-function createFakeSheetsDeps(): SheetsDeps {
+function createFakeSheetsDeps(): SheetsToolDeps {
   const sheetRegistry: SheetRegistryPort = {
     getBySlug: vi.fn().mockResolvedValue(undefined),
     listAll: vi.fn().mockResolvedValue([]),

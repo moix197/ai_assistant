@@ -21,7 +21,11 @@ import {
   createRefreshCoordinator,
   decryptTokenEnvelope,
 } from "@hermes/google-auth";
-import { type SheetWriteLogPort, createSheetsClient } from "@hermes/google-sheets";
+import {
+  type SheetWriteLogPort,
+  type SheetsToolDeps,
+  createSheetsClient,
+} from "@hermes/google-sheets";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
@@ -44,7 +48,7 @@ import {
   waitForDatabase,
 } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
-import { type SheetsDeps, buildAgent } from "./agent/build-agent";
+import { buildAgent } from "./agent/build-agent";
 import { buildAccessTokenPort } from "./google/build-access-token-port";
 import { buildGoogleOAuthClient } from "./google/build-google-oauth-client";
 import {
@@ -742,7 +746,7 @@ export function buildSheetsDeps(
   pool: Pool,
   googleAccountRepo: GoogleAccountRepo,
   coordinator: RefreshCoordinator | undefined,
-): SheetsDeps {
+): SheetsToolDeps {
   const accessTokenPort = coordinator
     ? buildAccessTokenPort({ pool, googleAccountRepo, refreshCoordinator: coordinator })
     : {

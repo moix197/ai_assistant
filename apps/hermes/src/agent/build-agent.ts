@@ -1,12 +1,7 @@
 import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
-import { SHEETS_SCOPES } from "@hermes/google-auth";
-import type {
-  AccessTokenPort,
-  SheetRegistryPort,
-  SheetWriteLogPort,
-  SheetsClient,
-} from "@hermes/google-sheets";
+import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
+import type { SheetWriteLogPort, SheetsToolDeps } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
   createSheetsReadTool,
@@ -22,18 +17,6 @@ import { echoTool } from "./tools/echo";
 import { getCurrentTimeTool } from "./tools/get-current-time";
 import { createWhoamiTool } from "./tools/whoami";
 import { withRequiredScopes } from "./with-required-scopes";
-
-/**
- * The Sheets tools' three real-infra dependencies — constructed in
- * `boot.ts` (`buildSheetsDeps`) and passed in already-built, the same
- * already-built-dependency-injection shape every other `buildAgent`
- * parameter follows (`pool`/`llmProvider`/`channel`/...).
- */
-export interface SheetsDeps {
-  sheetRegistry: SheetRegistryPort;
-  accessTokenPort: AccessTokenPort;
-  sheetsClient: SheetsClient;
-}
 
 /**
  * Fixed placeholder — the same text `apps/hermes/src/handlers/complete.ts`
@@ -100,6 +83,23 @@ export interface BuiltAgent {
 }
 
 /**
+ * Looks up a gated tool's required scopes from `TOOL_REQUIRED_SCOPES`
+ * (`@hermes/google-auth`'s single source of truth for tool→scope) rather
+ * than hardcoding them again at each `withRequiredScopes` call site below.
+ * Throws if a tool name isn't registered in the map — the same fail-fast
+ * posture `withRequiredScopes`'s own `toolName`/`spec.name` assertion takes:
+ * a gated tool with no declared scope requirement is a wiring bug, not
+ * something to silently gate on `[]`.
+ */
+function requiredScopesFor(toolName: string): string[] {
+  const scopes = TOOL_REQUIRED_SCOPES.get(toolName);
+  if (!scopes) {
+    throw new Error(`no scopes registered for tool "${toolName}" in TOOL_REQUIRED_SCOPES`);
+  }
+  return [...scopes];
+}
+
+/**
  * The only place allowed to import both `@hermes/agent` and construct the
  * one hardcoded `AgentDefinition` — the D4 seam (settled decision 10):
  * `createAgent` takes one `AgentDefinition`, not a list, and this is the
@@ -119,11 +119,13 @@ export interface BuiltAgent {
  * the tools array — existing prefix bytes untouched (settled decision 16) —
  * built from `@hermes/google-sheets`'s base (ungated) tool factories over
  * `sheetsDeps` (constructed in `boot.ts`, passed in already-built) and gated
- * the same way `whoamiTool` is. `sheetsWriteTool` additionally takes
- * `sheetWriteLogRepo` (constructed and wired in `boot.ts`, the same
- * inline-object shape `apps/hermes/src/handlers/complete.ts`'s `dedupeRepo`
- * already uses for `llm_dedupe`) — kept out of the shared `SheetsDeps` type
- * since `sheetsInspectTool`/`sheetsReadTool` never need it.
+ * the same way `whoamiTool` is, each with its own `requiredScopes` read from
+ * `TOOL_REQUIRED_SCOPES` (`requiredScopesFor` below) — the single place a
+ * tool's scope requirement is declared, not re-hardcoded here. `sheetsWriteTool`
+ * additionally takes `sheetWriteLogRepo` (constructed and wired in `boot.ts`,
+ * the same inline-object shape `apps/hermes/src/handlers/complete.ts`'s
+ * `dedupeRepo` already uses for `llm_dedupe`) — kept out of the shared
+ * `SheetsToolDeps` type since `sheetsInspectTool`/`sheetsReadTool` never need it.
  */
 export function buildAgent(
   pool: Pool,
@@ -132,7 +134,7 @@ export function buildAgent(
   telemetryRecorder: TelemetryRecorderHandle,
   signal: AbortSignal,
   channel: TelegramPoller,
-  sheetsDeps: SheetsDeps,
+  sheetsDeps: SheetsToolDeps,
   sheetWriteLogRepo: SheetWriteLogPort,
 ): BuiltAgent {
   const { threadRepo, resolveChatId } = createThreadRepoWithChatIndex(pool);
@@ -140,19 +142,18 @@ export function buildAgent(
   const googleAccountRepo = buildGoogleAccountRepo(pool);
   const whoamiTool = createWhoamiTool(googleAccountRepo);
 
-  const scopeGateDeps = { googleAccountRepo, requiredScopes: SHEETS_SCOPES };
-  const sheetsInspectTool = withRequiredScopes(
-    "sheets_inspect",
-    scopeGateDeps,
-  )(createSheetsInspectTool(sheetsDeps));
-  const sheetsReadTool = withRequiredScopes(
-    "sheets_read",
-    scopeGateDeps,
-  )(createSheetsReadTool(sheetsDeps));
-  const sheetsWriteTool = withRequiredScopes(
-    "sheets_write",
-    scopeGateDeps,
-  )(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo }));
+  const sheetsInspectTool = withRequiredScopes("sheets_inspect", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("sheets_inspect"),
+  })(createSheetsInspectTool(sheetsDeps));
+  const sheetsReadTool = withRequiredScopes("sheets_read", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("sheets_read"),
+  })(createSheetsReadTool(sheetsDeps));
+  const sheetsWriteTool = withRequiredScopes("sheets_write", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("sheets_write"),
+  })(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo }));
 
   const definition: AgentDefinition = {
     name: "hermes",

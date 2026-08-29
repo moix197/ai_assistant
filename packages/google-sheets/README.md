@@ -116,12 +116,14 @@ it bounds one HTTP attempt, not the whole handler call.
 
 All three are the *base*, ungated `ToolSpec` — `apps/hermes/src/agent/
 build-agent.ts` wraps each in `withRequiredScopes(name, { googleAccountRepo,
-requiredScopes: SHEETS_SCOPES })`, the same split `whoami` uses: the
-capability lives in this package, the scope gate lives in `apps/hermes`.
-None of the three tools checks scopes itself, and none calls the Sheets API
-(or even fetches an access token) for an unconnected or under-scoped account
-— the gate runs first and short-circuits before this package's handler is
-ever invoked.
+requiredScopes })`, the same split `whoami` uses: the capability lives in
+this package, the scope gate lives in `apps/hermes`. `requiredScopes` for
+each tool is read from `@hermes/google-auth`'s `TOOL_REQUIRED_SCOPES` map
+(currently `SHEETS_SCOPES` for all three) rather than hardcoded at the wiring
+site, so a tool's scope requirement is declared once. None of the three
+tools checks scopes itself, and none calls the Sheets API (or even fetches
+an access token) for an unconnected or under-scoped account — the gate runs
+first and short-circuits before this package's handler is ever invoked.
 
 ## `sheets_write` (Phase 5)
 
@@ -178,20 +180,24 @@ request reached Google) is where the two modes diverge, because `POST
 - `updateValues` — a fixed-range `PUT` converges to the same end state
   whether or not the first attempt landed, so a post-send-ambiguous failure
   is retried **once, internally**, with the identical `range`/`values` (the
-  same `attempt` closure, not a second call). `sheets-write.ts`'s handler
-  never sees this as an ambiguity at all — it only ever sees `updateValues`'s
-  own success or a genuine fatal error (no `try`/`catch` around that branch).
+  same `attempt` closure, not a second call). If that retry still fails, the
+  original error (never a `SheetsAmbiguousWriteError` — that type is only
+  ever thrown by `appendValues`) propagates out of `updateValues` as a
+  genuine fatal error.
 - `appendValues` — not idempotent (a resend of an already-applied append
   doubles the row), so a post-send-ambiguous failure throws
   `SheetsAmbiguousWriteError` immediately, **never retried** by the client.
-  `sheets-write.ts` catches this one error type and returns a structured
-  `{ok: false, reason: "ambiguous_write", message}` — "may or may not have
-  landed, check the sheet" — recording it via `complete` the same as any
-  other outcome, so a same-turn duplicate claim returns the same hedge
-  without a second API call.
+
+Both branches of `sheets-write.ts`'s handler call the Sheets API through the
+same shared `performWrite` helper, so both get the same error handling:
+`performWrite` catches `SheetsAmbiguousWriteError` (which, per above, only
+`mode: "append"` can ever throw) and returns a structured `{ok: false,
+reason: "ambiguous_write", message}` — "may or may not have landed, check
+the sheet" — recording it via `complete` the same as any other outcome, so a
+same-turn duplicate claim returns the same hedge without a second API call.
 
 **Definitive-failure claim release**: a fatal `SheetsApiError` reaching
-`sheets-write.ts`'s `mode: "append"` catch block (a non-429 4xx, thrown
+`performWrite`'s catch block, for **either** mode (a non-429 4xx, thrown
 immediately by `classifyWrite` — Google rejected the request outright — or
 an exhausted 429, thrown after retries — Google never got past quota
 enforcement to apply it) is provably **not** ambiguous: the sheet was never
@@ -201,7 +207,13 @@ boot.ts`-wired) to delete the still-`pending` row before rethrowing, so a
 legitimate same-turn retry isn't blocked by `alreadyPending`'s hedge over a
 write that definitely never landed. Any other error (a network failure that
 can't be proven pre-send, a malformed response body after a 2xx, ...) keeps
-the pending row — the fail-safe default stays "when in doubt, hedge."
+the pending row — the fail-safe default stays "when in doubt, hedge." This
+release logic is identical for `mode: "update"`: a definitive `SheetsApiError`
+(a 4xx, or an exhausted 429) releases the claim the same way, closing what
+was previously an append/update asymmetry (code review, `05-google-sheets`
+close-out) that could leave an `update`'s claim stuck `pending` — and a
+same-turn retry falsely told the write was ambiguous — after a write that
+provably never landed.
 
 **`valueInputOption` stakes** (settled decision 17): `USER_ENTERED` parses
 cell content the way a human typing it would (real dates/numbers land

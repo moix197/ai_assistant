@@ -361,6 +361,70 @@ describe("sheets_write", () => {
     expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
   });
 
+  it("mode: update's definitively-failed write (a 4xx SheetsApiError, reached Google and was rejected) releases the pending claim instead of leaving it stuck ambiguous, and a same-turn retry can call the client again — mirrors the append-mode release test above; the asymmetry this used to guard was a real bug (code review, 05-google-sheets close-out)", async () => {
+    const sheetsClient = fakeSheetsClient();
+    const apiError = new SheetsApiError("Sheets API returned HTTP 400: bad request", 400);
+    sheetsClient.updateValues.mockRejectedValueOnce(apiError);
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+    const tool = createSheetsWriteTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+      sheetWriteLogRepo,
+    });
+    const updateArgs = { ...APPEND_ARGS, mode: "update" as const };
+
+    await expect(tool.handler(updateArgs, CTX)).rejects.toBe(apiError);
+
+    expect(sheetWriteLogRepo.release).toHaveBeenCalledTimes(1);
+    expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
+
+    // The claim was released, not left pending — a same-turn retry (same
+    // channel/channelUserId/turnId/args) is allowed to call the client
+    // again rather than being told the write is ambiguous.
+    const result = await tool.handler(updateArgs, CTX);
+
+    expect(sheetsClient.updateValues).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      ok: true,
+      sheet: "clients",
+      mode: "update",
+      updatedRange: "Sheet1!A2:B2",
+      updatedRows: 1,
+    });
+  });
+
+  it("mode: update's genuinely ambiguous failure (not a SheetsApiError — e.g. updateValues's own internal retry exhausted on a post-send network failure) leaves the claim pending, blocking a same-turn retry with the ambiguous hedge, without a second client call", async () => {
+    const sheetsClient = fakeSheetsClient();
+    const networkError = new Error("Sheets request failed: fetch failed");
+    sheetsClient.updateValues.mockRejectedValueOnce(networkError);
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+    const tool = createSheetsWriteTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+      sheetWriteLogRepo,
+    });
+    const updateArgs = { ...APPEND_ARGS, mode: "update" as const };
+
+    await expect(tool.handler(updateArgs, CTX)).rejects.toBe(networkError);
+
+    expect(sheetWriteLogRepo.release).not.toHaveBeenCalled();
+    expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
+
+    // Not released: a same-turn retry finds the row still pending and gets
+    // the same ambiguous hedge a fresh alreadyPending claim always gets,
+    // without ever calling the client a second time.
+    const result = await tool.handler(updateArgs, CTX);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "ambiguous_write",
+      message: expect.stringContaining("may or may not have landed"),
+    });
+    expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
+  });
+
   it("a claim that finds an EXISTING pending row for this key returns the ambiguous hedge without calling the client or recording a new outcome", async () => {
     const sheetsClient = fakeSheetsClient();
     const sheetWriteLogRepo = fakeSheetWriteLogRepo();

@@ -19,6 +19,7 @@ export {
   type ValueInputOption,
   type ValueRenderOption,
 } from "./sheets-client";
+export type { SheetsToolDeps } from "./tools/tool-deps";
 export {
   createSheetsInspectTool,
   type CreateSheetsInspectToolDeps,

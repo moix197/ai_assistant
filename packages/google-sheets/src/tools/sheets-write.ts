@@ -53,7 +53,7 @@ export interface SheetWriteLogPort {
    * write that definitely never landed. Optional: a caller that never
    * constructs this branch (e.g. a fake in a test not exercising it) need
    * not implement it. Never called for a genuinely ambiguous failure — the
-   * fail-safe default stays "when in doubt, hedge" (see the `handler`'s
+   * fail-safe default stays "when in doubt, hedge" (see `performWrite`'s
    * `SheetsApiError` branch below).
    */
   release?(dedupeKey: string): Promise<void>;
@@ -101,6 +101,106 @@ export interface SheetsWriteSuccessResult {
 }
 
 /**
+ * Shared by both modes' branches below: calls `callApi` (the mode-specific
+ * `appendValues`/`updateValues` invocation), then resolves the dedupe claim
+ * one of three ways — a caught `SheetsAmbiguousWriteError` records and
+ * returns the structured hedge; a caught `SheetsApiError` releases the still
+ * -pending claim before rethrowing (see the definitive-vs-ambiguous split in
+ * the handler's own doc comment above); any other thrown error propagates
+ * with the claim left pending. On success, records and returns the
+ * `SheetsWriteSuccessResult` — the success-outcome-plus-`complete()` shape
+ * both `append` and `update` previously duplicated inline.
+ */
+async function performWrite(
+  deps: CreateSheetsWriteToolDeps,
+  dedupeKey: string,
+  mode: "append" | "update",
+  sheetSlug: string,
+  callApi: () => Promise<SheetsWriteResult>,
+): Promise<SheetsWriteSuccessResult | AmbiguousWriteResult> {
+  let writeResult: SheetsWriteResult;
+  try {
+    writeResult = await callApi();
+  } catch (error) {
+    if (error instanceof SheetsAmbiguousWriteError) {
+      const outcome: AmbiguousWriteResult = {
+        ok: false,
+        reason: "ambiguous_write",
+        message: error.message,
+      };
+      await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
+      return outcome;
+    }
+    if (error instanceof SheetsApiError) {
+      // Definitive, not ambiguous: `sheets-client.ts`'s `classifyWrite` only
+      // ever lets a `SheetsApiError` escape `appendValues`/`updateValues` for
+      // a non-429 4xx (thrown immediately — Google rejected the request
+      // outright) or an exhausted 429 (thrown after retries — Google never
+      // got past quota enforcement to apply it). Either way the request
+      // never mutated the sheet, so the pending claim is released rather
+      // than left to permanently hedge a legitimate same-turn retry. Any
+      // other error here (a network failure that can't be proven pre-send, a
+      // malformed body after a 2xx, ...) falls through unreleased —
+      // fail-safe stays "when in doubt, hedge" (settled decision 15).
+      await deps.sheetWriteLogRepo.release?.(dedupeKey);
+    }
+    throw error;
+  }
+  const outcome: SheetsWriteSuccessResult = {
+    ok: true,
+    sheet: sheetSlug,
+    mode,
+    ...writeResult,
+  };
+  await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
+  return outcome;
+}
+
+/**
+ * Computes the dedupe key and resolves `sheetWriteLogRepo.claim` against it
+ * — the one dedupe/claim sequence both `mode`s share before ever touching
+ * the Sheets API. Returns `{ shortCircuit }` with the already-resolved
+ * outcome to return as-is when the claim short-circuits (an existing
+ * `complete`d row, or one still `pending` from another in-flight attempt);
+ * otherwise `{ dedupeKey }`, the fresh key this call now owns writing to.
+ */
+async function claimDedupeKey(
+  deps: CreateSheetsWriteToolDeps,
+  parsed: z.infer<typeof schema>,
+  ctx: SheetsToolContext,
+): Promise<{ shortCircuit: unknown } | { dedupeKey: string }> {
+  const canonicalArgsJson = canonicalizeArgs(parsed);
+  const dedupeKey = computeDedupeKey({
+    channel: ctx.channel,
+    channelUserId: ctx.channelUserId,
+    turnId: ctx.turnId,
+    tool: TOOL_NAME,
+    canonicalArgsJson,
+  });
+
+  const claimResult = await deps.sheetWriteLogRepo.claim(dedupeKey, {
+    channel: ctx.channel,
+    channelUserId: ctx.channelUserId,
+    turnId: ctx.turnId,
+    tool: TOOL_NAME,
+    canonicalArgs: JSON.parse(canonicalArgsJson) as unknown,
+  });
+  if (typeof claimResult === "object" && "alreadyComplete" in claimResult) {
+    return { shortCircuit: claimResult.outcome };
+  }
+  if (typeof claimResult === "object" && "alreadyPending" in claimResult) {
+    return {
+      shortCircuit: {
+        ok: false,
+        reason: "ambiguous_write",
+        message: PENDING_CLAIM_MESSAGE,
+      } satisfies AmbiguousWriteResult,
+    };
+  }
+  return { dedupeKey };
+}
+
+/**
  * `sheets_write`: appends or overwrites rows in a registered spreadsheet.
  * `requiresApproval: true` routes every call through the approval gate
  * before this handler ever runs. Order inside the handler is load-bearing
@@ -111,22 +211,23 @@ export interface SheetsWriteSuccessResult {
  * tool, canonical args)`) short-circuits on the claim before ever calling
  * the client a second time.
  *
- * `mode: "append"`'s post-send-ambiguous outcome
- * (`SheetsAmbiguousWriteError`, thrown by `sheets-client.ts`'s
- * `appendValues`, never retried there) is caught here and turned into a
+ * Both modes share `performWrite`'s definitive-vs-ambiguous release logic: a
+ * `SheetsApiError` — the request reached Google and was rejected outright,
+ * or an exhausted 429 that never got applied — releases the still-pending
+ * claim (via `sheetWriteLogRepo.release`) before rethrowing, so a legitimate
+ * same-turn retry isn't blocked hedging over a write that provably never
+ * landed; any other error keeps the pending row (fail-safe default). Only
+ * `mode: "append"` can additionally throw `SheetsAmbiguousWriteError`
+ * (`sheets-client.ts`'s `appendValues` never retries a post-send-ambiguous
+ * failure) — `performWrite` catches that specific type and turns it into a
  * structured `AmbiguousWriteResult`, recorded via `complete` the same as any
  * other outcome so a same-turn duplicate claim returns the same hedge
- * without a second API call. A definitive failure — a `SheetsApiError`,
- * meaning the request reached Google and was rejected outright, or an
- * exhausted 429 that never got applied — releases the claim instead (via
- * `sheetWriteLogRepo.release`) before rethrowing, so a legitimate same-turn
- * retry isn't blocked hedging over a write that provably never landed; any
- * other error keeps the pending row (fail-safe default). `mode: "update"`'s
- * client-internal single retry means this handler never sees that ambiguity
- * at all — any error thrown by `updateValues` past that point is a genuine
- * fatal error and is left to propagate (`packages/agent`'s `invokeTool`
- * turns a thrown handler error into the tool-result message itself, settled
- * decision 15).
+ * without a second API call. `mode: "update"`'s client-internal single retry
+ * means `updateValues` never throws that type at all — any post-send
+ * ambiguity it can't resolve internally surfaces as a plain fatal error
+ * (`packages/agent`'s `invokeTool` turns a thrown handler error into the
+ * tool-result message itself, settled decision 15), leaving its claim
+ * pending rather than released.
  */
 export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
   return {
@@ -147,40 +248,16 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
         return { ok: false, reason: "read_only_sheet" } satisfies ReadOnlySheetResult;
       }
 
-      const canonicalArgsJson = canonicalizeArgs(parsed);
-      const dedupeKey = computeDedupeKey({
-        channel: ctx.channel,
-        channelUserId: ctx.channelUserId,
-        turnId: ctx.turnId,
-        tool: TOOL_NAME,
-        canonicalArgsJson,
-      });
-
-      const claimResult = await deps.sheetWriteLogRepo.claim(dedupeKey, {
-        channel: ctx.channel,
-        channelUserId: ctx.channelUserId,
-        turnId: ctx.turnId,
-        tool: TOOL_NAME,
-        canonicalArgs: JSON.parse(canonicalArgsJson) as unknown,
-      });
-      if (typeof claimResult === "object" && "alreadyComplete" in claimResult) {
-        return claimResult.outcome;
-      }
-      if (typeof claimResult === "object" && "alreadyPending" in claimResult) {
-        return {
-          ok: false,
-          reason: "ambiguous_write",
-          message: PENDING_CLAIM_MESSAGE,
-        } satisfies AmbiguousWriteResult;
-      }
+      const claim = await claimDedupeKey(deps, parsed, ctx);
+      if ("shortCircuit" in claim) return claim.shortCircuit;
+      const { dedupeKey } = claim;
 
       const valueInputOption: ValueInputOption = overrideOption ?? resolved.entry.valueInputOption;
       const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
 
       if (mode === "append") {
-        let writeResult: SheetsWriteResult;
-        try {
-          writeResult = await deps.sheetsClient.appendValues(
+        return performWrite(deps, dedupeKey, mode, resolved.entry.slug, () =>
+          deps.sheetsClient.appendValues(
             accessToken,
             resolved.entry.spreadsheetId,
             range,
@@ -188,59 +265,20 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
             valueInputOption,
             undefined,
             ctx.signal,
-          );
-        } catch (error) {
-          if (error instanceof SheetsAmbiguousWriteError) {
-            const outcome: AmbiguousWriteResult = {
-              ok: false,
-              reason: "ambiguous_write",
-              message: error.message,
-            };
-            await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
-            return outcome;
-          }
-          if (error instanceof SheetsApiError) {
-            // Definitive, not ambiguous: `sheets-client.ts`'s `classifyWrite`
-            // only ever lets a `SheetsApiError` escape `appendValues` for a
-            // non-429 4xx (thrown immediately — Google rejected the request
-            // outright) or an exhausted 429 (thrown after retries — Google
-            // never got past quota enforcement to apply it). Either way the
-            // request never mutated the sheet, so the pending claim is
-            // released rather than left to permanently hedge a legitimate
-            // same-turn retry. Any other error here (a network failure that
-            // can't be proven pre-send, a malformed body after a 2xx, ...)
-            // falls through unreleased — fail-safe stays "when in doubt,
-            // hedge" (settled decision 15).
-            await deps.sheetWriteLogRepo.release?.(dedupeKey);
-          }
-          throw error;
-        }
-        const outcome: SheetsWriteSuccessResult = {
-          ok: true,
-          sheet: resolved.entry.slug,
-          mode,
-          ...writeResult,
-        };
-        await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
-        return outcome;
+          ),
+        );
       }
 
-      const writeResult = await deps.sheetsClient.updateValues(
-        accessToken,
-        resolved.entry.spreadsheetId,
-        range,
-        values,
-        valueInputOption,
-        ctx.signal,
+      return performWrite(deps, dedupeKey, mode, resolved.entry.slug, () =>
+        deps.sheetsClient.updateValues(
+          accessToken,
+          resolved.entry.spreadsheetId,
+          range,
+          values,
+          valueInputOption,
+          ctx.signal,
+        ),
       );
-      const outcome: SheetsWriteSuccessResult = {
-        ok: true,
-        sheet: resolved.entry.slug,
-        mode,
-        ...writeResult,
-      };
-      await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
-      return outcome;
     },
   };
 }
