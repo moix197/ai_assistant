@@ -661,22 +661,22 @@ this phase — the registry exists and is operable, nothing reads it yet.
 
 **Steps:**
 
-- [ ] **Re-list `packages/store/src/migrations/` first** and confirm `007`
+- [x] **Re-list `packages/store/src/migrations/` first** and confirm `007`
       is still the highest-numbered file before creating `008` — do not
       trust this plan's assumed number
-- [ ] `sheetRegistryEntrySchema` lands in `core/src/google-types.ts` before
+- [x] `sheetRegistryEntrySchema` lands in `core/src/google-types.ts` before
       any store or CLI code references it — confirm `pnpm --filter
       @hermes/core build` still succeeds with the addition
-- [ ] `upsert`'s `DO UPDATE` write a test proving re-registering an existing
+- [x] `upsert`'s `DO UPDATE` write a test proving re-registering an existing
       slug overwrites every field (`spreadsheet_id`, `access`,
       `value_input_option`, `description`), not just `updated_at`
-- [ ] Write an explicit test that `upsert` called with **no** `access`/
+- [x] Write an explicit test that `upsert` called with **no** `access`/
       `value_input_option` supplied by the caller persists and round-trips
       the migration's own defaults (`'read'`/`'USER_ENTERED'`) — the CHECK
       constraint's default is currently only asserted indirectly via the
       CLI's own default-flag behavior; this proves the DB default itself,
       independent of the CLI
-- [ ] `hermes-sheets`'s argument parsing: write at least one test (or a
+- [x] `hermes-sheets`'s argument parsing: write at least one test (or a
       thin parsing function extracted and unit-tested, per the plan-format
       rule against manual-only verification of testable logic) covering
       `add` with and without optional flags — the without-flags case must
@@ -684,10 +684,10 @@ this phase — the registry exists and is operable, nothing reads it yet.
       migration's defaults, not just "the command didn't error" — `list`
       with zero and multiple rows, `remove` of a non-existent slug (should
       not throw — same idempotent-removal posture as `/disconnect`)
-- [ ] Confirm `hermes-sheets`'s `access`/`value_input_option` flags reject
+- [x] Confirm `hermes-sheets`'s `access`/`value_input_option` flags reject
       an invalid value with a clear CLI error rather than silently passing
       it through to a DB constraint violation
-- [ ] **Deliverability, resolved not assumed:** `apps/hermes/package.json`
+- [x] **Deliverability, resolved not assumed:** `apps/hermes/package.json`
       depends on `@hermes/store` (`workspace:*`), so `pnpm deploy --filter
       ./apps/hermes --prod --legacy /out` (the `Dockerfile`'s `deploy`
       stage) copies `@hermes/store`'s production files — `dist`,
@@ -728,21 +728,21 @@ this phase — the registry exists and is operable, nothing reads it yet.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green — migration `008` applies cleanly
-- [ ] `pnpm lint` green
-- [ ] `pnpm --filter @hermes/store build` succeeds and produces a working
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green — migration `008` applies cleanly
+- [x] `pnpm lint` green
+- [x] `pnpm --filter @hermes/store build` succeeds and produces a working
       `dist/sheets-cli.js`
-- [ ] `docker compose build` succeeds; `docker compose run --rm hermes ls
+- [x] `docker compose build` succeeds; `docker compose run --rm hermes ls
       node_modules/.bin` lists `hermes-sheets` alongside `hermes-migrate` —
       proves the CLI is actually present in the production image, not just
       buildable locally
-- [ ] Manual: against a local dev database, `hermes-sheets add clients
+- [x] Manual: against a local dev database, `hermes-sheets add clients
       <test-spreadsheet-id> --desc "Client roster" --access readwrite` then
       `hermes-sheets list` shows the row with the right defaults;
       `hermes-sheets remove clients` then `hermes-sheets list` shows it gone
-- [ ] Manual: with the compose stack up, `docker compose exec hermes
+- [x] Manual: with the compose stack up, `docker compose exec hermes
       node_modules/.bin/hermes-sheets add appointments <test-spreadsheet-id>
       --desc "Appointments" --access read` then `docker compose exec hermes
       node_modules/.bin/hermes-sheets list` shows the row — proves the
@@ -753,16 +753,16 @@ this phase — the registry exists and is operable, nothing reads it yet.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: sheet_registry table, repo, hermes-sheets CLI`
-- [ ] Phase marked complete
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: sheet_registry table, repo, hermes-sheets CLI`
+- [x] Phase marked complete
 
 ---
 
