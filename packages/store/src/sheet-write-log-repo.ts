@@ -8,7 +8,10 @@ export interface SheetWriteLogClaimInput {
   canonicalArgs: unknown;
 }
 
-export type SheetWriteLogClaimResult = "claimed" | { alreadyComplete: true; outcome: unknown };
+export type SheetWriteLogClaimResult =
+  | "claimed"
+  | { alreadyComplete: true; outcome: unknown }
+  | { alreadyPending: true };
 
 /**
  * Claims `dedupeKey` via `INSERT ... ON CONFLICT DO NOTHING RETURNING` —
@@ -16,15 +19,21 @@ export type SheetWriteLogClaimResult = "claimed" | { alreadyComplete: true; outc
  * constraint on `sheet_write_log.dedupe_key` is what makes the uniqueness a
  * Postgres guarantee, not an application check-then-insert race.
  *
- * Two outcomes:
+ * Three outcomes:
  * - the INSERT wins (no row existed) -> `"claimed"`, first call for this key
  * - the row exists and is `complete` -> `{alreadyComplete: true, outcome}`,
  *   the stored result of the original call — the caller returns this
  *   directly and never calls the Sheets API again
- * - the row exists and is still `pending` (the claim-to-complete crash
- *   window, see `packages/store/README.md`'s "Claim-to-complete crash
- *   window" section) -> `"claimed"` again, the same fail-open (retry, not
- *   permanently block) posture `llm_dedupe` already takes.
+ * - the row exists and is still `pending` -> `{alreadyPending: true}`. This
+ *   is deliberately **not** fail-open: a pending row means some other call —
+ *   possibly this exact write, genuinely still in flight, possibly a prior
+ *   attempt that crashed after the write landed but before `complete()`
+ *   recorded it (the claim-to-complete crash window, see
+ *   `packages/store/README.md`) — already started this exact write, and we
+ *   cannot tell which. Returning `"claimed"` here (the old behavior) let a
+ *   same-turn retry call the Sheets API a second time, which can double an
+ *   `append`. The caller must surface this as an ambiguous outcome instead
+ *   of writing again.
  */
 export async function claim(
   pool: Pool,
@@ -60,8 +69,8 @@ export async function claim(
   }
   // status is "pending" (or the row vanished between the failed INSERT and
   // this SELECT, which can't happen under normal operation) — either way,
-  // allow the retry through rather than permanently wedging the write.
-  return "claimed";
+  // never proceed to write again; the caller surfaces this as ambiguous.
+  return { alreadyPending: true };
 }
 
 /** Marks `dedupeKey` complete, storing `outcome` for a future duplicate claim within the same turn to short-circuit against. */

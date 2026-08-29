@@ -35,10 +35,10 @@ describe.skipIf(!testDatabaseUrl)("sheet-write-log-repo (integration)", () => {
     expect(result).toBe("claimed");
   });
 
-  it("a second claim on the same still-pending key also returns claimed (the pending-retry case)", async () => {
+  it("a second claim on the same still-pending key returns alreadyPending, not claimed — no double-write on a same-turn retry", async () => {
     await claim(pool, "key-2", CLAIM_INPUT);
     const result = await claim(pool, "key-2", CLAIM_INPUT);
-    expect(result).toBe("claimed");
+    expect(result).toEqual({ alreadyPending: true });
   });
 
   it("after complete(), a further claim returns the stored outcome instead of calling the API again", async () => {

@@ -300,6 +300,11 @@ describe("createSheetsClient", () => {
     });
   });
 
+  /** The real shape undici raises for a connection that never got established — `cause.code` is what `classifyWrite` actually keys off, not the message text. */
+  function preSendNetworkError(code: string): Error {
+    return new Error("fetch failed", { cause: { code } });
+  }
+
   it.each([
     [
       "appendValues",
@@ -312,13 +317,13 @@ describe("createSheetsClient", () => {
         client.updateValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
     ],
   ] as const)(
-    "%s classifies a pre-send failure (connection refused, never reaching Google) as retryable, same as a 429 — settled decision 15",
+    "%s classifies a pre-send failure (cause.code ECONNREFUSED, never reaching Google) as retryable, same as a 429 — settled decision 15",
     async (_name, call) => {
       vi.useFakeTimers();
       try {
         const fetchImpl = vi
           .fn()
-          .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+          .mockRejectedValueOnce(preSendNetworkError("ECONNREFUSED"))
           .mockResolvedValueOnce(jsonResponse(200, { updates: {} }));
         const client = createSheetsClient({ fetchImpl });
 
@@ -332,6 +337,26 @@ describe("createSheetsClient", () => {
       }
     },
   );
+
+  it("appendValues does NOT retry a bare `TypeError: fetch failed` whose cause.code is a post-send socket failure (ECONNRESET) — the request may already have reached Google", async () => {
+    const fetchImpl = vi.fn().mockRejectedValueOnce(preSendNetworkError("ECONNRESET"));
+    const client = createSheetsClient({ fetchImpl });
+
+    await expect(
+      client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ).rejects.toBeInstanceOf(SheetsAmbiguousWriteError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("appendValues treats a `TypeError: fetch failed` with no `cause` at all as ambiguous, not pre-send — fail-safe when the pre-send/post-send distinction can't be proven", async () => {
+    const fetchImpl = vi.fn().mockRejectedValueOnce(new TypeError("fetch failed"));
+    const client = createSheetsClient({ fetchImpl });
+
+    await expect(
+      client.appendValues("token", "sheet-abc", "Sheet1!A1:B1", [["x"]], "RAW"),
+    ).rejects.toBeInstanceOf(SheetsAmbiguousWriteError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 
   it("appendValues throws SheetsAmbiguousWriteError on a post-send 5xx, without retrying — a resend could double-append the row", async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(500, { error: "internal" }));

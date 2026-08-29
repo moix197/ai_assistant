@@ -92,7 +92,15 @@ async function requestJson(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const wrapped = new Error(redact(`Sheets request failed: ${message}`, accessToken));
+    // Preserves the raw fetch failure's own `cause` (e.g. undici's
+    // `{ code: "ECONNRESET" }` on a post-send socket failure) so
+    // `classifyWrite` below can inspect it — a bare `TypeError: fetch
+    // failed` collapses pre-send and post-send network failures into one
+    // indistinguishable message, but `cause.code` (when present) does not.
+    const cause = error instanceof Error ? error.cause : undefined;
+    const wrapped = new Error(redact(`Sheets request failed: ${message}`, accessToken), {
+      cause,
+    });
     // Preserves "this was our own timeout abort" as a discriminable identity
     // (`classifyWrite` below keys off it) instead of collapsing every fetch
     // failure into one indistinguishable shape.
@@ -155,14 +163,44 @@ export class SheetsAmbiguousWriteError extends Error {
 type WriteRetryClass = "rateLimit" | "preSendNetwork" | "postSendAmbiguous";
 
 /**
+ * Node/undici error codes that provably mean the request never left this
+ * process — the connection itself could not be established. Anything else
+ * (a reset, a premature close, "terminated", or no discoverable code at all)
+ * happens on a connection that may already have carried the request to
+ * Google, so it cannot be assumed pre-send.
+ */
+const PRE_SEND_NETWORK_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+
+/**
+ * `undici`/Node raise a post-send socket failure (a reset, a premature
+ * close) as the same bare `TypeError: fetch failed` shape as a genuine
+ * pre-send failure — the only place the two are actually distinguishable is
+ * `error.cause.code`. A `cause` with no recognizable code, or no `cause` at
+ * all, must NOT be assumed pre-send: fail-safe means treating "we can't tell"
+ * as ambiguous, not as safe-to-retry.
+ */
+function isPreSendNetworkFailure(error: Error): boolean {
+  const cause = error.cause;
+  const code =
+    cause !== null && typeof cause === "object" && "code" in cause
+      ? (cause as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && PRE_SEND_NETWORK_CODES.has(code);
+}
+
+/**
  * Same 429/5xx split `classify` (above) draws, but a fetch-level throw that
- * isn't this client's own timeout abort is classified `preSendNetwork`
- * (connection refused, DNS failure, ...) rather than folded into the same
- * bucket as a post-send 5xx or a timeout: per settled decision 15, only
- * "the request definitely reached Google and we don't know what happened
- * next" (a 5xx, or our own `AbortError` from `REQUEST_TIMEOUT_MS` firing) is
- * actually ambiguous. A failure the request never left for is exactly as
- * safe to retry as a 429.
+ * isn't this client's own timeout abort is classified `preSendNetwork` only
+ * when `isPreSendNetworkFailure` can prove the request never left
+ * (connection refused, DNS failure, ...); everything else — including a bare
+ * `TypeError: fetch failed` with an unrecognized or absent `cause` — is
+ * `postSendAmbiguous`. Per settled decision 15, only "the request definitely
+ * reached Google and we don't know what happened next" is actually
+ * ambiguous, but a socket failure *after* the request was sent (a reset, a
+ * premature close) surfaces as the exact same undistinguishable
+ * `TypeError: fetch failed` as one that never left — so anything not
+ * provably pre-send must be treated as ambiguous, not retried, to avoid
+ * resending an append that already landed.
  */
 function classifyWrite(error: unknown): { class: WriteRetryClass; retryAfterMs?: number } {
   if (error instanceof SheetsApiError) {
@@ -178,7 +216,10 @@ function classifyWrite(error: unknown): { class: WriteRetryClass; retryAfterMs?:
   if (error instanceof Error && error.name === "AbortError") {
     return { class: "postSendAmbiguous" };
   }
-  return { class: "preSendNetwork" };
+  if (error instanceof Error && isPreSendNetworkFailure(error)) {
+    return { class: "preSendNetwork" };
+  }
+  return { class: "postSendAmbiguous" };
 }
 
 /**

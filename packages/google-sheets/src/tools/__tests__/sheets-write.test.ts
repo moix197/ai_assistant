@@ -78,7 +78,9 @@ function fakeSheetWriteLogRepo(): SheetWriteLogPort & {
     if (existing.status === "complete") {
       return { alreadyComplete: true as const, outcome: existing.outcome };
     }
-    return "claimed" as const;
+    // Mirrors the real repo: a still-pending row is never fail-open —
+    // proceeding to write again could double-append.
+    return { alreadyPending: true as const };
   });
   const complete = vi.fn(async (dedupeKey: string, outcome: unknown) => {
     rows.set(dedupeKey, { status: "complete", outcome });
@@ -267,24 +269,59 @@ describe("sheets_write", () => {
     expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
   });
 
-  it("mode: update's post-send ambiguity is already resolved by the client — a resolved updateValues call returns a normal success with no hedge", async () => {
+  it("mode: update's post-send ambiguity is already resolved by the client — a resolved updateValues call returns a normal success with no hedge, the opposite outcome from the append-mode ambiguity test above for the same fault class", async () => {
     // sheets-client.test.ts proves updateValues itself retries once,
     // internally, on a post-send-ambiguous failure and resolves to success.
     // This handler never sees that ambiguity at all — it only ever sees
     // updateValues's own success or a genuine thrown fatal error (no
-    // try/catch here, unlike the append branch above).
+    // try/catch here, unlike the append branch above). The fake client can't
+    // simulate the internal retry itself (that's `sheets-client.test.ts`'s
+    // job), but this test still proves the TOOL layer's half of the split:
+    // exactly one call reaches the fake, no `ambiguous_write` hedge is ever
+    // produced, and the outcome recorded via `complete` is the plain
+    // success — mirroring the append test's assertions line for line so the
+    // pair actually asserts opposite outcomes, not just opposite prose.
     const writeResult: SheetsWriteResult = { updatedRange: "Sheet1!A1:B1", updatedRows: 1 };
     const sheetsClient = fakeSheetsClient(writeResult);
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
     const tool = createSheetsWriteTool({
       sheetRegistry: fakeRegistry([fakeEntry()]),
       accessTokenPort: fakeAccessTokenPort(),
       sheetsClient,
-      sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      sheetWriteLogRepo,
     });
 
     const result = await tool.handler({ ...APPEND_ARGS, mode: "update" }, CTX);
 
     expect(result).toEqual({ ok: true, sheet: "clients", mode: "update", ...writeResult });
+    expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
+    expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
+  });
+
+  it("a claim that finds an EXISTING pending row for this key returns the ambiguous hedge without calling the client or recording a new outcome", async () => {
+    const sheetsClient = fakeSheetsClient();
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+    sheetWriteLogRepo.claim.mockResolvedValueOnce({ alreadyPending: true });
+    const tool = createSheetsWriteTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+      sheetWriteLogRepo,
+    });
+
+    const result = await tool.handler(APPEND_ARGS, CTX);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "ambiguous_write",
+      message: expect.stringContaining("may or may not have landed"),
+    });
+    expect(sheetsClient.appendValues).not.toHaveBeenCalled();
+    expect(sheetsClient.updateValues).not.toHaveBeenCalled();
+    // Not this call's write to record — stamping it here would risk
+    // clobbering whichever attempt actually owns the pending row's eventual
+    // completion.
+    expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
   });
 
   it("valueInputOption resolution: falls back to the registry's default when the tool arg omits it", async () => {

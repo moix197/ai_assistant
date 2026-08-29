@@ -42,7 +42,7 @@ export interface SheetWriteLogPort {
       tool: string;
       canonicalArgs: unknown;
     },
-  ): Promise<"claimed" | { alreadyComplete: true; outcome: unknown }>;
+  ): Promise<"claimed" | { alreadyComplete: true; outcome: unknown } | { alreadyPending: true }>;
   complete(dedupeKey: string, outcome: unknown): Promise<void>;
 }
 
@@ -62,6 +62,20 @@ export interface AmbiguousWriteResult {
   reason: "ambiguous_write";
   message: string;
 }
+
+/**
+ * A claim finding an EXISTING `pending` `sheet_write_log` row for this exact
+ * key: someone already started this exact write and we don't know how it
+ * ended (still genuinely in flight, or crashed after the write landed but
+ * before `complete()` recorded it). Never proceed to write again — surface
+ * the same ambiguous hedge a post-send-ambiguous client failure gets,
+ * without a second API call. Deliberately *not* recorded via `complete()`:
+ * this call did not originate the write, so it isn't authoritative over the
+ * row's eventual true outcome — stamping it here risks clobbering a later,
+ * genuine `complete()` call from whichever attempt actually owns this claim.
+ */
+const PENDING_CLAIM_MESSAGE =
+  "Sheets write may or may not have landed: a previous attempt for this exact write already started and never recorded completion — check the sheet before retrying.";
 
 export interface SheetsWriteSuccessResult {
   ok: true;
@@ -130,8 +144,15 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
         tool: TOOL_NAME,
         canonicalArgs: JSON.parse(canonicalArgsJson) as unknown,
       });
-      if (typeof claimResult === "object" && claimResult.alreadyComplete) {
+      if (typeof claimResult === "object" && "alreadyComplete" in claimResult) {
         return claimResult.outcome;
+      }
+      if (typeof claimResult === "object" && "alreadyPending" in claimResult) {
+        return {
+          ok: false,
+          reason: "ambiguous_write",
+          message: PENDING_CLAIM_MESSAGE,
+        } satisfies AmbiguousWriteResult;
       }
 
       const valueInputOption: ValueInputOption = overrideOption ?? resolved.entry.valueInputOption;

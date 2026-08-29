@@ -77,12 +77,19 @@ Two write methods (Phase 5), backing `sheets_write`:
   — `PUT /v4/spreadsheets/{spreadsheetId}/values/{range}?valueInputOption=...`.
 
 Own `classifyWrite`/`sendWriteRequestWithRetry`, separate from the read
-path's `classify`/`getWithRetry`: a fetch-level throw that isn't this
-client's own timeout `AbortError` is `preSendNetwork` (retryable, same
-posture as a 429); a 5xx or this client's own timeout is
-`postSendAmbiguous`, whose retry policy is supplied per call — see
-"`sheets_write` (Phase 5)" below for the per-mode split and
-`SheetsAmbiguousWriteError`.
+path's `classify`/`getWithRetry`: a fetch-level throw is `preSendNetwork`
+(retryable, same posture as a 429) only when `error.cause.code` is one of a
+small set of codes (`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`) that provably
+mean the connection itself never got established. Everything else — a 5xx,
+this client's own timeout `AbortError`, or a fetch-level throw whose
+`cause.code` is anything else (a post-send socket reset/close) or has no
+`cause` at all — is `postSendAmbiguous`, whose retry policy is supplied per
+call. This distinction matters because Node/undici raise both a genuinely
+pre-send failure and a post-send socket failure as the same indistinguishable
+`TypeError: fetch failed`; only `cause.code` tells them apart, and when it
+can't, the failure is treated as ambiguous (fail-safe), never as
+safe-to-retry. See "`sheets_write` (Phase 5)" below for the per-mode split
+and `SheetsAmbiguousWriteError`.
 
 ## Timeout rationale
 
@@ -149,6 +156,16 @@ write again. This table is also this plan's durable write audit for
 invariant 3: `telemetry_events` is buffered and at-most-once, so it can't be
 the audit of record for a mutation; claim-before-call plus a stored outcome
 can.
+
+A claim can also come back `{alreadyPending: true}` — the claim-to-complete
+crash window (`packages/store/README.md`): `complete()` never landed for a
+prior attempt at this exact key, so it's unknown whether that attempt's
+write actually reached Google. This is **not** fail-open: the handler never
+calls the Sheets API in this case, returning the same structured
+`{ok: false, reason: "ambiguous_write", ...}` hedge a post-send-ambiguous
+`appendValues` failure gets, without recording it via `complete()` (this
+call didn't originate the write, so it must not overwrite whatever the
+owning attempt eventually records).
 
 **Per-mode retryable-vs-ambiguous split** (settled decision 15) —
 `sheets-client.ts`'s `appendValues`/`updateValues` both retry a **pre-send**

@@ -432,9 +432,16 @@ allowed to proceed and write again.
   Three outcomes: the INSERT wins -> `"claimed"` (first call for this key);
   the row is `complete` -> `{alreadyComplete: true, outcome}`, the stored
   result of the original call, so the tool never calls the Sheets API again;
-  the row is still `pending` -> `"claimed"` again — the same fail-open
-  (retry, not permanently block) posture the "Claim-to-complete crash window"
-  section above documents for `llm_dedupe`.
+  the row is still `pending` -> `{alreadyPending: true}`. Unlike `llm_dedupe`,
+  this is **not** fail-open: a pending row for `sheet_write_log` means some
+  other call — possibly this exact write, still genuinely in flight, possibly
+  a prior attempt that crashed after the write landed but before
+  `completeSheetWrite` recorded it (the "Claim-to-complete crash window"
+  above) — already started this exact write, and a same-turn retry cannot
+  tell which. Returning `"claimed"` here would let the caller call the Sheets
+  API a second time, which can double an `append`; `sheets-write.ts` surfaces
+  `alreadyPending` as the same ambiguous "may or may not have landed" outcome
+  it uses for a post-send-ambiguous client failure, without writing again.
 - `completeSheetWrite(pool, dedupeKey, outcome)` (exported as `complete`,
   aliased the same way) — marks the row `complete` and stores `outcome`,
   retrievable by a later duplicate claim within the same turn.
