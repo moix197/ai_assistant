@@ -164,9 +164,11 @@ describe("sheets_write", () => {
           effectiveValueInputOption: "RAW",
         },
         summary: {
-          action: "¿Escribir en clients?",
+          action: "¿Agregar una fila a clients?",
           target: "Clients",
-          effects: [],
+          items: ["Jane, 555-0100"],
+          itemsTotal: 1,
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
         },
       });
     });
@@ -181,7 +183,10 @@ describe("sheets_write", () => {
 
       const result = await tool.prepare(APPEND_ARGS, CTX);
 
-      expect(result).toMatchObject({ ok: true, summary: { action: "¿Escribir en clients?" } });
+      expect(result).toMatchObject({
+        ok: true,
+        summary: { action: "¿Agregar una fila a clients?" },
+      });
       expect((result as { summary: { target?: string } }).summary.target).toBeUndefined();
     });
 
@@ -225,6 +230,143 @@ describe("sheets_write", () => {
       });
       expect(sheetsClient.appendValues).not.toHaveBeenCalled();
       expect(sheetsClient.updateValues).not.toHaveBeenCalled();
+    });
+
+    it("update mode: distinct verb, no A1 range anywhere in the summary (06-legible-approvals-bounded-reads Phase 5, settled decision 22)", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare({ ...APPEND_ARGS, mode: "update" as const }, CTX);
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          effectiveValueInputOption: "USER_ENTERED",
+        },
+        summary: {
+          action: "¿Reemplazar 1 fila en clients?",
+          target: "Clients",
+          items: ["Jane, 555-0100"],
+          itemsTotal: 1,
+          effects: ["Sobrescribe una fila que ya existe."],
+        },
+      });
+
+      // Grep-style: the update summary must never contain the A1 range the
+      // model sent, anywhere — not just eyeballed against the object shape
+      // above.
+      const summaryText = JSON.stringify((result as { summary: unknown }).summary);
+      expect(summaryText).not.toContain(APPEND_ARGS.range);
+      expect(summaryText).not.toMatch(/[A-Z]+\d+:[A-Z]+\d+/); // e.g. "A1:B1"
+    });
+
+    it("update mode with multiple rows: plural agreement in the question line", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(
+        {
+          ...APPEND_ARGS,
+          mode: "update" as const,
+          values: [
+            ["Jane", "555-0100"],
+            ["John", "555-0200"],
+          ],
+        },
+        CTX,
+      );
+
+      expect(result).toMatchObject({ summary: { action: "¿Reemplazar 2 filas en clients?" } });
+    });
+
+    it("row preview: caps at 3 rows, truncates each joined row to ~100 chars (per row, not per cell), and reports itemsTotal for the count line", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      // 40 short cells per row (well under 100 chars each) that only exceed
+      // the ~100-char cap once joined — proves truncation happens per row,
+      // after joining, not per cell.
+      const manyShortCells = Array.from({ length: 40 }, (_, i) => `c${i}`);
+      const values = [manyShortCells, ["Row2A", "Row2B"], ["Row3A", "Row3B"], ["Row4A", "Row4B"]];
+
+      const result = await tool.prepare({ ...APPEND_ARGS, values }, CTX);
+      const summary = (
+        result as {
+          summary: { action: string; items: string[]; itemsTotal?: number };
+        }
+      ).summary;
+
+      expect(summary.action).toBe("¿Agregar 4 filas a clients?");
+      expect(summary.items).toHaveLength(3);
+      const [firstItem, secondItem, thirdItem] = summary.items;
+      expect(firstItem).toHaveLength(101); // 100 chars + the ellipsis
+      expect(firstItem?.endsWith("…")).toBe(true);
+      expect(secondItem).toBe("Row2A, Row2B");
+      expect(thirdItem).toBe("Row3A, Row3B");
+      expect(summary.itemsTotal).toBe(4);
+    });
+
+    it("row preview: a 40-row batch shows only the first 3 rows, itemsTotal reflects the full count", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+      const values = Array.from({ length: 40 }, (_, i) => [
+        `Name${i}`,
+        `555-01${i.toString().padStart(2, "0")}`,
+      ]);
+
+      const result = await tool.prepare({ ...APPEND_ARGS, values }, CTX);
+      const summary = (
+        result as { summary: { action: string; items: string[]; itemsTotal?: number } }
+      ).summary;
+
+      expect(summary.action).toBe("¿Agregar 40 filas a clients?");
+      expect(summary.items).toEqual(["Name0, 555-0100", "Name1, 555-0101", "Name2, 555-0102"]);
+      expect(summary.itemsTotal).toBe(40);
+    });
+
+    it("zero-rows edge case: items is [] and itemsTotal is omitted (a degenerate but schema-permitted call)", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare({ ...APPEND_ARGS, values: [] }, CTX);
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          effectiveValueInputOption: "USER_ENTERED",
+        },
+        summary: {
+          action: "¿Agregar 0 filas a clients?",
+          target: "Clients",
+          items: [],
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      });
+      expect((result as { summary: { itemsTotal?: number } }).summary.itemsTotal).toBeUndefined();
     });
   });
 

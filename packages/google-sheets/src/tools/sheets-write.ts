@@ -105,6 +105,60 @@ export interface AmbiguousWriteResult {
 const PENDING_CLAIM_MESSAGE =
   "Sheets write may or may not have landed: a previous attempt for this exact write already started and never recorded completion — check the sheet before retrying.";
 
+/** Row-preview cap for the approval prompt (`06-legible-approvals-bounded-reads` Phase 5) — a tool-side content decision, not a gate-side rendering one. */
+const ROW_PREVIEW_MAX_ROWS = 3;
+const ROW_PREVIEW_CHAR_LIMIT = 100;
+
+const APPEND_MODE_EFFECT = "Agrega una fila nueva al final. No cambia nada de lo existente.";
+const UPDATE_MODE_EFFECT = "Sobrescribe una fila que ya existe.";
+
+/**
+ * The approval prompt's mode-specific question line — never the A1 `range`
+ * (settled decision 22), so `update`'s summary never leaks A1 notation. Uses
+ * natural Spanish singular/plural agreement (`una fila` / `N filas`) rather
+ * than the literal `fila(s)` placeholder, per the phase's own success-
+ * criteria examples (`¿Agregar una fila a Clients?`, `¿Reemplazar 1 fila en
+ * Clients?`) — those, not the shorthand in an earlier draft of this table,
+ * are the settled copy.
+ */
+function buildWriteAction(mode: "append" | "update", rowCount: number, slug: string): string {
+  if (mode === "append") {
+    return rowCount === 1
+      ? `¿Agregar una fila a ${slug}?`
+      : `¿Agregar ${rowCount} filas a ${slug}?`;
+  }
+  const fila = rowCount === 1 ? "fila" : "filas";
+  return `¿Reemplazar ${rowCount} ${fila} en ${slug}?`;
+}
+
+/**
+ * Joins one row's cells (comma-separated) then truncates the *joined* string
+ * to `ROW_PREVIEW_CHAR_LIMIT` — truncation happens per row, after joining,
+ * never per cell, so a row of many short cells still truncates as one unit.
+ */
+function formatRowPreview(row: Array<string | number | boolean>): string {
+  const joined = row.map((cell) => String(cell)).join(", ");
+  return joined.length > ROW_PREVIEW_CHAR_LIMIT
+    ? `${joined.slice(0, ROW_PREVIEW_CHAR_LIMIT)}…`
+    : joined;
+}
+
+/**
+ * The first `ROW_PREVIEW_MAX_ROWS` rows as preview lines, plus `itemsTotal`
+ * — omitted for the zero-row edge case (an empty `values` array, schema-
+ * permitted but degenerate) so the renderer's own `itemsTotal > items.length`
+ * check never fires a "…y N más" line for nothing to count. `itemsTotal` is
+ * otherwise always `values.length`, even when every row is already shown,
+ * per this phase's plan: the renderer's inequality check is the single
+ * source of truth for whether to print the count line.
+ */
+function buildRowItems(
+  values: Array<Array<string | number | boolean>>,
+): { items: string[] } | { items: string[]; itemsTotal: number } {
+  const items = values.slice(0, ROW_PREVIEW_MAX_ROWS).map(formatRowPreview);
+  return values.length > 0 ? { items, itemsTotal: values.length } : { items };
+}
+
 export interface SheetsWriteSuccessResult {
   ok: true;
   sheet: string;
@@ -237,7 +291,13 @@ async function prepareWrite(
   | {
       ok: true;
       plan: SheetsWritePlan;
-      summary: { action: string; target?: string; effects: string[] };
+      summary: {
+        action: string;
+        target?: string;
+        items: string[];
+        itemsTotal?: number;
+        effects: string[];
+      };
     }
 > {
   const parsed = args as z.infer<typeof schema>;
@@ -257,6 +317,9 @@ async function prepareWrite(
   const effectiveValueInputOption: ValueInputOption =
     parsed.valueInputOption ?? entry.valueInputOption;
 
+  const rowCount = parsed.values.length;
+  const modeEffect = parsed.mode === "append" ? APPEND_MODE_EFFECT : UPDATE_MODE_EFFECT;
+
   return {
     ok: true,
     plan: {
@@ -265,9 +328,10 @@ async function prepareWrite(
       effectiveValueInputOption,
     },
     summary: {
-      action: `¿Escribir en ${entry.slug}?`,
+      action: buildWriteAction(parsed.mode, rowCount, entry.slug),
       target: entry.description || undefined,
-      effects: [],
+      ...buildRowItems(parsed.values),
+      effects: [modeEffect],
     },
   };
 }

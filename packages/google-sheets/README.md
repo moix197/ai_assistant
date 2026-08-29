@@ -184,11 +184,37 @@ resolves the slug (`resolveSheet`, moved out of the handler) and, for a known,
 `readwrite`-access slug, returns `{ok: true, plan: SheetsWritePlan, summary}`
 — `SheetsWritePlan { sheetSlug, spreadsheetId, effectiveValueInputOption }`
 threads onto `ctx.plan` for the handler (no `access` field — by the time a
-plan exists, the sheet is provably `readwrite`), and `summary` (`{action:
-"¿Escribir en <slug>?", target: entry.description || undefined, effects:
-[]}`) is what the approval prompt actually renders (`apps/hermes`'s generic,
-tool-agnostic `ApprovalSummary` renderer — see `packages/agent/README.md`'s
-"The `prepare` hook"). Both of `resolveSheet`'s failure modes refuse the call
+plan exists, the sheet is provably `readwrite`), and `summary` is what the
+approval prompt actually renders (`apps/hermes`'s generic, tool-agnostic
+`ApprovalSummary` renderer — see `packages/agent/README.md`'s "The `prepare`
+hook").
+
+**Row preview cap + mode-specific copy (Phase 5) — all tool-side content
+decisions, the generic renderer needs zero changes:**
+
+- `action` is mode-specific and never contains the A1 `range` (settled
+  decision 22): `append` reads `¿Agregar una fila a ${slug}?` for one row or
+  `` `¿Agregar ${rowCount} filas a ${slug}?` `` for more than one; `update`
+  reads `` `¿Reemplazar ${rowCount} fila en ${slug}?` `` for one row (e.g.
+  `¿Reemplazar 1 fila en Clients?`) or `` `¿Reemplazar ${rowCount} filas en
+  ${slug}?` `` for more than one. Natural Spanish singular/plural agreement
+  is used throughout rather than a literal `fila(s)` placeholder — the
+  phase's own success-criteria examples settle this.
+- `effects[0]` is a fixed mode description, independent of row count:
+  `"Agrega una fila nueva al final. No cambia nada de lo existente."` for
+  `append`, `"Sobrescribe una fila que ya existe."` for `update`.
+- `items` previews at most the first 3 rows of `values`; each row's cells are
+  joined (`", "`-separated) *then* the joined string is truncated to ~100
+  chars with `…` — truncation is per row, after joining, never per cell, so
+  a row of many short cells still truncates as one unit.
+- `itemsTotal` is `values.length` whenever `values.length > 0` — present even
+  when every row is already shown in `items`, so the renderer's own
+  `itemsTotal > items.length` check is the single source of truth for
+  whether to print the "…y N más" count line. **Zero-row edge case**: an
+  empty `values` array (schema-permitted but degenerate) yields `items: []`
+  and `itemsTotal` **omitted** (not `0`) — the renderer then shows no
+  preview block and no count line, only the question and the mode-
+  description effect. Both of `resolveSheet`'s failure modes refuse the call
 *before* any prompt is sent, with their shapes unchanged: an unknown slug
 returns `{ok: false, result: resolved}` (`unknown_sheet`), and — as of Phase
 4 — a `read`-access sheet returns `{ok: false, result: {ok: false, reason:

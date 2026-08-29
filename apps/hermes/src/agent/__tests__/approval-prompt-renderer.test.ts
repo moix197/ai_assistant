@@ -116,6 +116,129 @@ describe("formatBatchPrompt", () => {
 
     expect(formatBatchPrompt(batch)).toBe("¿Escribir en clients?\n\n  Jane, 555-0100");
   });
+
+  it("renders the plan's golden-path 1-row append example verbatim (06-legible-approvals-bounded-reads Phase 5, settled decision 21's literal copy, minus the not-yet-added valueInputOption consequence sentence) — a hand-built ApprovalSummary, not a real sheets_write call", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: {
+          mode: "append",
+          sheet: "clients",
+          range: "A1:B1",
+          values: [["Test Uno", "1990-05-12"]],
+        },
+        summary: {
+          action: "¿Agregar una fila a Clients?",
+          target: "Registro de clientes 2026",
+          items: ["Test Uno, 1990-05-12"],
+          itemsTotal: 1,
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        "¿Agregar una fila a Clients?",
+        "Registro de clientes 2026",
+        "",
+        "  Test Uno, 1990-05-12",
+        "",
+        "Agrega una fila nueva al final. No cambia nada de lo existente.",
+      ].join("\n"),
+    );
+  });
+
+  it("renders a 40-row append's count line as '…y 37 más (40 en total).'", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: { mode: "append", sheet: "clients", range: "A1:B1", values: [] },
+        summary: {
+          action: "¿Agregar 40 filas a Clients?",
+          target: "Clients",
+          items: ["Name0, 555-0100", "Name1, 555-0101", "Name2, 555-0102"],
+          itemsTotal: 40,
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        "¿Agregar 40 filas a Clients?",
+        "Clients",
+        "",
+        "  Name0, 555-0100",
+        "  Name1, 555-0101",
+        "  Name2, 555-0102",
+        "  …y 37 más (40 en total).",
+        "",
+        "Agrega una fila nueva al final. No cambia nada de lo existente.",
+      ].join("\n"),
+    );
+  });
+
+  it("renders update-mode copy with a distinct verb and no A1-notation substring anywhere in the rendered prompt", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: {
+          mode: "update",
+          sheet: "clients",
+          range: "A2:B2",
+          values: [["Test Uno", "actualizado"]],
+        },
+        summary: {
+          action: "¿Reemplazar 1 fila en Clients?",
+          target: "Registro de clientes 2026",
+          items: ["Test Uno, actualizado"],
+          itemsTotal: 1,
+          effects: ["Sobrescribe una fila que ya existe."],
+        },
+      },
+    ];
+
+    const rendered = formatBatchPrompt(batch);
+
+    expect(rendered).toBe(
+      [
+        "¿Reemplazar 1 fila en Clients?",
+        "Registro de clientes 2026",
+        "",
+        "  Test Uno, actualizado",
+        "",
+        "Sobrescribe una fila que ya existe.",
+      ].join("\n"),
+    );
+    expect(rendered).not.toContain("A2:B2");
+    expect(rendered).not.toMatch(/[A-Z]+\d+:[A-Z]+\d+/);
+  });
+
+  it("empty-description fallback re-asserted against the richer items/effects shape: no target line, but items and effects still render", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: { mode: "append", sheet: "clients", range: "A1:B1", values: [["Jane", "555-0100"]] },
+        summary: {
+          action: "¿Agregar una fila a clients?",
+          items: ["Jane, 555-0100"],
+          itemsTotal: 1,
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        "¿Agregar una fila a clients?",
+        "",
+        "  Jane, 555-0100",
+        "",
+        "Agrega una fila nueva al final. No cambia nada de lo existente.",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("formatResolvedText", () => {
