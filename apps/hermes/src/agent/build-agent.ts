@@ -86,7 +86,10 @@ export interface BuiltAgent {
  * `TelegramApprovalGate` and wires it into `createAgent`'s deps. `whoamiTool`
  * (Phase 3) is built here too, with the same `pool`-backed
  * `buildGoogleAccountRepo` the OAuth connect flow already uses
- * (`boot.ts`'s `buildConnectFlow`), closed over via `createWhoamiTool`.
+ * (`boot.ts`'s `buildConnectFlow`), closed over via `createWhoamiTool` —
+ * which (05-google-sheets Phase 2) now wraps its handler in
+ * `withRequiredScopes`, the same decorator the Sheets tools (Phase 4/5) gate
+ * on, rather than checking scopes inline.
  */
 export function buildAgent(
   pool: Pool,

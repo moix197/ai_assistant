@@ -40,6 +40,22 @@ yes/no before they run. `04-google-auth` Phase 3 widened `ToolSpec.handler`'s
   (`src/agent/build-agent.ts`). Nothing here makes a second agent more than a
   second list entry away, but nothing here adds that entry either.
 
+`05-google-sheets` Phase 2 adds `apps/hermes/src/agent/with-required-scopes.ts`'s
+`withRequiredScopes` decorator, which wraps a tool's `ToolSpec.handler`
+behind a connected-account + required-scope check. It does **not** widen
+`ToolSpec.handler`'s `ctx` itself — this package's `ToolContext` (`{ signal,
+channel, channelUserId }`) is unchanged, and `packages/agent` still never
+imports `@hermes/google-auth` or `@hermes/store`. Instead
+`with-required-scopes.ts` defines its own `apps/hermes`-local
+`ScopedToolContext = ToolContext & { googleAccount }` and a parallel
+`ScopedToolSpec` whose `handler` expects that richer ctx; the decorator
+fetches the account once, and — only on success — calls the wrapped
+`ScopedToolSpec.handler` with the extended ctx, never assigning it to a bare
+`ToolSpec.handler` slot (TS's contravariant parameter checking would
+correctly reject that). A tool built this way (`whoami`, and the Sheets
+tools Phase 4/5 add) never calls `googleAccountRepo.getAccount` a second
+time inside its own handler — one DB read per tool invocation, not two.
+
 `packages/agent` depends only on `@hermes/core`, `@hermes/llm` (for
 `LlmProvider`/`CompletionRequest`/`ToolDefinition`/`MAX_TOKENS_PER_TURN`/
 `LlmAbortedError`), and `zod` — **never** `@hermes/store` or any

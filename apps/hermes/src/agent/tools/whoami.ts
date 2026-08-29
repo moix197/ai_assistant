@@ -1,55 +1,51 @@
 import type { ToolSpec } from "@hermes/agent";
-import { type GoogleAccountRepo, IDENTITY_SCOPES, hasRequiredScopes } from "@hermes/google-auth";
+import { type GoogleAccountRepo, IDENTITY_SCOPES } from "@hermes/google-auth";
 import { z } from "zod/v4";
+import type { ScopedToolSpec } from "../with-required-scopes";
+import { withRequiredScopes } from "../with-required-scopes";
 
 /**
- * `{ ok: false, reason: "..." }` on any failure path, never a throw — the
- * model relays these verbatim as "you're not connected, try /connect
- * google" or the missing-scope equivalent (`.ai/decisions/
- * google-oauth-flow.md`, settled decision 3's worked example). `scope` on
- * the missing-scope branch is a single space-joined string, not an array —
- * matches the shape `runTurn`'s `invokeTool` serializes non-string tool
- * results through (`JSON.stringify`), and reads cleanly relayed as text.
+ * `{ ok: true, email }` is the only shape this handler ever returns —
+ * `withRequiredScopes` has already rejected an unconnected or under-scoped
+ * account before this handler runs at all, and hands the already-fetched
+ * account through `ctx.googleAccount` — so this handler makes no database
+ * call of its own, it just projects the email off the account it was given.
  */
-type WhoamiResult =
-  | { ok: true; email: string }
-  | { ok: false; reason: "not_connected" }
-  | {
-      ok: false;
-      reason: "missing_scope";
-      scope: string;
-    };
+type WhoamiSuccess = { ok: true; email: string };
 
 /**
  * Identity check: "who am I connected as?" — the exit-criterion tool for
- * `04-google-auth`. Reads the `google_accounts` row already captured at
- * `/connect google` time; makes no live Google API call. `requiresApproval:
- * false` — a pure, idempotent read of an identity already consented to, not
- * a consequence (settled decision 3). Every account today requests
- * `IDENTITY_SCOPES` unconditionally, so the `missing_scope` branch is
- * unreachable via `/connect` this phase — it is still a real, executed
- * check (not a hollow always-true assertion), since it is the exact pattern
- * `TOOL_REQUIRED_SCOPES` establishes for later phases' partial-consent
- * tools. Uses `ctx.channel`/`ctx.channelUserId` — never a hardcoded
- * constant, so this tool works under whatever channel `AgentDefinition`
- * eventually adds beyond Telegram.
+ * `04-google-auth`. Reads no row itself: `ctx.googleAccount` is the
+ * `google_accounts` row `withRequiredScopes` already fetched and verified
+ * this same call. Makes no live Google API call. `requiresApproval: false`
+ * — a pure, idempotent read of an identity already consented to, not a
+ * consequence (settled decision 3).
  */
-export function createWhoamiTool(googleAccountRepo: GoogleAccountRepo): ToolSpec {
+function createBaseWhoamiTool(): ScopedToolSpec {
   return {
     name: "whoami",
     description:
       "Reports the Google account this chat is currently connected as, if any. Takes no arguments.",
     schema: z.object({}),
-    handler: async (_args, ctx): Promise<WhoamiResult> => {
-      const account = await googleAccountRepo.getAccount(ctx.channel, ctx.channelUserId);
-      if (!account) {
-        return { ok: false, reason: "not_connected" };
-      }
-      if (!hasRequiredScopes(account.scopes, IDENTITY_SCOPES)) {
-        return { ok: false, reason: "missing_scope", scope: IDENTITY_SCOPES.join(" ") };
-      }
-      return { ok: true, email: account.googleEmail };
+    handler: async (_args, ctx): Promise<WhoamiSuccess> => {
+      return { ok: true, email: ctx.googleAccount.googleEmail };
     },
     requiresApproval: false,
   };
+}
+
+/**
+ * `whoami` wrapped in `withRequiredScopes`, gating on `IDENTITY_SCOPES` —
+ * the pattern the Sheets tools (Phase 4/5) lean on, proven here first
+ * against a tool that already works. Uses `ctx.channel`/`ctx.channelUserId`
+ * — never a hardcoded constant, via the decorator — so this tool works
+ * under whatever channel `AgentDefinition` eventually adds beyond Telegram.
+ * `googleAccountRepo` is only ever read by the decorator now: one
+ * `getAccount` call per invocation, not two.
+ */
+export function createWhoamiTool(googleAccountRepo: GoogleAccountRepo): ToolSpec {
+  return withRequiredScopes("whoami", {
+    googleAccountRepo,
+    requiredScopes: IDENTITY_SCOPES,
+  })(createBaseWhoamiTool());
 }

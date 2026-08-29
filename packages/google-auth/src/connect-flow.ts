@@ -22,6 +22,15 @@ export interface StartConnectResult {
 
 export type CompleteConnectResult =
   | { ok: true; email: string; chatId: string }
+  /**
+   * A grant that satisfies identity but falls short of the pending
+   * connection's own requested scopes (e.g. `/connect google sheets` with
+   * Sheets unticked) — the account is still persisted with whatever was
+   * granted; `missingScopes` names what wasn't, for the caller to render as
+   * a partial-grant message. Never returned when nothing was requested
+   * beyond identity, since there is then nothing left to fall short of.
+   */
+  | { ok: true; email: string; chatId: string; missingScopes: string[] }
   | { ok: false; reason: "invalid_state" }
   | { ok: false; reason: "missing_scopes" };
 
@@ -119,12 +128,22 @@ export function createConnectFlow(deps: ConnectFlowDeps): ConnectFlow {
     // checkboxes, so a grant narrower than `IDENTITY_SCOPES` is a real
     // outcome — and one no row should be written for: a half-connected
     // account would pass every later `hasRequiredScopes` check and only fail
-    // as a 403 from Google at tool-call time.
+    // as a 403 from Google at tool-call time. Identity is non-negotiable
+    // regardless of what this pending connection requested.
     if (!hasRequiredScopes(sealed.grantedScopes, IDENTITY_SCOPES)) {
       return { ok: false, reason: "missing_scopes" };
     }
 
     await persistAccount(pending, sealed);
+
+    // What this connection asked for beyond identity (e.g. Sheets) but
+    // Google didn't grant — validated against the pending connection's own
+    // requested scopes, not a hardcoded constant, since a later phase's
+    // tool may request a different incremental scope entirely.
+    const missingScopes = pending.scopes.filter((scope) => !sealed.grantedScopes.includes(scope));
+    if (missingScopes.length > 0) {
+      return { ok: true, email: sealed.email, chatId: pending.chatId, missingScopes };
+    }
     return { ok: true, email: sealed.email, chatId: pending.chatId };
   }
 

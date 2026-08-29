@@ -33,7 +33,13 @@ export {
   type RefreshCoordinatorDeps,
   type RefreshFailureReason,
 } from "./refresh";
-export { hasRequiredScopes, IDENTITY_SCOPES, TOOL_REQUIRED_SCOPES } from "./scopes";
+export {
+  hasRequiredScopes,
+  IDENTITY_SCOPES,
+  resolveConnectScopes,
+  SHEETS_SCOPES,
+  TOOL_REQUIRED_SCOPES,
+} from "./scopes";
 export {
   openToken,
   sealToken,

@@ -12,7 +12,13 @@ export interface BuildAuthUrlOptions {
  * reconnect after a revoked/expired token must yield a fresh refresh token
  * too. PKCE (`code_challenge`/`S256`) rides alongside `state`; neither
  * substitutes for the other (Dependencies & Risks: "the callback's
- * authorization is the state nonce plus PKCE").
+ * authorization is the state nonce plus PKCE"). `include_granted_scopes:
+ * true` (the SDK's `boolean` option, serialized onto the authorize URL as
+ * the literal query value `"true"`) makes Google's response the
+ * authoritative accumulation: a user who already granted identity and now
+ * runs `/connect google sheets` gets back the *cumulative* grant in the
+ * token response's `scope`, so `completeConnect` never has to union scopes
+ * across connects itself (settled decision 8).
  */
 export function buildAuthUrl(client: OAuth2Client, options: BuildAuthUrlOptions): string {
   return client.generateAuthUrl({
@@ -22,6 +28,7 @@ export function buildAuthUrl(client: OAuth2Client, options: BuildAuthUrlOptions)
     state: options.state,
     code_challenge: options.codeChallenge,
     code_challenge_method: CodeChallengeMethod.S256,
+    include_granted_scopes: true,
   });
 }
 

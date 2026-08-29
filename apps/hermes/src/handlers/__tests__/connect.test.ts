@@ -44,6 +44,46 @@ describe("createConnectHandler", () => {
     expect(channel.send).toHaveBeenCalledWith("555", "https://accounts.google.com/fake");
   });
 
+  it("/connect google sheets requests both identity and spreadsheets scopes", async () => {
+    const channel = createMockChannel();
+    const connectFlow = fakeConnectFlow();
+    const handler = createConnectHandler(channel, connectFlow);
+
+    await handler(inboundMessage(), "google sheets");
+
+    expect(connectFlow.startConnect).toHaveBeenCalledWith("telegram", "111", "555", [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ]);
+    expect(channel.send).toHaveBeenCalledWith("555", "https://accounts.google.com/fake");
+  });
+
+  it("/connect google Sheets (mixed case, extra whitespace) still resolves to the sheets scope set", async () => {
+    const channel = createMockChannel();
+    const connectFlow = fakeConnectFlow();
+    const handler = createConnectHandler(channel, connectFlow);
+
+    await handler(inboundMessage(), "  google   Sheets  ");
+
+    expect(connectFlow.startConnect).toHaveBeenCalledWith("telegram", "111", "555", [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ]);
+  });
+
+  it("/connect google nonsense falls back to the usage-help branch, never calls startConnect", async () => {
+    const channel = createMockChannel();
+    const connectFlow = fakeConnectFlow();
+    const handler = createConnectHandler(channel, connectFlow);
+
+    await handler(inboundMessage(), "google nonsense");
+
+    expect(connectFlow.startConnect).not.toHaveBeenCalled();
+    expect(channel.send).toHaveBeenCalledWith("555", expect.stringContaining("/connect google"));
+  });
+
   it("/connect anything-else replies with usage help and never calls startConnect", async () => {
     const channel = createMockChannel();
     const connectFlow = fakeConnectFlow();

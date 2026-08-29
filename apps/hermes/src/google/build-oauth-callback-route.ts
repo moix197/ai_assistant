@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "@hermes/core";
-import type { ConnectFlow, PendingConnectionStore } from "@hermes/google-auth";
+import { type ConnectFlow, type PendingConnectionStore, SHEETS_SCOPES } from "@hermes/google-auth";
 
 /** Static — never echoes `code`, `state`, or any token material. */
 const CLOSE_TAB_HTML =
@@ -49,6 +49,31 @@ function sendHtml(
 ): void {
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers });
   res.end(html);
+}
+
+/**
+ * Known incremental scopes → the short human label used in the
+ * partial-grant message. Falls back to the raw scope string for anything not
+ * named here, so a future incremental scope still gets reported (if
+ * inelegantly) rather than silently mislabeled as "Sheets".
+ */
+const SCOPE_LABELS = new Map<string, string>(SHEETS_SCOPES.map((scope) => [scope, "Sheets"]));
+
+function describeScopes(scopes: string[]): string {
+  return scopes.map((scope) => SCOPE_LABELS.get(scope) ?? scope).join(", ");
+}
+
+/**
+ * `completeConnect`'s partial-grant branch (`missingScopes` present,
+ * `05-google-sheets` Phase 2): identity connected, but something else
+ * requested wasn't granted. Distinct from the plain success message — says
+ * plainly the account IS connected, names what specifically wasn't granted
+ * (derived from `missingScopes`, never hardcoded to "Sheets"), and how to
+ * retry — never silently equivalent to a full grant.
+ */
+function buildPartialGrantMessage(email: string, missingScopes: string[]): string {
+  const what = describeScopes(missingScopes);
+  return `Connected as ${email}. ${what} access wasn't granted — run /connect google sheets again and approve the ${what} permission to enable it.`;
 }
 
 function parseCallbackQuery(req: IncomingMessage): CallbackQuery {
@@ -112,7 +137,11 @@ async function handleBoundRequest(
     }
 
     sendHtml(res, 200, CLOSE_TAB_HTML);
-    await binding.notify(result.chatId, `Connected as ${result.email}.`);
+    const message =
+      "missingScopes" in result
+        ? buildPartialGrantMessage(result.email, result.missingScopes)
+        : `Connected as ${result.email}.`;
+    await binding.notify(result.chatId, message);
   } catch (error) {
     // `error.message` only, never the error object or its `cause`: a failed
     // token exchange rejects with a GaxiosError whose `config.data` holds

@@ -127,14 +127,53 @@ gets exactly one combined prompt, never two.
 — a pure, idempotent read of the Google identity already granted at
 `/connect google` time, not a consequence (`.ai/decisions/
 google-oauth-flow.md`'s settled decision 3). It makes no live Google API
-call: it projects `google_email` off the stored `google_accounts` row via
-the injected `GoogleAccountRepo`, checking `hasRequiredScopes` against
-`IDENTITY_SCOPES` — a real, executed check, not a hollow always-true one,
-even though every account today requests `IDENTITY_SCOPES` unconditionally
-so the `missing_scope` branch is unreachable via `/connect` this phase. Its
-failure paths (`{ ok: false, reason: "not_connected" }` /
-`{ ok: false, reason: "missing_scope", scope }`) are structured results, not
-thrown errors — the model relays them as chat text.
+call: it projects `google_email` off the stored `google_accounts` row.
+
+## Scope-gated tools (`withRequiredScopes`)
+
+`src/agent/with-required-scopes.ts` (`05-google-sheets` Phase 2) is the one
+decorator every Google-backed tool wraps its `ScopedToolSpec` in:
+`withRequiredScopes(toolName, { googleAccountRepo, requiredScopes })(spec)`
+returns a plain `ToolSpec` whose `handler` looks up the caller's account via
+`ctx.channel`/`ctx.channelUserId` **before** the wrapped handler runs at
+all — no token fetched, no API call on either failure branch (fail-closed,
+ROADMAP invariant 7). No account ⇒ `{ ok: false, reason: "not_connected" }`;
+connected but missing a required scope ⇒ `{ ok: false, reason:
+"missing_scope", scope, fix }`, where `fix` is derived from
+`requiredScopes` (`"run /connect google"` when identity alone is required,
+`"run /connect google sheets"` when a Sheets scope is) rather than hardcoded
+to Sheets — a tool gating on identity alone gets the right instruction, not
+a Sheets-flavored one. Otherwise the account is fetched exactly **once**:
+it's threaded into the wrapped handler via `ctx.googleAccount`
+(`ScopedToolContext = ToolContext & { googleAccount }`) rather than making
+the wrapped handler re-fetch it, so a scoped tool never issues two
+`getAccount` calls per invocation. `spec.handler`'s result otherwise passes
+through unchanged. Both failure shapes are structured results, not thrown
+errors, so the model relays them as chat text. `toolName` is asserted
+against the wrapped spec's own `name` at decoration time — a mismatch
+(wiring `requiredScopes` to the wrong tool) throws immediately rather than
+silently gating the wrong tool.
+
+`ScopedToolSpec`'s `handler` type (`(args, ctx: ScopedToolContext) =>
+Promise<unknown>`) is never assignable to a bare `ToolSpec.handler` slot —
+`packages/agent`'s `ToolContext` is unchanged by this decorator, and the
+extension lives entirely in this file, matching the D4 boundary
+(`packages/agent` never imports `@hermes/google-auth`). `withRequiredScopes`
+is the only bridge between the two: it builds the extended ctx itself and
+calls the scoped handler with it directly, never via a cast. See
+`packages/agent/README.md`'s Port contract section for the `ctx` contract
+this relies on.
+
+`whoami` is refactored onto this decorator
+(`withRequiredScopes("whoami", { googleAccountRepo, requiredScopes:
+IDENTITY_SCOPES })`) to prove the pattern against a tool that already
+works, before the Sheets tools (Phase 4/5) lean on it for their own gating —
+`whoami`'s own handler now assumes an already-verified, already-connected
+account (read off `ctx.googleAccount`, never re-fetched) and just projects
+the email. `TOOL_REQUIRED_SCOPES` (`@hermes/google-auth`) is a tool name →
+required scopes reference map; `withRequiredScopes` call sites pass
+`requiredScopes` explicitly rather than looking it up, so the map stays
+documentation until a future phase decides to make it authoritative.
 
 - **In-memory only, never persisted.** A pending approval lives in a
   `Map<approvalId, ...>` inside the gate's closure. Restarting the process
@@ -236,6 +275,23 @@ dependency on the advisory lock.
 - `complete.ts` — the dispatcher's fallthrough and the only handler that
   spends money. Claims `telegram:<updateId>` in `llm_dedupe` before the
   agent turn and marks it completed after the reply lands.
+- `connect.ts` — `/connect google` requests `IDENTITY_SCOPES`; `/connect
+  google sheets` (`05-google-sheets` Phase 2, case-insensitive, whitespace
+  trimmed) requests identity plus `SHEETS_SCOPES`. Both forms and the
+  malformed-argument fallback resolve through `@hermes/google-auth`'s
+  `resolveConnectScopes`, which returns `undefined` for anything else so the
+  handler falls back to its usage-help message rather than requesting the
+  wrong scopes. The resolved list is passed straight into
+  `connectFlow.startConnect`; the OAuth callback route
+  (`src/google/build-oauth-callback-route.ts`) is what later calls
+  `completeConnect` and notifies the chat. A full grant sends "Connected as
+  `<email>`." unchanged from `04-google-auth`. A partial grant
+  (`completeConnect`'s result carries `missingScopes` — identity connected,
+  Sheets wasn't) sends a distinct message instead: "Connected as `<email>`.
+  Sheets access wasn't granted — run /connect google sheets again and
+  approve the Sheets permission to enable it." Either way the account is
+  already persisted by the time this message is sent — `completeConnect`
+  only reaches `ok: true` (full or partial) after `persistAccount` runs.
 - `disconnect.ts` (`04-google-auth` Phase 3) — `/disconnect` removes the
   sender's `google_accounts` row and confirms. Thin wiring only, mirroring
   `stats.ts`'s shape; no arguments. Idempotent by construction:

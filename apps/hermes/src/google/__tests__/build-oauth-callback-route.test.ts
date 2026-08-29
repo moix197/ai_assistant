@@ -85,6 +85,71 @@ describe("createOauthCallbackRoute", () => {
     expect(notify).toHaveBeenCalledWith("chat-1", "Connected as person@example.com.");
   });
 
+  it("a partial-grant completeConnect (identity connected, Sheets missing) still serves the close-tab page but notifies with a distinct message naming the shortfall and the retry command", async () => {
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
+    const notify = vi.fn().mockResolvedValue(undefined);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(
+          vi.fn().mockResolvedValue({
+            ok: true,
+            email: "person@example.com",
+            chatId: "chat-1",
+            missingScopes: ["https://www.googleapis.com/auth/spreadsheets"],
+          }),
+        ),
+        notify,
+      }),
+    );
+    await listen(route.handleRequest);
+
+    const response = await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`);
+    const html = await response.text();
+
+    // The close-tab page and 200 status are exactly what a full grant gets —
+    // the account IS connected, unlike an `ok: false` rejection — only the
+    // notify text differs. `completeConnect` itself only reaches `ok: true`
+    // (full or partial) after persisting the account (`connect-flow.ts`), so
+    // this response confirms the same persisted-account path ran here too.
+    expect(response.status).toBe(200);
+    expect(html).toContain("close this tab");
+    // The exact shipped wording for the Sheets-only case — unchanged by
+    // deriving it from `missingScopes` instead of hardcoding "Sheets".
+    expect(notify).toHaveBeenCalledWith(
+      "chat-1",
+      "Connected as person@example.com. Sheets access wasn't granted — run /connect google sheets again and approve the Sheets permission to enable it.",
+    );
+  });
+
+  it("a partial grant naming more than one missing scope lists every one of them, not just Sheets", async () => {
+    const route = createOauthCallbackRoute({ logger: createMockLogger() });
+    const notify = vi.fn().mockResolvedValue(undefined);
+    route.bind(
+      binding({
+        connectFlow: fakeConnectFlow(
+          vi.fn().mockResolvedValue({
+            ok: true,
+            email: "person@example.com",
+            chatId: "chat-1",
+            missingScopes: [
+              "https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/some-future-scope",
+            ],
+          }),
+        ),
+        notify,
+      }),
+    );
+    await listen(route.handleRequest);
+
+    await fetch(`${baseUrl}/oauth/callback?code=abc&state=def`);
+
+    expect(notify).toHaveBeenCalledWith(
+      "chat-1",
+      "Connected as person@example.com. Sheets, https://www.googleapis.com/auth/some-future-scope access wasn't granted — run /connect google sheets again and approve the Sheets, https://www.googleapis.com/auth/some-future-scope permission to enable it.",
+    );
+  });
+
   it("a failed completeConnect serves a generic failure page and never calls notify", async () => {
     const route = createOauthCallbackRoute({ logger: createMockLogger() });
     const notify = vi.fn().mockResolvedValue(undefined);

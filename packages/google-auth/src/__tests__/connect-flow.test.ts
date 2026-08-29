@@ -1,8 +1,9 @@
 import type { Clock } from "@hermes/core";
-import type { OAuth2Client } from "google-auth-library";
+import { OAuth2Client } from "google-auth-library";
 import { describe, expect, it, vi } from "vitest";
 import type { GoogleAccount, GoogleAccountRepo } from "../account-repo-port";
 import { createConnectFlow } from "../connect-flow";
+import { buildAuthUrl } from "../oauth-client";
 import { createPendingConnectionStore } from "../pending-connections";
 import { IDENTITY_SCOPES } from "../scopes";
 import { openToken } from "../token-crypto";
@@ -112,6 +113,33 @@ describe("createConnectFlow", () => {
     ]);
   });
 
+  it("persists the account on a partial grant (identity only) when Sheets was also requested, flagging the shortfall", async () => {
+    const repo = fakeRepo();
+    const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
+    const flow = createConnectFlow({
+      oauthClient: fakeOAuthClient({ grantedScope: GRANTED_ALL }),
+      repo,
+      cryptoKey: CRYPTO_KEY,
+      pendingStore: createPendingConnectionStore(FIXED_CLOCK),
+      clock: FIXED_CLOCK,
+    });
+
+    const { state } = flow.startConnect("telegram", "user-1", "chat-1", [
+      ...IDENTITY_SCOPES,
+      SHEETS_SCOPE,
+    ]);
+    const result = await flow.completeConnect(state, "code");
+
+    expect(result).toEqual({
+      ok: true,
+      email: "person@example.com",
+      chatId: "chat-1",
+      missingScopes: [SHEETS_SCOPE],
+    });
+    expect(repo.upsertAccount).toHaveBeenCalledTimes(1);
+    expect(repo.accounts[0]?.scopes).toEqual(IDENTITY_SCOPES);
+  });
+
   it("rejects a grant missing an identity scope and persists nothing", async () => {
     const repo = fakeRepo();
     const flow = createConnectFlow({
@@ -213,5 +241,30 @@ describe("createConnectFlow", () => {
     const { state } = flow.startConnect("telegram", "user-1", "chat-1", ["openid"]);
 
     await expect(flow.completeConnect(state, "code")).rejects.toThrow("db is down");
+  });
+});
+
+describe("buildAuthUrl", () => {
+  it("includes the literal include_granted_scopes=true query param, alongside every other existing option unchanged", () => {
+    const client = new OAuth2Client({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      redirectUri: "https://hermes.example.com/oauth/callback",
+    });
+
+    const url = buildAuthUrl(client, {
+      scopes: ["openid", "https://www.googleapis.com/auth/userinfo.email"],
+      state: "state-1",
+      codeChallenge: "challenge-1",
+    });
+
+    const params = new URL(url).searchParams;
+    expect(params.get("include_granted_scopes")).toBe("true");
+    expect(params.get("access_type")).toBe("offline");
+    expect(params.get("prompt")).toBe("consent");
+    expect(params.get("state")).toBe("state-1");
+    expect(params.get("code_challenge")).toBe("challenge-1");
+    expect(params.get("code_challenge_method")).toBe("S256");
+    expect(params.get("scope")).toBe("openid https://www.googleapis.com/auth/userinfo.email");
   });
 });

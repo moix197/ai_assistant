@@ -26,18 +26,27 @@ seals and opens an envelope.
   any in-flight connection, the same tradeoff the approval gate's own
   pending map accepts; the operator re-runs `/connect google`.
 - `createConnectFlow(deps)` — `startConnect(channel, channelUserId, chatId,
-  scopes)` mints PKCE + state, records the pending entry, and returns the
-  Google authorize URL. `completeConnect(state, code)` consumes the pending
-  entry (invalid/expired/replayed state all return `{ ok: false, reason:
+  scopes)` mints PKCE + state, records the pending entry (including the
+  requested `scopes`), and returns the Google authorize URL (built with
+  `include_granted_scopes: "true"` — see "Scope registry" below).
+  `completeConnect(state, code)` consumes the pending entry
+  (invalid/expired/replayed state all return `{ ok: false, reason:
   "invalid_state" }`), exchanges `code` for tokens using the stored PKCE
   verifier, seals both tokens into one envelope, and upserts the account via
   the injected `GoogleAccountRepo`. The account's `scopes` are the ones
   Google's token response **granted** (its space-delimited `scope`), never the
   ones `startConnect` requested — granular consent lets a user deselect
-  individual checkboxes. A grant that doesn't cover `IDENTITY_SCOPES` returns
-  `{ ok: false, reason: "missing_scopes" }` and writes no row. The
-  authorization `code` and the raw tokens never appear in a log line or a
-  return value anywhere in this package.
+  individual checkboxes. Identity is non-negotiable regardless of what was
+  requested: a grant that doesn't cover `IDENTITY_SCOPES` returns
+  `{ ok: false, reason: "missing_scopes" }` and writes no row. Anything else
+  the *pending connection itself* requested (e.g. `SHEETS_SCOPES` via
+  `/connect google sheets`) but Google didn't grant is a **partial grant**,
+  not a rejection: the account is still persisted with whatever was granted,
+  and the result carries a `missingScopes: string[]` field alongside the
+  usual `ok: true, email, chatId` — `{ ok: true, email, chatId,
+  missingScopes }` — for the caller to render as a distinct "connected, but
+  Sheets wasn't granted" message. The authorization `code` and the raw tokens
+  never appear in a log line or a return value anywhere in this package.
 
 ## Token envelope
 
@@ -56,14 +65,27 @@ row.
 
 ## Scope registry
 
-`IDENTITY_SCOPES` (`openid`, `userinfo.email`) is the only scope this phase's
-`/connect google` requests. `hasRequiredScopes(granted, required)` and
-`TOOL_REQUIRED_SCOPES` (a tool name → required scopes map, seeded this phase
-with only `whoami`) are the primitive later phases build incremental consent
-on: a tool whose required scopes aren't yet granted returns a structured
-`{ ok: false, reason: "missing_scope", scope }` for the model to relay as
-"run /connect google", never a live escalation prompt the agent itself
-raises.
+`IDENTITY_SCOPES` (`openid`, `userinfo.email`) is what bare `/connect google`
+requests. `SHEETS_SCOPES` (`spreadsheets`) is the incremental scope
+`/connect google sheets` requests on top of identity —
+`resolveConnectScopes(argument)` maps the `/connect` sub-argument (`""` or
+`"sheets"`, case-insensitive, whitespace-trimmed) to the resulting
+requested-scope list, returning `undefined` for anything else so the caller
+falls back to its usage-help message. `hasRequiredScopes(granted, required)`
+and `TOOL_REQUIRED_SCOPES` (a tool name → required scopes map, seeded since
+`04-google-auth` with only `whoami`) are the primitives later phases build
+incremental consent on: a tool whose required scopes aren't yet granted
+returns a structured `{ ok: false, reason: "missing_scope", scope }` for the
+model to relay as "run /connect google", never a live escalation prompt the
+agent itself raises.
+
+`buildAuthUrl` sets `include_granted_scopes: "true"` on the authorize URL, so
+a user who already granted identity and now runs `/connect google sheets`
+gets back the **cumulative** grant in the token response — Google's own
+accounting is authoritative, and `completeConnect` never unions scopes across
+connects itself. `upsertAccount` keeps its existing plain-overwrite
+semantics: the persisted `scopes` are exactly what the latest `completeConnect`
+call was granted.
 
 ## Token refresh (`refresh.ts`)
 

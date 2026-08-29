@@ -47,6 +47,10 @@ describe("whoami tool", () => {
 
     expect(result).toEqual({ ok: true, email: "person@example.com" });
     expect(repo.getAccount).toHaveBeenCalledWith("telegram", "111");
+    // withRequiredScopes fetches the account once, on the gate check, and
+    // threads it through ctx.googleAccount — whoami's own handler must not
+    // read it again.
+    expect(repo.getAccount).toHaveBeenCalledTimes(1);
   });
 
   it("returns { ok: false, reason: 'not_connected' }, never a throw, when no account exists", async () => {
@@ -58,18 +62,10 @@ describe("whoami tool", () => {
     expect(result).toEqual({ ok: false, reason: "not_connected" });
   });
 
-  it("returns { ok: false, reason: 'missing_scope', scope } for an account row directly constructed without the identity scope", async () => {
-    const repo = fakeRepo(fakeAccount({ scopes: ["some-other-scope"] }));
-    const whoamiTool = createWhoamiTool(repo);
-
-    const result = await whoamiTool.handler({}, CTX);
-
-    expect(result).toEqual({
-      ok: false,
-      reason: "missing_scope",
-      scope: "openid https://www.googleapis.com/auth/userinfo.email",
-    });
-  });
+  // The "connected but missing identity scope" case (previously unreachable
+  // via `/connect`, per `04-google-auth`'s own note) is now exercised once,
+  // generically, by `with-required-scopes.test.ts` — this decorator is the
+  // thing that produces that branch now, not `whoami.ts` itself.
 
   it("never trips createAgent's assertApprovalGateConfigured — requiresApproval: false needs no approvalGate at construction", () => {
     const whoamiTool = createWhoamiTool(fakeRepo(undefined));
