@@ -11,6 +11,7 @@ import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config
 import { type Logger, createLogger, systemClock } from "@hermes/core";
 import {
   type ConnectFlow,
+  type GoogleAccount,
   type GoogleAccountRepo,
   type PendingConnectionStore,
   type RefreshCoordinator,
@@ -18,6 +19,7 @@ import {
   createGoogleRefreshAccessToken,
   createPendingConnectionStore,
   createRefreshCoordinator,
+  openToken,
 } from "@hermes/google-auth";
 import { type SheetWriteLogPort, createSheetsClient } from "@hermes/google-sheets";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
@@ -476,6 +478,17 @@ export interface MessageHandlerDeps {
    * other Google-gated dependency here follows.
    */
   refreshCoordinator: RefreshCoordinator | undefined;
+  /**
+   * Decrypts a connected account's stored token envelope down to its
+   * refresh token — the narrow capability `/disconnect`'s handler needs to
+   * revoke the grant at Google before deleting the local row, injected
+   * instead of the raw `cryptoKey` so every other handler here doesn't also
+   * gain visibility into key material it has no reason to touch. `undefined`
+   * when Google's all-or-none env group is unset — the same "cleanly
+   * absent, not a boot failure" contract `connectFlow`/`refreshCoordinator`
+   * above follow.
+   */
+  decryptRefreshToken: ((account: GoogleAccount) => string) | undefined;
 }
 
 /**
@@ -502,6 +515,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     telemetryRecorder,
     connectFlow,
     refreshCoordinator,
+    decryptRefreshToken,
   } = deps;
   const providerProfiles = buildProviderProfiles(config);
   const llmProvider = buildLlmProvider(
@@ -536,7 +550,10 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
       ),
       connectHandler: createConnectHandler(channel, connectFlow),
       statusHandler: createStatusHandler(channel, buildGoogleAccountRepo(pool)),
-      disconnectHandler: createDisconnectHandler(channel, buildGoogleAccountRepo(pool)),
+      disconnectHandler: createDisconnectHandler(channel, buildGoogleAccountRepo(pool), {
+        decryptRefreshToken,
+        logger,
+      }),
       completionHandler: createCompletionHandler({
         channel,
         agent,
@@ -655,6 +672,30 @@ function buildGoogleRefreshCoordinator(config: Env): RefreshCoordinator | undefi
 }
 
 /**
+ * Builds the decrypt-refresh-token capability `MessageHandlerDeps.
+ * decryptRefreshToken` carries — the narrow seam `/disconnect`'s handler
+ * needs to revoke the grant at Google before deleting the local row,
+ * instead of threading the raw `cryptoKey` through every handler. Constructs
+ * its own `OAuth2Client`/`cryptoKey` via `buildGoogleOAuthClient`, the same
+ * stateless-per-call reasoning `buildGoogleRefreshCoordinator`'s own doc
+ * comment gives for not sharing `buildConnectFlow`'s instance — there is no
+ * correctness reason to share this one either. `undefined` when Google's
+ * all-or-none env group is unset, the same "cleanly absent, not a boot
+ * failure" contract those two follow.
+ */
+function buildDecryptRefreshToken(config: Env): ((account: GoogleAccount) => string) | undefined {
+  const googleOAuth = buildGoogleOAuthClient(config);
+  if (!googleOAuth) return undefined;
+
+  return function decryptRefreshToken(account: GoogleAccount): string {
+    const stored = JSON.parse(openToken(account.tokenEnvelope, googleOAuth.cryptoKey)) as {
+      refreshToken: string;
+    };
+    return stored.refreshToken;
+  };
+}
+
+/**
  * Builds the boot-owned refresh sweep (Phase 4) over the shared
  * `RefreshCoordinator` `wireRuntimeAndShutdown` passes in, or `undefined`
  * when `coordinator` is `undefined` (Google's all-or-none env group unset)
@@ -752,6 +793,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
   signal: AbortSignal,
   connectFlow: ConnectFlow | undefined,
   refreshCoordinator: RefreshCoordinator | undefined,
+  decryptRefreshToken: ((account: GoogleAccount) => string) | undefined,
 ): TelemetryRecorderHandle {
   const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
@@ -764,6 +806,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
     telemetryRecorder,
     connectFlow,
     refreshCoordinator,
+    decryptRefreshToken,
   });
 
   return telemetryRecorder;
@@ -811,6 +854,11 @@ function wireRuntimeAndShutdown(
   // AccessTokenPort below — see buildGoogleRefreshCoordinator's doc comment.
   const refreshCoordinator = buildGoogleRefreshCoordinator(config);
 
+  // The narrow decrypt capability /disconnect's handler needs — see
+  // buildDecryptRefreshToken's doc comment for why this isn't just the raw
+  // cryptoKey threaded through MessageHandlerDeps.
+  const decryptRefreshToken = buildDecryptRefreshToken(config);
+
   const google = buildConnectFlow(pool, config);
   if (google) {
     oauthCallbackRoute.bind({
@@ -830,6 +878,7 @@ function wireRuntimeAndShutdown(
     shutdownController.signal,
     google?.connectFlow,
     refreshCoordinator,
+    decryptRefreshToken,
   );
 
   // Constructed and started here, strictly after acquireInstanceLockOrExit

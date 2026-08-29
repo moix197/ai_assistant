@@ -23,6 +23,7 @@ export {
   type PendingConnection,
   type PendingConnectionStore,
 } from "./pending-connections";
+export { revokeToken, type RevokeTokenOptions } from "./revoke";
 export {
   createRefreshCoordinator,
   type GetValidAccessTokenResult,

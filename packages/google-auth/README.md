@@ -140,5 +140,33 @@ second "force refresh" function.
   `getValidAccessToken` from outside `boot()` (a standalone script, a second
   worker process) would share neither this map nor that guarantee.
 
+## Revoke (`revoke.ts`, `05-google-sheets` Phase 6)
+
+`revokeToken(refreshToken, { logger, fetchImpl? })` calls Google's OAuth2
+revoke endpoint (`POST https://oauth2.googleapis.com/revoke?token=<refreshToken>`),
+built on `@hermes/core`'s shared `withHttpRetry` — the same retrying-fetch
+primitive `@hermes/google-sheets`' client and `@hermes/llm`'s adapter use, not
+a bare `fetch`.
+
+**Never throws.** `apps/hermes/src/handlers/disconnect.ts`'s contract is
+"attempt revoke, then delete the local row regardless": a network failure or
+timeout is retried once, then logged (`warn`) and swallowed; a non-2xx
+response (Google already applied the request — e.g. an already-revoked or
+invalid token) is logged and swallowed immediately, never retried. Either
+way `revokeToken` resolves, so a revoke failure never blocks or changes the
+local disconnect, and the user-facing "Disconnected." reply is identical
+regardless of whether the grant actually left Google.
+
+`refreshToken` itself never appears in a log line or a thrown error's
+message — the same discipline `04-google-auth` Phase 2 applies to the
+authorization code in `oauth-client.ts`/`connect-flow.ts`. `disconnect.ts`
+decrypts the stored envelope (via `openToken`, same as `refresh.ts`) only in
+memory for this one call; `packages/store` never sees the plaintext.
+
+The refresh-sweep's `invalid_grant` disconnect path (`markDisconnected`,
+"Token refresh" above) does not call `revokeToken`: by the time that path
+runs, Google has already told Hermes the refresh token is revoked or
+expired, so there is nothing live left to revoke.
+
 See `.ai/decisions/google-oauth-flow.md`, `.ai/decisions/google-token-encryption.md`,
 and `.ai/decisions/google-token-refresh.md`.

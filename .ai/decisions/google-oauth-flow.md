@@ -131,30 +131,39 @@ context entirely.
   ([architecture](../architecture.md#boot-and-shutdown-order)); the mutable
   holder costs one small indirection instead.
 
-**Deferred (decided, not an oversight): `/disconnect` does not revoke at
-Google.**
+**Closed out (`05-google-sheets` Phase 6): `/disconnect` now revokes at
+Google.** `createDisconnectHandler` (`apps/hermes/src/handlers/disconnect.ts`)
+decrypts the stored refresh token and calls `@hermes/google-auth`'s
+`revokeToken` (`POST https://oauth2.googleapis.com/revoke`) before
+`repo.deleteAccount` — resolving the "revoke failure has no decided fallback"
+question below as: **always delete locally regardless**. `revokeToken` never
+throws — any failure (network, timeout, or a non-2xx response) is logged and
+swallowed — so the local disconnect and its reply never depend on whether the
+grant actually left Google. The sweep's `invalid_grant` path
+(`markDisconnected`) still does not revoke: by the time that path runs, the
+refresh token has already failed at Google (revoked, expired, or invalid), so
+there is nothing live left to revoke. See
+`packages/google-auth/README.md`'s "Revoke" section for the full design.
 
-`createDisconnectHandler` calls `repo.deleteAccount` and nothing else. Hermes
-forgets the account and every stored token becomes unreachable, but the
-*grant itself stays live* in the user's Google account permissions page until
-they remove it there. Same for the sweep's `invalid_grant` path, which
-removes the row without a revoke call.
+The paragraphs below record the original deferral rationale, kept for
+context on *why* this shipped as a separate phase rather than inside
+`04-google-auth`:
 
-Deliberately deferred, because:
+`createDisconnectHandler` used to call `repo.deleteAccount` and nothing else.
+Hermes forgot the account and every stored token became unreachable, but the
+*grant itself stayed live* in the user's Google account permissions page
+until they removed it there.
 
-- **It is outside this plan's scope.** `04-google-auth` scoped `/disconnect`
+Deliberately deferred at the time, because:
+
+- **It was outside `04-google-auth`'s scope.** That plan scoped `/disconnect`
   as the local inverse of `/connect`; a revoke is an outbound call to a third
-  party, with its own failure modes, and was never designed here.
-- **Revoke failure has no decided fallback.** If `POST
+  party, with its own failure modes, and was never designed there.
+- **Revoke failure had no decided fallback.** If `POST
   https://oauth2.googleapis.com/revoke` fails (network, already-revoked,
-  rate-limited), the handler must choose: keep the row and refuse to
+  rate-limited), the handler had to choose: keep the row and refuse to
   disconnect, delete anyway and strand a live grant, or retry in the
-  background. Each is a real design decision with user-visible consequences,
-  and picking one silently is worse than not shipping the call.
-
-Until it ships, `/disconnect`'s contract is exactly "Hermes forgets you," not
-"your Google access is withdrawn" — anything user-facing that implies the
-stronger meaning is wrong.
+  background. `05-google-sheets` Phase 6 picks "delete anyway" — see above.
 
 **Constraints it creates:**
 

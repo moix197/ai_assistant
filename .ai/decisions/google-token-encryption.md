@@ -103,6 +103,18 @@ re-envelope scheme already pays the re-consent/re-seal cost, so AAD rides
 along for free at that point. The `v` field exists precisely so that change
 needs no migration.
 
+**Re-confirmed (`05-google-sheets` Phase 6).** By this phase a stolen token's
+blast radius covers Sheets read/write, not just identity — still exploitable
+only via database *write* access, the same precondition the deferral above
+already assumes, so the reasoning is unchanged. Phase 6 also adds
+`revokeToken` (`packages/google-auth/src/revoke.ts`), which decrypts a
+refresh token to call Google's revoke endpoint — it opens the *same* envelope
+this file already governs, through the existing `openToken` seam, and holds
+the plaintext only in memory for the one outbound call (never logged, never
+returned — see that file's own doc comment). This does not change the AAD
+deferral's calculus: the decrypted value still never leaves this process's
+memory or crosses the `packages/store` opacity boundary.
+
 **Constraints it creates:**
 
 - Any future code touching Google tokens must go through `sealToken`/

@@ -405,12 +405,19 @@ here in `apps/hermes`.
   approve the Sheets permission to enable it." Either way the account is
   already persisted by the time this message is sent — `completeConnect`
   only reaches `ok: true` (full or partial) after `persistAccount` runs.
-- `disconnect.ts` (`04-google-auth` Phase 3) — `/disconnect` removes the
-  sender's `google_accounts` row and confirms. Thin wiring only, mirroring
-  `stats.ts`'s shape; no arguments. Idempotent by construction:
-  `deleteAccount` is a plain `DELETE ... WHERE`, so a second call against an
-  already-disconnected chat affects zero rows and still replies the same
-  confirming text, never a throw.
+- `disconnect.ts` (`04-google-auth` Phase 3; revoke added `05-google-sheets`
+  Phase 6) — `/disconnect` first attempts to revoke the OAuth grant at
+  Google (best-effort — decrypts the stored refresh token and calls
+  `@hermes/google-auth`'s `revokeToken`, which never throws), then removes
+  the sender's `google_accounts` row and confirms. Idempotent by
+  construction: `deleteAccount` is a plain `DELETE ... WHERE`, so a second
+  call against an already-disconnected chat finds no account to revoke,
+  affects zero rows, and still replies the same confirming text, never a
+  throw. The decrypt capability (`MessageHandlerDeps.decryptRefreshToken`,
+  built by `boot.ts`'s `buildDecryptRefreshToken`) is injected narrowly —
+  only `disconnect.ts` receives it, rather than threading the raw
+  `cryptoKey` through every handler. See
+  `packages/google-auth/README.md`'s "Revoke" section for the full design.
 - `echo.ts` — echoes back the message text. **No longer wired**; kept in the
   tree as a documented reference/fallback after `complete.ts` took its place
   as the fallthrough.
