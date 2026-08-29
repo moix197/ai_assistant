@@ -57,6 +57,33 @@ describe("createSheetsClient", () => {
     expect(result).toEqual({ sheets: [] });
   });
 
+  it("getSpreadsheetMeta quotes an all-digit tab title, since A1 notation would otherwise misparse it as a row reference", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          sheets: [{ properties: { sheetId: 0, title: "2024" } }],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { sheets: [] }));
+    const client = createSheetsClient({ fetchImpl });
+
+    await client.getSpreadsheetMeta("secret-token", "sheet-abc");
+
+    const [dataUrl] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(dataUrl).toContain("ranges='2024'!1%3A1");
+  });
+
+  it("getSpreadsheetMeta returns the empty-tabs result instead of throwing when the properties response omits `sheets`", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(200, {}));
+    const client = createSheetsClient({ fetchImpl });
+
+    const result = await client.getSpreadsheetMeta("secret-token", "sheet-abc");
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({});
+  });
+
   it("getValues requests the right URL (spreadsheetId, range, valueRenderOption) and Authorization header", async () => {
     const fetchImpl = vi
       .fn()

@@ -188,7 +188,7 @@ export interface CreateSheetsClientOptions {
  * an edge case.
  */
 function quoteSheetTitle(title: string): string {
-  return /^\w+$/.test(title) ? title : `'${title.replace(/'/g, "''")}'`;
+  return /^[A-Za-z_]\w*$/.test(title) ? title : `'${title.replace(/'/g, "''")}'`;
 }
 
 /** Thin `fetch`-based client over the Sheets v4 REST API — no `googleapis`, no new third-party HTTP client (settled decision 20). */
@@ -206,7 +206,7 @@ export function createSheetsClient(opts: CreateSheetsClientOptions = {}): Sheets
         signal,
       )) as SheetMeta;
 
-      const titles = propertiesOnly.sheets.map((sheet) => sheet.properties.title);
+      const titles = (propertiesOnly.sheets ?? []).map((sheet) => sheet.properties.title);
       if (titles.length === 0) return propertiesOnly;
 
       const fields = "sheets.properties,sheets.data.rowData.values.formattedValue";
