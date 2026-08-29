@@ -385,6 +385,88 @@ describe("sheets_write", () => {
       });
       expect((result as { summary: { itemsTotal?: number } }).summary.itemsTotal).toBeUndefined();
     });
+
+    it("USER_ENTERED write with a flagged value gains the valueInputOption consequence sentence as effects' final entry (06-legible-approvals-bounded-reads Phase 6, settled decision 21's literal final prompt shape)", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([
+          fakeEntry({ description: "Registro de clientes 2026", valueInputOption: "USER_ENTERED" }),
+        ]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(
+        { ...APPEND_ARGS, values: [["Test Uno", "1990-05-12"]] },
+        CTX,
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          effectiveValueInputOption: "USER_ENTERED",
+        },
+        summary: {
+          action: "¿Agregar una fila a clients?",
+          target: "Registro de clientes 2026",
+          items: ["Test Uno, 1990-05-12"],
+          itemsTotal: 1,
+          effects: [
+            "Agrega una fila nueva al final. No cambia nada de lo existente.",
+            '"1990-05-12" se guardará como fecha.',
+          ],
+        },
+      });
+    });
+
+    it("RAW write with the same flagged-looking value produces no consequence line at all — byte-identical to Phase 5 (settled decision 26's named case)", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([
+          fakeEntry({ description: "Registro de clientes 2026", valueInputOption: "RAW" }),
+        ]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(
+        { ...APPEND_ARGS, values: [["Test Uno", "1990-05-12"]] },
+        CTX,
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          effectiveValueInputOption: "RAW",
+        },
+        summary: {
+          action: "¿Agregar una fila a clients?",
+          target: "Registro de clientes 2026",
+          items: ["Test Uno, 1990-05-12"],
+          itemsTotal: 1,
+          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+        },
+      });
+    });
+
+    it("USER_ENTERED write with no flagged values adds no consequence line — unaffected by Phase 6", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ valueInputOption: "USER_ENTERED" })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(APPEND_ARGS, CTX);
+
+      expect((result as { summary: { effects: string[] } }).summary.effects).toEqual([
+        "Agrega una fila nueva al final. No cambia nada de lo existente.",
+      ]);
+    });
   });
 
   it("handler reads ctx.plan instead of re-resolving the sheet — the registry is queried exactly once per call, not twice", async () => {

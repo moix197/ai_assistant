@@ -7,6 +7,7 @@ import {
   type SheetsWriteResult,
   type ValueInputOption,
 } from "../sheets-client";
+import { detectValueInputConsequence } from "../value-input-consequence";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const TOOL_NAME = "sheets_write";
@@ -329,6 +330,10 @@ async function prepareWrite(
 
   const rowCount = parsed.values.length;
   const modeEffect = parsed.mode === "append" ? APPEND_MODE_EFFECT : UPDATE_MODE_EFFECT;
+  const valueInputConsequence = detectValueInputConsequence(
+    parsed.values,
+    effectiveValueInputOption,
+  );
 
   return {
     ok: true,
@@ -341,7 +346,7 @@ async function prepareWrite(
       action: buildWriteAction(parsed.mode, rowCount, entry.slug),
       target: entry.description || undefined,
       ...buildRowItems(parsed.values),
-      effects: [modeEffect],
+      effects: [modeEffect, ...(valueInputConsequence ? [valueInputConsequence] : [])],
     },
   };
 }

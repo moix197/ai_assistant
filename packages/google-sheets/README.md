@@ -236,6 +236,34 @@ own inline `access !== "readwrite"` check (Phase 3) has been deleted as dead
 code — `prepare` is the only path that can reach the handler, and it never
 does so with a disallowed sheet.
 
+**`valueInputOption` consequence sentence (Phase 6) — the prompt's final
+piece, a `prepare`-side content decision beside the row-preview logic
+above:** `value-input-consequence.ts`'s `detectValueInputConsequence(values,
+effectiveValueInputOption)` is a small, pure, tool-side detector —
+`RAW` short-circuits to `null` before any per-cell scan (`RAW` never
+reinterprets a cell's content, so there's nothing to warn about); for
+`USER_ENTERED`, it scans every cell in row-major order for a leading
+`=`/`+`/`-`/`@` (always a formula risk, checked first and regardless of the
+other heuristics — settled decision 19), a date-shaped string
+(`YYYY-MM-DD` or `DD/MM/YYYY`), a purely numeric string with a leading zero,
+or a thousands/decimal-separator-formatted number, and returns a sentence
+naming the *first* flagged cell (e.g. `"1990-05-12" se guardará como
+fecha.`, `"=A1+1" se guardará como fórmula.`). Its result is appended to
+`effects` (via conditional spread) as the entry after the mode description,
+`null` adding nothing — a `RAW` write, or a `USER_ENTERED` write with no
+flagged values, is byte-identical to Phase 5's prompt. **Deliberately tuned
+to over-flag**: a false positive costs one redundant sentence; a false
+negative risks a silently corrupted value the human never had a chance to
+catch — see the detector's own tests for a worked example (a leading-zero
+code a human might not expect Sheets to touch, flagged anyway). Like the
+row-preview cap, the flagged value is whitespace-collapsed and length-capped
+before being quoted into the prompt, for the identical newline-injection
+reason `formatRowPreview` already guards against. Lives in this package,
+not `apps/hermes`, for the same reason the row-preview logic does: the
+generic `apps/hermes/src/agent/approval-prompt-renderer.ts` renderer needs
+zero changes — this is one more `effects` entry, nothing new for it to lay
+out.
+
 **Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
 names the sheet by its registry description (or the slug, when the
 description is empty) but does not yet show a before/after diff or column
