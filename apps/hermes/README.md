@@ -243,8 +243,9 @@ one step earlier — wrapped in `{ ok: false, result }`, since that is what
 `ToolPreparation` calls a refusal — so an unconnected or under-scoped user is
 never shown an approval prompt for a call already destined to fail. The
 `prepare` slot is forwarded via conditional spread, so a `ScopedToolSpec`
-without one still produces a `ToolSpec` without one. Both failure shapes are structured results, not thrown
-errors, so the model relays them as chat text. `toolName` is asserted
+without one still produces a `ToolSpec` without one. Both failure
+shapes are structured results, not thrown errors, so the model relays
+them as chat text. `toolName` is asserted
 against the wrapped spec's own `name` at decoration time — a mismatch
 (wiring `requiredScopes` to the wrong tool) throws immediately rather than
 silently gating the wrong tool.
