@@ -565,26 +565,26 @@ already works.
 
 **Steps:**
 
-- [ ] Confirm `/connect google` (bare) is byte-for-byte behaviorally
+- [x] Confirm `/connect google` (bare) is byte-for-byte behaviorally
       unchanged — same scopes requested, same success message shape — before
       writing the `"sheets"` branch; a regression here breaks
       `04-google-auth`'s exit criterion silently
-- [ ] `include_granted_scopes` correctness: write a test asserting the
+- [x] `include_granted_scopes` correctness: write a test asserting the
       built authorize URL contains the literal query param, and that its
       presence doesn't change any other existing URL-building assertion
-- [ ] The partial-grant branch: write a test where `exchangeCode` returns
+- [x] The partial-grant branch: write a test where `exchangeCode` returns
       `grantedScopes` = identity only despite Sheets being requested, and
       assert `completeConnect` still persists the account (no `ok: false`)
       but the result flags the shortfall — the handler-side message is the
       caller's job, `completeConnect`'s job is only reporting what happened
-- [ ] `withRequiredScopes` must genuinely gate before any handler work runs
+- [x] `withRequiredScopes` must genuinely gate before any handler work runs
       — write the test as "wrapped handler is a spy that must be called
       exactly zero times" for both failure branches, not just "the wrapped
       handler's result never surfaces"
 - [ ] Confirm `whoami`'s refactor changes no observable behavior: re-run
       `04-google-auth`'s existing manual exit-criterion check (`/connect
       google` → `whoami` → real email) against the refactored tool
-- [ ] Grep `apps/hermes/src/agent/tools/whoami.ts` after the refactor to
+- [x] Grep `apps/hermes/src/agent/tools/whoami.ts` after the refactor to
       confirm the inline `hasRequiredScopes` import and check are actually
       gone, not left dead alongside the new decorator
 
@@ -600,10 +600,10 @@ already works.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] `pnpm lint` green
 - [ ] Manual: `/connect google` still connects identity-only exactly as
       before (regression check against `04-google-auth`'s exit criterion)
 - [ ] Manual: `/connect google sheets` → complete consent granting both
@@ -617,14 +617,14 @@ already works.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: scope upgrade for /connect google sheets, withRequiredScopes decorator`
+- [x] Changes committed: `feat: scope upgrade for /connect google sheets, withRequiredScopes decorator`
 - [ ] Phase marked complete
 
 ---
