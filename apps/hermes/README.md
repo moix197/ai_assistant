@@ -150,22 +150,62 @@ gated (`echo`, `sheets_write`) — see "Approval gate" below.
 of gated calls, with **Aprobar**/**Rechazar** buttons — a batch of two gated
 calls in one model turn still gets exactly one combined prompt, never two.
 
-As of `06-legible-approvals-bounded-reads` Phase 3, the prompt is no longer
-uniformly raw JSON: a tool can declare `ToolSpec.prepare(args, ctx)`
-(`packages/agent/src/types.ts`), which resolves before the prompt is ever
-sent and returns either a refusal (skips the prompt entirely — the call
-resolves immediately, no human asked) or a `plan` (threaded onto the
-handler's `ctx.plan`) plus an `ApprovalSummary` the prompt renders instead of
-raw JSON. `sheets_write` is the first tool to declare one: its prompt now
-reads like `¿Escribir en clients?` followed by the sheet's registered
-description, not the raw `mode`/`range`/`values` args. `echo` still declares
-no `prepare`, so it renders exactly as before — the raw-JSON fallback line
-(`apps/hermes/src/agent/approval-prompt-renderer.ts`'s `formatBatchPrompt`,
-extracted from this file this phase) is unchanged, and any future
-`prepare`-less tool falls back to it too. Full documentation of the prompt
-shape lands in Phase 8, once richer `items`/`effects` content exists
-(Phases 5/6); this note only corrects the now-false "raw args, unchanged"
-claim for `sheets_write` specifically.
+As of `06-legible-approvals-bounded-reads`, that prompt is no longer
+uniformly raw JSON. A tool can declare `ToolSpec.prepare(args, ctx)`
+(`packages/agent/src/types.ts`), which the loop resolves *before* the prompt
+is built and which returns either a refusal — the call resolves immediately,
+no human is ever asked — or a `plan` (threaded onto the handler's `ctx.plan`)
+plus an `ApprovalSummary` the prompt renders in place of raw JSON.
+`sheets_write` is the one tool that declares one today; `echo` does not.
+
+`src/agent/approval-prompt-renderer.ts` (extracted out of
+`telegram-approval-gate.ts`) turns a batch into prompt text with **zero**
+per-tool knowledge — every Sheets-specific word in the example below comes
+from `sheets_write`'s own `prepare` (`packages/google-sheets`), not from this
+renderer. A call with a usable summary renders as `action` (the question,
+line 1), `target` (line 2, when present), a blank line, the preview `items`
+indented two spaces plus a `…y N más (M en total).` line when `itemsTotal`
+exceeds what is shown, a blank line, then one line per `effects` entry; empty
+sections are dropped rather than left as dangling blank lines. A
+`sheets_write` append of five rows reads:
+
+```
+¿Agregar 5 filas a clients?
+Clientes activos y su contacto
+
+  Ana Pérez, ana@example.com, 1990-05-12
+  Bruno Díaz, bruno@example.com, 1988-11-03
+  Carla Ruiz, carla@example.com, 1995-02-27
+  …y 2 más (5 en total).
+
+Agrega una fila nueva al final. No cambia nada de lo existente.
+"1990-05-12" se guardará como fecha.
+```
+
+One row instead of five reads `¿Agregar una fila a clients?`, and `mode:
+"update"` reads `¿Reemplazar una fila en clients?` / `¿Reemplazar 3 filas en
+clients?` over the effect line `Sobrescribe una fila que ya existe.` — natural
+Spanish agreement in both modes, never a literal `fila(s)`. The preview is
+capped at the first three rows, each joined and truncated to ~100 chars with
+its whitespace collapsed. The last line is the `valueInputOption` consequence
+sentence, present only when the write's effective option is `USER_ENTERED`
+*and* a cell looks like something Sheets would reinterpret. The A1 `range` is
+deliberately never shown.
+
+Rendering is **per call**, not per batch: a call whose `prepare` produced a
+usable summary renders the block above, and a call without one — no
+`prepare` at all, or a summary whose `action` came back empty — falls back to
+that call's raw-JSON line, `- tool({"args":…})`. A mixed batch shows both,
+one block per call separated by a blank line, so one prepare-less call never
+drags the whole batch back to raw JSON. The `The model wants to run:` header
+survives for exactly one case: every call in the batch falling back, where
+the prompt stays byte-identical to the pre-plan format minus its trailing
+"Approve or deny?" question — the Aprobar/Rechazar buttons already ask it.
+
+Nothing `prepare` resolved beyond that summary reaches the chat. The gate
+logs each ready call's raw args and its resolved `plan` (for `sheets_write`:
+the `spreadsheetId` and the effective `valueInputOption`) at **debug** level
+right before sending, off by default in production.
 
 `whoami` (`04-google-auth` Phase 3) is deliberately `requiresApproval: false`
 — a pure, idempotent read of the Google identity already granted at
@@ -192,7 +232,18 @@ it's threaded into the wrapped handler via `ctx.googleAccount`
 (`ScopedToolContext = ToolContext & { googleAccount }`) rather than making
 the wrapped handler re-fetch it, so a scoped tool never issues two
 `getAccount` calls per invocation. `spec.handler`'s result otherwise passes
-through unchanged. Both failure shapes are structured results, not thrown
+through unchanged.
+
+As of `06-legible-approvals-bounded-reads`, the decorator wraps a declared
+`prepare` the same way it wraps `handler` (`ScopedToolSpec<P>` mirrors
+`ToolSpec<P>`'s plan type; the shared `checkScopeGate` helper is what keeps
+the two wraps from duplicating the decision, and each invocation still costs
+exactly one `getAccount`). The refusal shapes are identical, just reachable
+one step earlier — wrapped in `{ ok: false, result }`, since that is what
+`ToolPreparation` calls a refusal — so an unconnected or under-scoped user is
+never shown an approval prompt for a call already destined to fail. The
+`prepare` slot is forwarded via conditional spread, so a `ScopedToolSpec`
+without one still produces a `ToolSpec` without one. Both failure shapes are structured results, not thrown
 errors, so the model relays them as chat text. `toolName` is asserted
 against the wrapped spec's own `name` at decoration time — a mismatch
 (wiring `requiredScopes` to the wrong tool) throws immediately rather than
@@ -366,10 +417,13 @@ true`, see "Approval gate" above). Full design lives in
 `@hermes/google-sheets`'s own README; this section covers only what's wired
 here in `apps/hermes`.
 
-- **Access enforcement runs before any dedupe claim or API call.** A sheet
-  registered `read` (or unknown) is refused (`{ok: false, reason:
-  "read_only_sheet"}`) before `sheet_write_log` is ever touched and before
-  an access token is ever fetched — proved by
+- **Access enforcement runs before the approval prompt, let alone any dedupe
+  claim or API call.** As of `06-legible-approvals-bounded-reads` Phase 4
+  both of `resolveSheet`'s failure modes live in `sheets_write`'s `prepare`:
+  an unknown slug (`{ok: false, reason: "unknown_sheet", available}`) and a
+  sheet registered `read` (`{ok: false, reason: "read_only_sheet"}`) are
+  refused before a human is asked anything, before `sheet_write_log` is ever
+  touched, and before an access token is ever fetched — proved by
   `packages/google-sheets/src/tools/__tests__/sheets-write.test.ts`
   asserting zero calls to the dedupe port and the Sheets client on that
   path.

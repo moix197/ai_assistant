@@ -130,7 +130,11 @@ each tool is read from `@hermes/google-auth`'s `TOOL_REQUIRED_SCOPES` map
 site, so a tool's scope requirement is declared once. None of the three
 tools checks scopes itself, and none calls the Sheets API (or even fetches
 an access token) for an unconnected or under-scoped account — the gate runs
-first and short-circuits before this package's handler is ever invoked.
+first and short-circuits before this package's handler is ever invoked. For
+`sheets_write`, which also declares a `prepare` hook (below), the decorator
+wraps that hook too — `withRequiredScopes<SheetsWritePlan>("sheets_write",
+…)` at the wiring site — so the scope refusal lands before the approval
+prompt, not just before the handler.
 
 ## Bounded results — `truncate.ts`
 
@@ -154,9 +158,10 @@ note` alongside the (now-shorter) `values`. `totalRows` is `(result.values ??
 range, **not** the requested range's nominal size (`values.get` only returns
 rows with data — `A1:Z1000` against a 40-row sheet returns 40 rows, not 1000
 padded with empties). `totalColumns` is computed from the original,
-pre-truncation `values`, not the truncated slice. `note` is Spanish, since
-it's model-facing text the model typically relays to the same
-Spanish-speaking user, consistent with this plan's other language decisions.
+pre-truncation `values`, not the truncated slice. `note` is `"El rango es muy
+grande — pide un rango más chico para ver el resto."` — Spanish, since it's
+model-facing text the model typically relays to the same Spanish-speaking
+user, consistent with this plan's other language decisions.
 
 `sheets_inspect` calls the same helper over its tab summaries (measuring
 each tab's `headerRow.length` and its `JSON.stringify` length) — **tab
@@ -165,8 +170,12 @@ wide-header) spreadsheet can't dominate model context either. Results are
 additive the same way: an untruncated inspect is byte-identical to today. A
 truncated inspect adds `truncated: true, returnedTabs, totalTabs, note`
 alongside the (now-shorter) `tabs`, with wording distinct from `sheets_read`'s
-note (tabs vs. rows) so the model doesn't conflate the two in its reply. As
-with `sheets_read`, a single oversized tab (e.g. a very wide header row) is
+note (tabs vs. rows) so the model doesn't conflate the two in its reply:
+`"La planilla tiene más pestañas de las que se muestran acá — solo se listan
+las primeras."` It deliberately suggests **no** remedy, unlike `sheets_read`'s
+note: `sheets_inspect` takes only a slug, so there is no narrower request to
+make — an earlier draft advising a retry was dropped as actively misleading.
+As with `sheets_read`, a single oversized tab (e.g. a very wide header row) is
 still returned whole rather than dropped, since `truncateBySize` always keeps
 the first item.
 
@@ -248,7 +257,15 @@ other heuristics — settled decision 19), a date-shaped string
 (`YYYY-MM-DD` or `DD/MM/YYYY`), a purely numeric string with a leading zero,
 or a thousands/decimal-separator-formatted number, and returns a sentence
 naming the *first* flagged cell (e.g. `"1990-05-12" se guardará como
-fecha.`, `"=A1+1" se guardará como fórmula.`). Its result is appended to
+fecha.`, `"=A1+1" se guardará como fórmula.`). It classifies the **trimmed**
+cell text, because Sheets itself trims surrounding whitespace before parsing:
+`" 1990-05-12"` really does become a date under `USER_ENTERED`, and matching
+the anchored patterns against the untrimmed string would under-flag it. The
+value it *displays* is not the trimmed one — it is the original, with quote
+characters stripped, whitespace runs collapsed, and a ~60-char cap — so the
+human still sees the actual value, whitespace anomaly included, and a crafted
+cell can neither break out of the sentence's quoting nor inject extra lines
+into the prompt. Its result is appended to
 `effects` (via conditional spread) as the entry after the mode description,
 `null` adding nothing — a `RAW` write, or a `USER_ENTERED` write with no
 flagged values, is byte-identical to Phase 5's prompt. **Deliberately tuned
@@ -281,6 +298,12 @@ it can narrate the before→after change in its reply (e.g. "cambié el
 teléfono de X a Y") instead of just confirming the write happened.
 `mode: "append"` never reads at all — there's nothing to snapshot.
 
+**A successful snapshot always sets `replaced`, even to `[]`.** An update over
+a range that was genuinely empty reports `replaced: []`; only a *failed*
+snapshot omits the key entirely. That asymmetry is the point — "there was
+nothing there before" and "we could not find out what was there" are different
+facts, and the model must not narrate the second as the first.
+
 The read is deliberately **cosmetic, not load-bearing**: it runs strictly
 *after* the dedupe claim and `getAccessToken` (no second claim, no second
 token fetch), and a failure is non-fatal — caught, logged via
@@ -303,12 +326,15 @@ existing `sheetWriteLogRepo.complete(dedupeKey, outcome)` call records
 whatever the eventual success `outcome` object contains — Phase 7 just adds
 fields to that object before `complete()` sees it.
 
-**Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
-names the sheet by its registry description (or the slug, when the
-description is empty) but does not yet show a before/after diff or column
-headers as row labels — that needs a pre-approval Google API read, deferred
-to later work (see `plans/06-legible-approvals-bounded-reads.md`'s Context).
-Tracked in `.ai/decisions/approval-gate-design.md`.
+**Known gap, deliberately deferred (Tier 2):** `target` is the sheet's
+registry `description`, and is **omitted** when that description is empty —
+the slug itself is already in `action`, so an empty description costs a line
+of context, not the sheet's identity. What the prompt still does not show is
+a before→after diff of the rows being replaced, or the tab's column headers
+used as labels for the previewed cells. Both need a Google API read *before*
+the human is asked, which `prepare` deliberately does not do today. Tracked in
+`.ai/decisions/approval-gate-design.md`; rationale in
+`plans/06-legible-approvals-bounded-reads.md`'s Context.
 
 **The args schema is a flat `z.object`, not a `z.discriminatedUnion("mode",
 …)`.** A root-level union converts to a top-level `anyOf` with no

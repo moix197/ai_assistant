@@ -283,20 +283,38 @@ Sheets tools. What matters is *how many refusals happen before any network I/O*
 ```
  tool call: sheets_read { sheet: "clients", range: "A1:D50" }
    │
+   ▼  WRITE ONLY: packages/agent  prepareGatedCall — runs BEFORE the prompt
+   │  │  (safeParse first, then ToolSpec.prepare, raced against timeoutMs;
+   │  │   a throw/timeout/abort ⇒ {ok:false, reason:"prepare_failed"})
+   │  │
+   │  ├─ apps/hermes  withRequiredScopes wraps prepare too
+   │  │    no account / missing scope ⇒ the same refusal the handler's wrap
+   │  │    returns, one step earlier — NO prompt sent
+   │  │
+   │  ├─ packages/google-sheets  sheets_write's prepare
+   │  │    resolveSheet unknown  ⇒ {ok:false, reason:"unknown_sheet", ...}
+   │  │    entry.access !== "readwrite" ⇒ {ok:false, reason:"read_only_sheet"}
+   │  │      both refuse fail-closed, BEFORE any human is asked
+   │  │    otherwise ⇒ plan {sheetSlug, spreadsheetId,
+   │  │                      effectiveValueInputOption}  →  ctx.plan
+   │  │              + ApprovalSummary  →  the legible prompt
+   │  │
+   │  ▼  ApprovalGate.requestApproval (survivors only; skipped if none)
+   │        denied / timed out / aborted ⇒ "user did not approve"
+   │
    ▼  apps/hermes  withRequiredScopes(name, {googleAccountRepo, requiredScopes})
    │     no account, or granted scopes ⊉ TOOL_REQUIRED_SCOPES.get(name)
    │     ⇒ {ok:false, reason:"missing_scope", fix:"run /connect google sheets"}
    │        NO token fetched, NO API call, handler never entered  (invariant 7)
    │
    ▼  packages/google-sheets  the base ToolSpec's handler
-   │  ├─ resolveSheet(SheetRegistryPort, "clients")   ← reads sheet_registry
+   │  ├─ READ ONLY: resolveSheet(SheetRegistryPort, "clients")
+   │  │    ← reads sheet_registry
    │  │    LIVE, every call, no cache: an operator edit lands on the next
    │  │    tool call, not the next restart
    │  │    unknown ⇒ {ok:false, reason:"unknown_sheet", available:[...]}
+   │  │    WRITE: already resolved in prepare — read off ctx.plan, never again
    │  │
-   │  ├─ WRITE ONLY: entry.access !== "readwrite"
-   │  │    ⇒ {ok:false, reason:"read_only_sheet"}   ← before the claim, before
-   │  │                                                any API call
    │  ├─ WRITE ONLY: SheetWriteLogPort.claim(sha256(channel, userId, turnId,
    │  │    tool, canonical args))  →  packages/store  →  sheet_write_log
    │  │      alreadyComplete ⇒ return the STORED outcome, no API call
@@ -307,10 +325,19 @@ Sheets tools. What matters is *how many refusals happen before any network I/O*
    │  │      →  refresh (single-flight) persists via UPDATE-only
    │  │         updateRefreshedTokens  →  packages/store  →  google_accounts
    │  │
+   │  ├─ WRITE ONLY, mode "update": one getValues snapshot of the range about
+   │  │    to be overwritten (still via the client's shared retry) — non-fatal,
+   │  │    logged and skipped on failure  →  result.replaced
+   │  │
    │  ▼  sheets-client.ts  →  withHttpRetry  →  Sheets v4 REST
    │        read:  retries freely (GET is idempotent)
    │        write: pre-send failure retries; post-send is per-mode —
    │               PUT retries once internally, :append never does
+   │
+   │     READ RESULTS ARE BOUNDED HERE, client-side, after the response:
+   │     truncateBySize (500 cells / 4 000 chars, whole rows for sheets_read,
+   │     whole tabs for sheets_inspect, whole rows for `replaced`) adds
+   │     truncated/returned*/total*/note only when it actually cut something
    │
    ▼  WRITE ONLY: resolve the claim
         success / ambiguous ⇒ complete(outcome)      ← the durable audit
@@ -319,11 +346,18 @@ Sheets tools. What matters is *how many refusals happen before any network I/O*
 ```
 
 The whole handler is bounded by `ToolSpec.timeoutMs` (30s for these three,
-against the 10s default); the client's own `REQUEST_TIMEOUT_MS` (10s) bounds
-one HTTP attempt inside it. `sheets_write` additionally sits behind the
-`ApprovalGate`, which runs in `loop.ts` *before* any of the above. See
+against the 10s default), and the same bound is what `prepare` races under;
+the client's own `REQUEST_TIMEOUT_MS` (10s) bounds one HTTP attempt inside
+either. The top block is `sheets_write`-only: reads are ungated, so they skip
+straight to the scope gate. What moved there in
+`06-legible-approvals-bounded-reads` is the *read-only refusal* — it used to
+sit in the handler, after a human had already been asked to approve a write
+that could not run; it is now a `prepare` refusal that never sends a prompt at
+all, alongside the unknown-slug refusal that always short-circuited. See
 [google-sheets-scope-and-registry](decisions/google-sheets-scope-and-registry.md),
-[sheets-write-dedupe-as-audit](decisions/sheets-write-dedupe-as-audit.md) and
+[sheets-write-dedupe-as-audit](decisions/sheets-write-dedupe-as-audit.md),
+[tool-prepare-hook](decisions/tool-prepare-hook.md),
+[bounded-tool-results](decisions/bounded-tool-results.md) and
 [per-tool-timeout](decisions/per-tool-timeout.md).
 
 The `llm.call` event that rides alongside that write is deliberately **not** the

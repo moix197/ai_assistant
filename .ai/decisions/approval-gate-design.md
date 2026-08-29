@@ -18,9 +18,14 @@ is persisted.
   Telegram-shaped lives in `apps/hermes`. The cost of that boundary is the
   `targetResolver` stopgap below.
 - **One prompt for the batch, not one per call.** A response requesting three
-  gated calls produces one message with one Approve/Deny pair, and the decision
-  applies to all of them. Three prompts for one model response is a worse
-  experience for no extra safety at this size.
+  gated calls produces one message with one Aprobar/Rechazar pair (Spanish
+  labels since `06-legible-approvals-bounded-reads`; the callback tokens
+  underneath are still `approve`/`deny`), and the decision applies to all of
+  them. Three prompts for one model response is a worse experience for no
+  extra safety at this size. The *body* of that one message is rendered per
+  call, though: a call whose `prepare` produced a summary renders legibly and
+  a call without one falls back to its own raw-JSON line, so one prepare-less
+  call never drags the whole batch back to JSON.
 - **Resolution is exactly one code path with three triggers** — a tap, the
   timeout, or the turn's `AbortSignal` firing. Whichever fires first deletes the
   `pending` map entry **synchronously, before any `await`**, which is what makes
@@ -95,23 +100,41 @@ is persisted.
   `requestApproval` runs. Any future consumer that needs `threadId → chatId`
   *outside* a live turn must add the reverse lookup to `ThreadRepo` rather than
   widening this index.
-- **The prompt shows the model's raw args, so a `sheets_write` approver cannot
-  see the whole stake — OPEN, deliberately deferred (`05-google-sheets` Phase
-  5).** `ApprovalRequest.args` is by design the tool call's *unresolved* args,
-  built pre-handler in `loop.ts`'s generic `runGatedToolCalls`. For
-  `sheets_write` that means the human sees `mode`, `range` and `values`, but
-  **not** which spreadsheet the slug resolves to, and **not** the effective
-  `valueInputOption` when it comes from the registry default rather than the
-  tool arg. So the `RAW` vs `USER_ENTERED` stake — whether `+1-555-0100` lands
-  as a phone number or misparses as a formula, whether a date lands as a date or
-  as text that breaks the column's existing `SUM` — is invisible at the exact
-  moment a human is asked to accept it. Closing this needs either
-  sheets-write-specific resolution inside the generic loop (wrong layer) or an
-  `ApprovalGate` contract change across `packages/agent` and `apps/hermes` that
-  lets a tool contribute a resolved, display-only summary. Re-resolving at
-  display time is *not* a fix — it could show something other than what is
-  actually about to be executed. Full rationale in `plans/05-google-sheets.md`
-  Phase 5 Steps.
+- **~~The prompt shows the model's raw args, so a `sheets_write` approver
+  cannot see the whole stake~~ — CLOSED by
+  `06-legible-approvals-bounded-reads`.** The predicted fix is the one that
+  shipped: an `ApprovalGate` contract change, not sheets-write-specific
+  resolution inside the generic loop. `ToolSpec.prepare` resolves the call
+  once, before the prompt exists, and contributes a concrete, tool-agnostic
+  `ApprovalSummary` the gate renders with zero per-tool knowledge — see
+  [tool-prepare-hook](tool-prepare-hook.md). The same resolved values are
+  threaded onto `ctx.plan` for the handler, so the human and the handler
+  provably see one resolution, never two; re-resolving at display time stayed
+  rejected for exactly the reason recorded above. `sheets_write`'s prompt now
+  names the sheet by slug and description, previews up to three rows, states
+  the mode's consequence, and warns when the *effective* `valueInputOption`
+  is `USER_ENTERED` over a value Sheets would reinterpret — the `RAW` vs
+  `USER_ENTERED` stake this bullet said was invisible. Two failure modes that
+  used to reach a human first — an unknown slug and a sheet registered
+  `access: "read"` — are now refused during `prepare`, so no prompt is sent
+  for a call already destined to fail.
+- **Column headers as labels, and a before→after diff in the prompt ("Tier
+  2") — OPEN, deliberately deferred (`06-legible-approvals-bounded-reads`).**
+  The prompt still previews raw cell values with no column names, and an
+  `update` still says which rows it replaces without showing what they
+  currently hold. Both need a Google API read *before* the human is asked,
+  and that is the whole cost: `prepare` today touches only the registry, so
+  adding a pre-approval read puts a network call (and its latency, its
+  failure modes, and a second reason a prompt might not appear) in front of
+  every write prompt. It would also force the scope decorator's `prepare`
+  wrap to carry a token-fetching path it currently does not need. Deferred
+  because it is not user-driven: the shipped Tier 1 prompt already answers
+  "which sheet, how many rows, what will be written, what will it become".
+  `mode: "update"` gets most of the value after the fact instead — the
+  handler's pre-overwrite snapshot puts `replaced` in the tool result, so the
+  model can narrate the before→after change in its reply. Closing this
+  properly means deciding whether a pre-approval read is worth a slower, more
+  failure-prone prompt, not just writing the rendering code.
 - **Pending approvals live only in the process.** A restart drops them all; the
   human's tap then lands on an unknown id and gets
   `"this approval has expired, please ask again"` — the same single branch that
@@ -123,7 +146,7 @@ is persisted.
 
 - Every `ApprovalGate` implementation must race its own timeout against the
   turn's `AbortSignal` using `delay(ms, signal)` from `@hermes/core` — the same
-  helper `invokeTool`'s handler-timeout race uses. An implementation that
+  helper `invokeToolHandler`'s handler-timeout race uses. An implementation that
   ignores the signal leaks a pending wait through shutdown.
 - A gated tool can only be configured on a channel whose
   `capabilities.buttons` is true *and* which implements `subscribeCallback` /
@@ -135,3 +158,14 @@ is persisted.
 - This gate is what made the poller's dispatch change necessary — read
   [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md)
   before changing either side.
+- **Making a prompt say more is a tool-side change, never a renderer
+  change.** `apps/hermes/src/agent/approval-prompt-renderer.ts` lays out
+  `ApprovalSummary`'s five fields and knows nothing else; a tool that wants
+  to say more populates `items`/`effects` in its own `prepare`. A
+  `sheets_write`-shaped branch inside the renderer or the loop is the thing
+  this design exists to prevent — see
+  [tool-prepare-hook](tool-prepare-hook.md).
+- **A `prepare` that fails refuses; it never degrades to a raw-JSON
+  prompt.** A throw, a timeout, an abort, or an explicit refusal all resolve
+  the call without asking a human. Anything else would mean a human tapping
+  Aprobar on a call the system could not fully describe.

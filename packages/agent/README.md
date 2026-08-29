@@ -226,7 +226,7 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
    is checked immediately before invocation. A handler that **throws** feeds
    back the thrown error's message — like every other failure mode here,
    this never aborts the turn. The race's `delay` runs against `deps.signal`
-   composed (`AbortSignal.any`) with a controller `invokeTool` owns and
+   composed (`AbortSignal.any`) with a controller `invokeToolHandler` owns and
    aborts once the race settles either way: this cancels the timer
    immediately when the handler wins instead of leaking it for up to the
    effective timeout, and lets a turn-level shutdown that lands mid-handler
@@ -333,12 +333,22 @@ splits them into gated (`requiresApproval: true`) and ungated:
   prompt** (settled decision 5 — the user's own override of a more granular
   per-call default): `runGatedToolCalls` builds one `ApprovalRequest[]` batch
   and calls `requestApproval` once for the whole batch, not once per call.
-- **Approved**: every gated call in the batch falls through to the exact same
-  validate-then-invoke path an ungated call takes (`runToolCalls`) — approval
-  only gates *whether* a call runs, never how its args are validated or
-  retried.
+- **Validation and `prepare` run before the prompt, not after the decision**
+  (`06-legible-approvals-bounded-reads` Phase 3 — the one place the gated
+  path's ordering differs from the ungated one). `prepareGatedCall`
+  `safeParse`s each call and runs its `prepare`, and `buildApprovalBatch`
+  splits the outcomes: refused calls resolve immediately with no prompt and
+  no `approvalWaitMs`, and only the survivors reach `requestApproval` —
+  skipped entirely when nothing survives. Both paths share
+  `parseToolCallArgs`, so a gated and an ungated validation failure count
+  against the same per-tool-name budget and produce byte-identical content.
+- **Approved**: each surviving call's handler runs with the `parsedArgs` and
+  `plan` its preparation already resolved (`runReadyGatedCalls`) — never
+  re-parsed, never re-`prepare`d, since the batch already committed to those
+  exact values when it asked the human. Approval only gates *whether* a call
+  runs, never how its args were validated or prepared.
 - **Denied, timed out, or aborted mid-wait are the same code path** (settled
-  decision 7): every call in the batch becomes a `"user did not approve"`
+  decision 7): every *surviving* call in the batch becomes a `"user did not approve"`
   tool result, `approved: false` on its `tool.call` event, no handler ever
   runs, and the turn's retry counter is untouched. Its `durationMs` is
   near-zero (no handler ran) while `approvalWaitMs` carries the real time
@@ -374,13 +384,17 @@ detail) — at debug level only, off by default in production.
 The prompt body itself is rendered by `apps/hermes/src/agent/
 approval-prompt-renderer.ts`'s `formatBatchPrompt`/`formatResolvedText`, kept
 deterministic and tool-agnostic on purpose (see that file's own doc and
-`apps/hermes/README.md`): a batch where every call resolved a usable
-`ApprovalSummary` renders the new, headerless, legible-Spanish format; a
-batch with any prepare-less or malformed-summary call renders the *whole*
-batch, instead, in the pre-Phase-3 raw-JSON format ("The model wants to run:"
-plus one `- tool(args)` line per call) rather than mixing styles — never a
-prompt half legible Spanish prose, half raw English JSON. See
-`apps/hermes/README.md` for the Telegram-specific mechanics.
+`apps/hermes/README.md`): rendering is **per call**, not per batch. A call
+that resolved a usable `ApprovalSummary` renders the headerless,
+legible-Spanish block (`action`/`target`, indented `items` with a count line,
+then `effects`); a call without one — prepare-less, or a summary whose
+`action` came back empty — renders that call's raw-JSON line instead, so a
+mixed batch shows one block per call rather than dragging every call back to
+raw JSON. The pre-plan whole-batch format ("The model wants to run:" plus one
+`- tool(args)` line per call, minus its old trailing "Approve or deny?"
+question) survives byte-identical for exactly one case: **every** call in the
+batch falling back. See `apps/hermes/README.md` for the Telegram-specific
+mechanics.
 
 ## Persistence port
 
