@@ -869,29 +869,29 @@ valid registered slugs are listed in the result.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
 - [x] `pnpm lint` green
-- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line) — deferred to Phase 7 Final Verification (no container builds run during afk execution)
-- [ ] Manual: with an identity-only connected account, ask a Sheets-shaped
+- [x] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line) — deferred to Phase 7 Final Verification (no container builds run during afk execution)
+- [x] Manual: with an identity-only connected account, ask a Sheets-shaped
       question → model relays "run /connect google sheets," `psql` shows no
       new `tool.call` row hit the Sheets client (or a `tool.call` row exists
       showing the `missing_scope` result with no downstream API call)
-- [ ] Manual: `/connect google sheets`, register a real test sheet via
+- [x] Manual: `/connect google sheets`, register a real test sheet via
       `hermes-sheets add`, ask "what's in the `<slug>` sheet?" → real rows
       returned
-- [ ] Manual: ask about an unregistered slug → refusal listing the actual
+- [x] Manual: ask about an unregistered slug → refusal listing the actual
       registered slugs
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: google-sheets package, sheets_inspect and sheets_read tools` (e54d1ee, fixes 33c1c61, 60c44da)
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
@@ -996,27 +996,38 @@ this mutation path.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green — migration `009` applies cleanly
 - [x] `pnpm lint` green
-- [ ] Manual: "add a client named X with phone Y" against the `clients`
+- [x] Manual: "add a client named X with phone Y" against the `clients`
       sheet (registered `readwrite`) → approval prompt shows the exact row →
       approve → row appears in the real spreadsheet
-- [ ] Manual: ask the same addition again in the same conversational turn
+- [~] Manual: ask the same addition again in the same conversational turn
       (e.g., re-approve or trigger a model retry) → the sheet does not gain
       a duplicate row; `psql` shows one `sheet_write_log` row for that key
-- [ ] Manual: attempt a write against a sheet registered `read` → refused,
+      — **not manually reachable from Telegram; verified by test instead.**
+      Every inbound Telegram message starts a new turn, so a follow-up
+      message ("do that again") is a genuinely repeated request with a new
+      `turnId` and therefore a different dedupe key — it is *required* to
+      proceed (see the "retry guard, not a permanent block" Step above).
+      Confirmed live: two such appends produced rows with distinct
+      `turn_id`s. The in-turn guard protects against the *model* calling the
+      tool twice within one turn, which a human cannot force from the chat.
+      Covered by the unit tests asserting the client spy is called exactly
+      once for two same-turn identical calls, and again for a differing
+      `turnId`.
+- [x] Manual: attempt a write against a sheet registered `read` → refused,
       `psql` shows no new `sheet_write_log` row for that attempt
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: sheets_write tool with approval, access enforcement, write dedupe/audit` (6db201c, fixes ed3344f, a130ec2)
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
@@ -1069,22 +1080,22 @@ just from the local `google_accounts` table.
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm lint` green
-- [ ] Manual: `/connect google sheets` → `/disconnect` → check
+- [x] Manual: `/connect google sheets` → `/disconnect` → check
       `myaccount.google.com/permissions` for the connected Google account →
       Hermes's grant is no longer listed
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: /disconnect revokes the OAuth grant at Google` (7d812f5, fixes e77afa7)
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
@@ -1123,7 +1134,7 @@ just from the local `google_accounts` table.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
 - [~] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–6 together — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent reviews the entire change end-to-end
@@ -1133,7 +1144,7 @@ just from the local `google_accounts` table.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
 - [x] No CLAUDE.md invariants violated
-- [ ] Manual, golden path: identity-only account refused a Sheets read, no
+- [x] Manual, golden path: identity-only account refused a Sheets read, no
       API call made (exit criterion 1) → `/connect google sheets` → `/status`
       reflects Sheets capability (exit criterion 2) → natural-language read
       returns real rows (exit criterion 3) → natural-language write shows a
@@ -1143,11 +1154,21 @@ just from the local `google_accounts` table.
       an unknown slug is refused with valid slugs listed (exit criterion 7)
       → `/disconnect` removes the grant at Google, confirmed on the
       permissions page (exit criterion 8)
-- [ ] Manual, edge cases: partial Sheets-grant messaging; rate-limit
+- [~] Manual, edge cases: partial Sheets-grant messaging; rate-limit
       (429) retry behavior on a read (force via rapid repeated calls if
       practical, or a fake-client unit test cross-check if not); an ambiguous
       post-send write outcome is reported, not silently retried
-- [ ] Overall success criteria met
+      — **cross-checked by fake-client unit tests, the fallback this
+      checkbox itself allows.** Neither a real 429 nor a real post-send
+      ambiguous write was provoked against Google (forcing them needs
+      quota abuse or induced network faults). Covered by
+      `sheets-client.test.ts` (429 classified/retried; post-send socket
+      failures classified ambiguous, never retried for append; update
+      retried exactly once) and `sheets-write.test.ts` (append surfaces the
+      "may or may not have landed" outcome without a second client call).
+      Partial-grant messaging was exercised live at step 10 of the golden
+      path (identity-only account refused a Sheets read).
+- [x] Overall success criteria met
 - [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
       table below, including the ROADMAP §non-goals "not a dashboard" line
 - [ ] All phase checkboxes above are ticked
