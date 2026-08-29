@@ -462,16 +462,16 @@ either a context-flooding dump or (today) no limit at all.
 
 **Steps:**
 
-- [ ] Reuse `truncateBySize` from Phase 1 unmodified — this phase adds no
+- [x] Reuse `truncateBySize` from Phase 1 unmodified — this phase adds no
       new truncation logic, only a new caller and a new `measure` function
-- [ ] Confirm the `note` text is distinct in wording from `sheets_read`'s
+- [x] Confirm the `note` text is distinct in wording from `sheets_read`'s
       (tabs vs. rows) so the model doesn't conflate the two in its reply
-- [ ] **Edge case — a tab with an empty header row** (`headerRow: []`, e.g.
+- [x] **Edge case — a tab with an empty header row** (`headerRow: []`, e.g.
       a genuinely blank tab): `measure` returns `{cells:0, chars:...}` for
       it, so it never itself trips the cell cap — confirm it still counts
       toward `totalTabs`/`returnedTabs` correctly and doesn't get dropped by
       an off-by-one in the "keep at least one" logic
-- [ ] **Edge case — a single tab whose header row alone exceeds the caps**
+- [x] **Edge case — a single tab whose header row alone exceeds the caps**
       (very wide sheet, one tab): confirm it is still returned whole
       (`truncated:true`, `returnedTabs:1`), mirroring Phase 1's single-row
       case
@@ -484,27 +484,27 @@ either a context-flooding dump or (today) no limit at all.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
-- [ ] Manual: if a spreadsheet with enough tabs is available, confirm
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
+- [~] Manual: if a spreadsheet with enough tabs is available, confirm
       `sheets_inspect` truncates; otherwise `[~]` this — accept the unit
       test as sufficient (a many-tab spreadsheet is impractical to
       provision solely for this manual check)
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: bound sheets_inspect results with the shared truncation helper`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: bound sheets_inspect results with the shared truncation helper`
+- [x] Phase marked complete
 
 ---
 
