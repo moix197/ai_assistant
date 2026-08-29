@@ -1,15 +1,25 @@
+import type { Logger } from "@hermes/core";
 import { z } from "zod/v4";
 import { canonicalizeArgs, computeDedupeKey } from "../canonical-args";
 import { type ResolveSheetResult, resolveSheet } from "../resolve-sheet";
 import {
   SheetsAmbiguousWriteError,
   SheetsApiError,
+  type SheetsValuesResult,
   type SheetsWriteResult,
   type ValueInputOption,
 } from "../sheets-client";
-import { truncateForPrompt } from "../truncate";
+import { truncateBySize, truncateForPrompt } from "../truncate";
 import { detectValueInputConsequence } from "../value-input-consequence";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
+
+/** Used when a caller supplies no `logger` — mirrors `packages/llm`'s `openai-compatible.ts` `NOOP_LOGGER` convention (this package has no logging mechanism of its own to reuse; see `sheets-client.ts`, which has none either). */
+const NOOP_LOGGER: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
 
 const TOOL_NAME = "sheets_write";
 
@@ -64,6 +74,8 @@ export interface SheetWriteLogPort {
 
 export interface CreateSheetsWriteToolDeps extends SheetsToolDeps {
   sheetWriteLogRepo: SheetWriteLogPort;
+  /** Receives the update-mode pre-overwrite snapshot read's non-fatal-failure warning (Phase 7). Default: a no-op logger. */
+  logger?: Logger;
 }
 
 /** `{ ok: false, reason: "read_only_sheet" }` — the write-specific refusal `sheets_inspect`/`sheets_read` never need, since any registered `access` permits a read. */
@@ -174,7 +186,23 @@ export interface SheetsWriteSuccessResult {
   updatedRows?: number;
   updatedColumns?: number;
   updatedCells?: number;
+  /**
+   * `mode: "update"` only: the range's values immediately before this write
+   * overwrote them (Phase 7), truncated via the shared `truncateBySize`
+   * helper. Absent for `mode: "append"` (never read) and absent when the
+   * snapshot read itself failed (non-fatal — the write still completes).
+   */
+  replaced?: unknown[][];
+  truncated?: boolean;
+  returnedRows?: number;
+  totalRows?: number;
 }
+
+/** The subset of `SheetsWriteSuccessResult` `captureReplacedSnapshot` (below) can populate — merged into the eventual success outcome, never present on its own. */
+type ReplacedSnapshot = Pick<
+  SheetsWriteSuccessResult,
+  "replaced" | "truncated" | "returnedRows" | "totalRows"
+>;
 
 /**
  * Shared by both modes' branches below: calls `callApi` (the mode-specific
@@ -185,7 +213,10 @@ export interface SheetsWriteSuccessResult {
  * the handler's own doc comment above); any other thrown error propagates
  * with the claim left pending. On success, records and returns the
  * `SheetsWriteSuccessResult` — the success-outcome-plus-`complete()` shape
- * both `append` and `update` previously duplicated inline.
+ * both `append` and `update` previously duplicated inline. `successExtras`
+ * (Phase 7's `replaced` snapshot, `update`-only) is merged into the outcome
+ * before it's recorded via `complete()`, so `replaced` lands in
+ * `sheet_write_log` for free — the whole outcome is what gets stored.
  */
 async function performWrite(
   deps: CreateSheetsWriteToolDeps,
@@ -193,6 +224,7 @@ async function performWrite(
   mode: "append" | "update",
   sheetSlug: string,
   callApi: () => Promise<SheetsWriteResult>,
+  successExtras?: ReplacedSnapshot,
 ): Promise<SheetsWriteSuccessResult | AmbiguousWriteResult> {
   let writeResult: SheetsWriteResult;
   try {
@@ -226,6 +258,7 @@ async function performWrite(
     ok: true,
     sheet: sheetSlug,
     mode,
+    ...successExtras,
     ...writeResult,
   };
   await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
@@ -274,6 +307,102 @@ async function claimDedupeKey(
     };
   }
   return { dedupeKey };
+}
+
+/**
+ * `mode: "update"` only: snapshots the target range's current values
+ * immediately before the write overwrites them (`06-legible-approvals-
+ * bounded-reads` Phase 7) — a single, non-retried `getValues` call (a retry
+ * loop here would be new latency for a purely cosmetic read). Wrapped so a
+ * failure never blocks the write itself: caught, logged via `warn`, and
+ * swallowed — the caller gets `undefined` and proceeds unaffected. On
+ * success, runs the result through the same `truncateBySize` helper
+ * `sheets_read`/`sheets_inspect` use, measuring each row identically, so a
+ * huge existing range doesn't balloon the tool result.
+ */
+async function captureReplacedSnapshot(
+  deps: CreateSheetsWriteToolDeps,
+  logger: Logger,
+  accessToken: string,
+  plan: SheetsWritePlan,
+  range: string,
+  signal: AbortSignal,
+): Promise<ReplacedSnapshot | undefined> {
+  let snapshot: SheetsValuesResult;
+  try {
+    snapshot = await deps.sheetsClient.getValues(
+      accessToken,
+      plan.spreadsheetId,
+      range,
+      "FORMATTED_VALUE",
+      signal,
+    );
+  } catch (error) {
+    logger.warn("sheets_write: pre-overwrite snapshot read failed, proceeding without `replaced`", {
+      sheet: plan.sheetSlug,
+      range,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+
+  const rows = snapshot.values ?? [];
+  const capped = truncateBySize(rows, (row) => ({
+    cells: row.length,
+    chars: JSON.stringify(row).length,
+  }));
+
+  return {
+    replaced: capped.items,
+    ...(capped.truncated && {
+      truncated: true,
+      returnedRows: capped.returnedCount,
+      totalRows: capped.totalCount,
+    }),
+  };
+}
+
+/**
+ * `mode: "update"`'s branch of the handler below: captures the pre-overwrite
+ * snapshot (above), then delegates to `performWrite` the same way the
+ * `append` branch does, merging the snapshot into the eventual success
+ * outcome.
+ */
+async function performUpdateWrite(
+  deps: CreateSheetsWriteToolDeps,
+  logger: Logger,
+  dedupeKey: string,
+  plan: SheetsWritePlan,
+  range: string,
+  values: Array<Array<string | number | boolean>>,
+  valueInputOption: ValueInputOption,
+  accessToken: string,
+  signal: AbortSignal,
+): Promise<SheetsWriteSuccessResult | AmbiguousWriteResult> {
+  const replacedSnapshot = await captureReplacedSnapshot(
+    deps,
+    logger,
+    accessToken,
+    plan,
+    range,
+    signal,
+  );
+  return performWrite(
+    deps,
+    dedupeKey,
+    "update",
+    plan.sheetSlug,
+    () =>
+      deps.sheetsClient.updateValues(
+        accessToken,
+        plan.spreadsheetId,
+        range,
+        values,
+        valueInputOption,
+        signal,
+      ),
+    replacedSnapshot,
+  );
 }
 
 /**
@@ -379,6 +508,7 @@ async function prepareWrite(
  * pending rather than released.
  */
 export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
+  const logger = deps.logger ?? NOOP_LOGGER;
   return {
     name: TOOL_NAME,
     description:
@@ -415,15 +545,16 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
         );
       }
 
-      return performWrite(deps, dedupeKey, mode, plan.sheetSlug, () =>
-        deps.sheetsClient.updateValues(
-          accessToken,
-          plan.spreadsheetId,
-          range,
-          values,
-          plan.effectiveValueInputOption,
-          ctx.signal,
-        ),
+      return performUpdateWrite(
+        deps,
+        logger,
+        dedupeKey,
+        plan,
+        range,
+        values,
+        plan.effectiveValueInputOption,
+        accessToken,
+        ctx.signal,
       );
     },
   };

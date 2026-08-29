@@ -1,4 +1,4 @@
-import type { SheetRegistryEntry } from "@hermes/core";
+import type { Logger, SheetRegistryEntry } from "@hermes/core";
 import { describe, expect, it, vi } from "vitest";
 import type { AccessTokenPort } from "../../access-token-port";
 import type { SheetRegistryPort } from "../../sheet-registry-port";
@@ -50,12 +50,26 @@ function fakeSheetsClient(
 ): SheetsClient & {
   appendValues: ReturnType<typeof vi.fn>;
   updateValues: ReturnType<typeof vi.fn>;
+  getValues: ReturnType<typeof vi.fn>;
 } {
   return {
     getSpreadsheetMeta: vi.fn(),
-    getValues: vi.fn(),
+    // Defaults to an empty-but-successful snapshot read so every existing
+    // update-mode test (written before Phase 7's snapshot read existed)
+    // keeps working without having to know about it; tests that care about
+    // `replaced` override this per-call below.
+    getValues: vi.fn().mockResolvedValue({ range: "Sheet1!A1:B1", values: [] }),
     appendValues: vi.fn().mockResolvedValue(writeResult),
     updateValues: vi.fn().mockResolvedValue(writeResult),
+  };
+}
+
+function fakeLogger(): Logger & { warn: ReturnType<typeof vi.fn> } {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
   };
 }
 
@@ -538,7 +552,13 @@ describe("sheets_write", () => {
       CTX.signal,
     );
     expect(sheetsClient.appendValues).not.toHaveBeenCalled();
-    expect(result).toEqual({ ok: true, sheet: "clients", mode: "update", ...writeResult });
+    expect(result).toEqual({
+      ok: true,
+      sheet: "clients",
+      mode: "update",
+      ...writeResult,
+      replaced: [],
+    });
   });
 
   it("dedupe: an identical same-turn repeat calls the client exactly once, returning the same stored outcome", async () => {
@@ -678,7 +698,13 @@ describe("sheets_write", () => {
 
     const result = await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
 
-    expect(result).toEqual({ ok: true, sheet: "clients", mode: "update", ...writeResult });
+    expect(result).toEqual({
+      ok: true,
+      sheet: "clients",
+      mode: "update",
+      ...writeResult,
+      replaced: [],
+    });
     expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
     expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
   });
@@ -713,6 +739,7 @@ describe("sheets_write", () => {
       mode: "update",
       updatedRange: "Sheet1!A2:B2",
       updatedRows: 1,
+      replaced: [],
     });
   });
 
@@ -815,5 +842,116 @@ describe("sheets_write", () => {
       undefined,
       CTX.signal,
     );
+  });
+
+  describe("update mode: replaced snapshot (06-legible-approvals-bounded-reads Phase 7)", () => {
+    it("a snapshot-read failure is non-fatal: the write still completes, `replaced` is absent, and a warning is logged", async () => {
+      const sheetsClient = fakeSheetsClient();
+      sheetsClient.getValues.mockRejectedValueOnce(new Error("boom"));
+      const logger = fakeLogger();
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient,
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+        logger,
+      });
+
+      const result = await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
+
+      expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        ok: true,
+        sheet: "clients",
+        mode: "update",
+        updatedRange: "Sheet1!A2:B2",
+        updatedRows: 1,
+      });
+      expect(result).not.toHaveProperty("replaced");
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it("captures the range's prior values as `replaced` on success, reading strictly before updateValues is called", async () => {
+      const sheetsClient = fakeSheetsClient();
+      const callOrder: string[] = [];
+      sheetsClient.getValues.mockImplementationOnce(async () => {
+        callOrder.push("getValues");
+        return { range: "Sheet1!A1:B1", values: [["OldJane", "555-9999"]] };
+      });
+      sheetsClient.updateValues.mockImplementationOnce(async () => {
+        callOrder.push("updateValues");
+        return { updatedRange: "Sheet1!A1:B1", updatedRows: 1 };
+      });
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort("token-abc"),
+        sheetsClient,
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
+
+      expect(callOrder).toEqual(["getValues", "updateValues"]);
+      expect(sheetsClient.getValues).toHaveBeenCalledWith(
+        "token-abc",
+        "sheet-123",
+        "Sheet1!A1:B1",
+        "FORMATTED_VALUE",
+        CTX.signal,
+      );
+      expect(result).toEqual({
+        ok: true,
+        sheet: "clients",
+        mode: "update",
+        updatedRange: "Sheet1!A1:B1",
+        updatedRows: 1,
+        replaced: [["OldJane", "555-9999"]],
+      });
+    });
+
+    it("truncates `replaced` via the shared truncateBySize helper when the prior range is large", async () => {
+      const sheetsClient = fakeSheetsClient({ updatedRange: "Sheet1!A1:B600", updatedRows: 600 });
+      const hugeValues = Array.from({ length: 600 }, (_, i) => [`Name${i}`, `555-${i}`]);
+      sheetsClient.getValues.mockResolvedValueOnce({
+        range: "Sheet1!A1:B600",
+        values: hugeValues,
+      });
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient,
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = (await prepareAndRun(tool, {
+        ...APPEND_ARGS,
+        mode: "update",
+      })) as {
+        replaced: unknown[];
+        truncated?: boolean;
+        returnedRows?: number;
+        totalRows?: number;
+      };
+
+      expect(result.truncated).toBe(true);
+      expect(result.replaced.length).toBeLessThan(600);
+      expect(result.returnedRows).toBe(result.replaced.length);
+      expect(result.totalRows).toBe(600);
+    });
+
+    it("append mode never calls the snapshot read at all", async () => {
+      const sheetsClient = fakeSheetsClient();
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient,
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await prepareAndRun(tool, APPEND_ARGS);
+
+      expect(sheetsClient.getValues).not.toHaveBeenCalled();
+      expect(result).not.toHaveProperty("replaced");
+    });
   });
 });

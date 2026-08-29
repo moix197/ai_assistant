@@ -264,6 +264,38 @@ generic `apps/hermes/src/agent/approval-prompt-renderer.ts` renderer needs
 zero changes — this is one more `effects` entry, nothing new for it to lay
 out.
 
+**Update-mode `replaced` snapshot (Phase 7) — before→after values, narrated
+by the LLM, not the approval prompt:** immediately before `mode: "update"`
+calls `updateValues`, the handler (`performUpdateWrite` →
+`captureReplacedSnapshot`) takes a single, non-retried `getValues` snapshot
+of the target range's *current* values, using the same `ctx.signal` the rest
+of the call carries so an aborted turn doesn't leave it hanging. On success,
+the snapshot is run through the same `truncateBySize` helper `sheets_read`/
+`sheets_inspect` use (`06-legible-approvals-bounded-reads` Phase 1/2) — same
+per-row `{ cells, chars }` measure — and the result's `replaced: unknown[][]`
+(plus `truncated`/`returnedRows`/`totalRows` when the range was too large to
+return whole) is added to the `SheetsWriteSuccessResult` the model sees, so
+it can narrate the before→after change in its reply (e.g. "cambié el
+teléfono de X a Y") instead of just confirming the write happened.
+`mode: "append"` never reads at all — there's nothing to snapshot.
+
+The read is deliberately **cosmetic, not load-bearing**: it runs strictly
+*after* the dedupe claim and `getAccessToken` (no second claim, no second
+token fetch), and a failure is non-fatal — caught, logged via
+`CreateSheetsWriteToolDeps`'s optional `logger` (a `@hermes/core` `Logger`,
+defaulting to a no-op the same way `packages/llm`'s `openai-compatible.ts`
+adapter defaults an unsupplied `logger` — this package had no logging
+mechanism of its own to reuse), and swallowed; the write proceeds unaffected
+and `replaced` is simply omitted from the result. It is never retried: a
+retry loop here would add latency for a purely cosmetic read, not a safety
+benefit.
+
+Audit side-benefit, not a new mechanism: `replaced` (and its truncation
+fields) lands in `sheet_write_log` for free, because `performWrite`'s
+existing `sheetWriteLogRepo.complete(dedupeKey, outcome)` call records
+whatever the eventual success `outcome` object contains — Phase 7 just adds
+fields to that object before `complete()` sees it.
+
 **Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
 names the sheet by its registry description (or the slug, when the
 description is empty) but does not yet show a before/after diff or column
