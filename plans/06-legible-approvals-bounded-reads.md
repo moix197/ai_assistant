@@ -832,19 +832,19 @@ result is appended to `effects`.
 
 **Steps:**
 
-- [ ] Write the detector's test cases *before* wiring it into `prepare`: a
+- [x] Write the detector's test cases *before* wiring it into `prepare`: a
       plain leading-zero string, a `YYYY-MM-DD` date, a `DD/MM/YYYY` date, a
       thousands-separated number, a leading `=`, a leading `+`, a leading
       `-`, a leading `@`, and at least one deliberately ambiguous string a
       human might not expect to flag (document why it's flagged anyway —
       over-flagging is the accepted trade-off, not an oversight)
-- [ ] Confirm `RAW` short-circuits to `null` with no per-cell scan needed
-- [ ] Exact-string test: a `USER_ENTERED` write with a date value produces
+- [x] Confirm `RAW` short-circuits to `null` with no per-cell scan needed
+- [x] Exact-string test: a `USER_ENTERED` write with a date value produces
       the full, final settled prompt (decision 21's literal example) via
       `sheets_write.prepare` end to end, not just the detector in isolation
-- [ ] Exact-string test: a `RAW` write produces no consequence line at all
+- [x] Exact-string test: a `RAW` write produces no consequence line at all
       (settled decision 26's named case)
-- [ ] Confirm the renderer needs **no code change** this phase either —
+- [x] Confirm the renderer needs **no code change** this phase either —
       the consequence sentence is just one more `effects` entry
 
 **Tests:**
@@ -856,26 +856,26 @@ result is appended to `effects`.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm lint` green
 - [ ] Manual: using the HIL Prerequisites' date/leading-zero column, trigger
       a write and confirm the consequence sentence appears in Telegram,
       completing the golden-path prompt from decision 21
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: add valueInputOption consequence sentence to sheets_write's approval summary`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: add valueInputOption consequence sentence to sheets_write's approval summary`
+- [x] Phase marked complete
 
 ---
 
