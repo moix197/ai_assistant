@@ -8,7 +8,11 @@ exactly `apps/hermes`, `packages/core`, `packages/config`, `packages/store`,
 `packages/channels`, and nothing else; `packages/llm` appeared only when the
 LLM-port phase actually needed it. No empty `agent/`, `telemetry/`, or
 `google-*` directories exist, and their absence is the decision, not an
-oversight.
+oversight. `packages/google-sheets` is the latest instance: created in
+`05-google-sheets` Phase 4, the phase that first needed a Sheets capability —
+not scaffolded alongside `google-auth` one plan earlier, even though it was
+already named on the roadmap. `scheduler` and `ingress` remain absent for the
+same reason.
 
 **Why:**
 

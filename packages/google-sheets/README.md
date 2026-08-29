@@ -51,10 +51,16 @@ A thin `fetch`-based client over the Sheets v4 REST API, built on
 `googleapis`, no new third-party HTTP client (settled decision 20; see
 `.ai/decisions/` for the write-up). Two read methods:
 
-- `getSpreadsheetMeta(accessToken, spreadsheetId, signal?)` — `GET
-  /v4/spreadsheets/{spreadsheetId}?fields=sheets.properties,sheets.data.rowData.values.formattedValue`,
-  a `fields` mask rather than the unbounded default response. Backs
-  `sheets_inspect`.
+- `getSpreadsheetMeta(accessToken, spreadsheetId, signal?)` — **two requests,
+  not one**, and the reason is a Sheets API quirk worth knowing: an unqualified
+  `ranges` parameter bounds only the *first* sheet, so a single
+  `?fields=...&ranges=1:1` call would pull full `rowData` for every other tab.
+  So: (1) `GET ?fields=sheets.properties` to learn the tab titles, then (2)
+  `GET ?fields=sheets.properties,sheets.data.rowData.values.formattedValue` with
+  one **fully-qualified** `ranges=<title>!1:1` per tab. Tab titles are A1-quoted
+  (`quoteSheetTitle` — most real tab names contain spaces, so quoting is the
+  common case, not an edge case). A spreadsheet with no tabs short-circuits
+  after the first request. Backs `sheets_inspect`.
 - `getValues(accessToken, spreadsheetId, range, valueRenderOption, signal?)`
   — `GET /v4/spreadsheets/{spreadsheetId}/values/{range}?valueRenderOption=...`.
   Backs `sheets_read`.
@@ -132,8 +138,25 @@ valueInputOption? }` — `requiresApproval: true`, so every call routes
 through `apps/hermes`'s `ApprovalGate` before this package's handler ever
 runs; the prompt it shows is the tool call's own args (`ApprovalRequest.args`
 via `telegram-approval-gate.ts`'s `formatBatchPrompt`, unchanged by this
-phase), which already names the resolved sheet slug, `mode`, `range`, and
-`values` — nothing extra needed for a human to judge what they're approving.
+phase) — the slug as the model wrote it, plus `mode`, `range` and `values`.
+
+**Known gap, deliberately deferred:** those are the model's *raw* args, so the
+prompt does not show which spreadsheet the slug resolves to, nor the
+**effective** `valueInputOption` when it comes from the registry default rather
+than the tool arg — so the RAW-vs-`USER_ENTERED` stake described below is
+invisible to the person approving the write. `ApprovalRequest.args` is built
+pre-handler in `loop.ts`'s generic `runGatedToolCalls`; surfacing resolved
+values needs an `ApprovalGate` contract change across `packages/agent` and
+`apps/hermes`, and re-resolving at display time could misrepresent what is
+actually about to run. Tracked in `.ai/decisions/approval-gate-design.md`.
+
+**The args schema is a flat `z.object`, not a `z.discriminatedUnion("mode",
+…)`.** A root-level union converts to a top-level `anyOf` with no
+`type: "object"`, which DeepSeek's OpenAI-compatible API rejects with HTTP 400
+— and since every tool's schema ships on every completion request, that one
+schema broke *every* turn, reads included. Regressed for all registered tools
+by `apps/hermes/src/agent/__tests__/tool-schemas.test.ts`; see
+`.ai/decisions/tool-arg-schema-top-level-object.md`.
 
 **Handler order is load-bearing**, in this sequence: resolve the slug
 (unknown ⇒ the same `resolveSheet` short-circuit `sheets_inspect`/

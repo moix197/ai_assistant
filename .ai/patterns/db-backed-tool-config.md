@@ -7,8 +7,8 @@ call-time, instead of a `.env` value or a boot-time constant. `sheet_registry`
 ## The four rules
 
 1. **A port is declared in the *consumer*, not the repo package.** The
-   package that reads the config at tool-call time (e.g. the not-yet-existing
-   `@hermes/google-sheets`) declares its own narrow interface
+   package that reads the config at tool-call time (`@hermes/google-sheets`)
+   declares its own narrow interface
    (`SheetRegistryPort { getBySlug, listAll }`) — the same
    consumer-declares-its-port convention `GoogleAccountRepo` already uses.
    `@hermes/store` implements the repo functions; `apps/hermes` binds them to
@@ -34,6 +34,13 @@ call-time, instead of a `.env` value or a boot-time constant. `sheet_registry`
    `remove`/`listAll`/`getBySlug` — never a second write path. A dashboard
    added later calls the same functions, so the CLI and the dashboard can
    never disagree about what a valid row looks like.
+
+Rule 3 has a second, less obvious consequence here: the tool arg that names a
+config row stays `z.string()`, never a `z.enum` built from the table's current
+contents — the enum's literals would ride in the tool's JSON Schema, which is
+the cache-stable prompt prefix, so every operator edit would invalidate the
+provider's cache. Validation happens in the handler against the live registry.
+See [google-sheets-scope-and-registry](../decisions/google-sheets-scope-and-registry.md).
 
 ## What this pattern is not
 

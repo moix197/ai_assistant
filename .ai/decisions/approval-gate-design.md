@@ -57,6 +57,18 @@ is persisted.
   misconfiguration surfaces at boot instead of at the first gated call — where
   it would present as "the tool silently ran without asking".
 
+- **`sheets_write` is the second worked example of the mutation-gates /
+  read-doesn't policy**, after `whoami`, and the first one that actually
+  mutates anything outside this process. `sheets_inspect`/`sheets_read` are
+  ungated: they leave no trace on the user's data and gating every read would
+  train the human to tap Approve without reading. `sheets_write` carries
+  `requiresApproval: true` and additionally refuses outright against a sheet
+  registered `access: "read"` — the gate answers "did a human agree," the
+  registry answers "is this sheet writable at all," and neither substitutes for
+  the other. The gate's in-memory volatility is safe here because it fails
+  toward *not writing*: a restart drops the pending approval and the write
+  simply never happens, which is the same outcome as a denial.
+
 **Rejected:**
 
 - *One approval prompt per tool call* — the user's explicit override; see above.
@@ -83,6 +95,23 @@ is persisted.
   `requestApproval` runs. Any future consumer that needs `threadId → chatId`
   *outside* a live turn must add the reverse lookup to `ThreadRepo` rather than
   widening this index.
+- **The prompt shows the model's raw args, so a `sheets_write` approver cannot
+  see the whole stake — OPEN, deliberately deferred (`05-google-sheets` Phase
+  5).** `ApprovalRequest.args` is by design the tool call's *unresolved* args,
+  built pre-handler in `loop.ts`'s generic `runGatedToolCalls`. For
+  `sheets_write` that means the human sees `mode`, `range` and `values`, but
+  **not** which spreadsheet the slug resolves to, and **not** the effective
+  `valueInputOption` when it comes from the registry default rather than the
+  tool arg. So the `RAW` vs `USER_ENTERED` stake — whether `+1-555-0100` lands
+  as a phone number or misparses as a formula, whether a date lands as a date or
+  as text that breaks the column's existing `SUM` — is invisible at the exact
+  moment a human is asked to accept it. Closing this needs either
+  sheets-write-specific resolution inside the generic loop (wrong layer) or an
+  `ApprovalGate` contract change across `packages/agent` and `apps/hermes` that
+  lets a tool contribute a resolved, display-only summary. Re-resolving at
+  display time is *not* a fix — it could show something other than what is
+  actually about to be executed. Full rationale in `plans/05-google-sheets.md`
+  Phase 5 Steps.
 - **Pending approvals live only in the process.** A restart drops them all; the
   human's tap then lands on an unknown id and gets
   `"this approval has expired, please ask again"` — the same single branch that

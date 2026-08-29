@@ -1207,6 +1207,47 @@ just from the local `google_accounts` table.
 | `decisions/d3-monorepo-package-per-concern.md` | update | cite `packages/google-sheets` as the next example of "created at its phase" |
 | `decisions/approval-gate-design.md` | update | `sheets_write` as the second worked example of the mutation-gates/read-doesn't policy, after `whoami` |
 
+**Closed out — where the sync diverged from the table above.** The table was
+written before implementation; the `.ai/` files describe what shipped:
+
+- **Added, not planned:** `decisions/tool-arg-schema-top-level-object.md`. A
+  root-level `z.discriminatedUnion` on `sheets_write`'s args converts to a
+  top-level `anyOf` with no `type: "object"`, which DeepSeek rejects with HTTP
+  400 — and because every tool schema ships on every completion request, it
+  broke **every** turn, not just writes. Args are now a flat `z.object`, with
+  `apps/hermes/src/agent/__tests__/tool-schemas.test.ts` sweeping every
+  registered tool. Cross-linked from `index.md`'s Cross-cutting table.
+- **`decisions/google-token-aad-binding-deferred.md` was not created** — the
+  table's own alternative was taken instead: `04-google-auth`'s
+  `google-token-encryption.md` carries the re-confirmation, so there is one
+  file per decision rather than two files about the same envelope.
+- **`decisions/google-token-refresh.md` was updated, which the table did not
+  ask for**: the single-`RefreshCoordinator`-per-process invariant (an early
+  cut built two, which would have allowed concurrent refreshes of one account)
+  and `boot.ts`'s `buildDecryptRefreshToken` seam (`GoogleAccountRepo` never
+  decrypts, so boot is the only correct place to hand `/disconnect` a narrow
+  decrypt capability instead of raw key material).
+- **`decisions/sheets-write-dedupe-as-audit.md` documents three claim outcomes,
+  not two** — `claimed` / `alreadyComplete` / `alreadyPending` — plus
+  `release()`, which drops a still-pending row only on a *definitive* failure
+  (a 4xx or exhausted 429, where nothing was written) while genuinely ambiguous
+  outcomes keep hedging.
+- **The Phase 5 approval-prompt gap is recorded as open** in
+  `decisions/approval-gate-design.md`'s stopgaps section (the prompt shows the
+  model's raw args, so neither the resolved spreadsheet nor an
+  effective-from-registry `valueInputOption` is visible to the approver;
+  closing it needs an `ApprovalGate` contract change). Also corrected in
+  `packages/google-sheets/README.md`, which had claimed the prompt was
+  sufficient.
+- **`getSpreadsheetMeta` is a two-request flow**, not the single field-masked
+  request this plan described: Google's `ranges` parameter bounds only the
+  first sheet unless each range is tab-qualified. `packages/google-sheets/README.md`
+  was corrected.
+- **ROADMAP §non-goals: flagged, not edited.** The tension is recorded under
+  "Open — flagged for a human" in
+  `decisions/google-sheets-scope-and-registry.md`. Note the line as it actually
+  reads is "a web UI", not "not a dashboard".
+
 ## Tests
 
 | Phase | Logic under test | Test file |

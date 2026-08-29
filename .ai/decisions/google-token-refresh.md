@@ -191,6 +191,27 @@ a transient failure is logged and retried next tick.
 - Any future Google-backed tool needing a live access token calls
   `getValidAccessToken` — never a new refresh function, never the raw
   `oauth-client.ts` primitives directly.
+- **Exactly one `RefreshCoordinator` exists per process.**
+  `boot.ts`'s `buildGoogleRefreshCoordinator` builds it once and
+  `wireRuntimeAndShutdown` passes the *same* handle to both the refresh sweep
+  (`buildRefreshSweep`) and the Sheets `AccessTokenPort` (`buildSheetsDeps`).
+  The single-flight map is **per-instance state**: `05-google-sheets` Phase 4
+  first shipped a second coordinator for the Sheets path, on the (wrong)
+  reasoning that the coordinator is stateless — two instances would refresh the
+  same account concurrently, each blind to the other, which is precisely the
+  second refresh path this whole design exists to prevent. Fixed in that
+  phase's review; the `OAuth2Client` underneath genuinely *is*
+  stateless-per-call and is deliberately still constructed per builder.
+- The request-path binding
+  (`apps/hermes/src/google/build-access-token-port.ts`) persists a refreshed
+  account through the **UPDATE-only** `updateRefreshedTokens`, never an upsert
+  — a refresh in flight must not resurrect a row `/disconnect` just deleted.
+- `/disconnect` needs a decrypted refresh token to revoke at Google, and
+  `GoogleAccountRepo` deliberately never decrypts. `boot.ts`'s
+  `buildDecryptRefreshToken(config)` closes over the crypto key and hands the
+  handler a narrow `decryptRefreshToken(account): string` capability — the raw
+  key material never enters `MessageHandlerDeps` or any handler's signature.
+  Boot is the only correct seam for this; do not widen the repo port instead.
 - Token refresh must never be wired from any entrypoint other than
   `boot()`'s `wireRuntimeAndShutdown`, which must keep running strictly after
   `acquireInstanceLockOrExit` succeeds.
