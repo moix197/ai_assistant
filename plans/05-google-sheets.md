@@ -503,26 +503,26 @@ all behave exactly as they did before this phase, for both callers.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm -r test` green
 - [x] `pnpm lint` green
-- [ ] Manual: run the bot briefly, send one message that exercises the LLM
+- [x] Manual: run the bot briefly, send one message that exercises the LLM
       call path and confirm a normal reply still arrives (smoke test that
       the swap didn't silently break the hot path)
-- [ ] Manual: let the bot idle-poll for a few minutes (exercises
+- [x] Manual: let the bot idle-poll for a few minutes (exercises
       `getUpdates`' long-poll repeatedly) and confirm no elevated memory
       growth versus baseline — the specific regression the leak comment
       exists to prevent, now shared infrastructure both callers depend on
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `refactor: extract shared HTTP retry/backoff/timeout helper into core`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
