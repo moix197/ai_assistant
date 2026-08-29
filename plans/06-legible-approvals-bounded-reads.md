@@ -973,13 +973,13 @@ this phase.
 
 **Steps:**
 
-- [ ] Read every file this plan touched one more time against what's
+- [x] Read every file this plan touched one more time against what's
       actually in `.ai/` and each README before editing — don't edit from
       memory of the plan, edit from the diff
-- [ ] Confirm no README still claims the pre-plan raw-JSON prompt is
+- [x] Confirm no README still claims the pre-plan raw-JSON prompt is
       sufficient anywhere (grep for "enough for a human to judge" and
       similar phrasing across the repo)
-- [ ] Run the `sync-knowledge` skill's closing checklist against this
+- [x] Run the `sync-knowledge` skill's closing checklist against this
       plan's Knowledge Base Impact table below
 
 **Tests:**
@@ -990,7 +990,7 @@ against the shipped code, not a test.
 
 **Verification:**
 
-- [ ] `pnpm -r test` still green (no code changed, but confirms nothing was
+- [x] `pnpm -r test` still green (no code changed, but confirms nothing was
       accidentally touched)
 - [ ] Manual: read the corrected `apps/hermes/README.md` Approval gate
       section and `packages/google-sheets/README.md`'s Sheets-write section
@@ -998,16 +998,16 @@ against the shipped code, not a test.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing (n/a — see Tests above)
-- [ ] Documentation updated (this phase *is* the documentation update)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `docs: sync knowledge base for 06-legible-approvals-bounded-reads`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing (n/a — see Tests above)
+- [x] Documentation updated (this phase *is* the documentation update)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `docs: sync knowledge base for 06-legible-approvals-bounded-reads`
+- [x] Phase marked complete
 
 ---
 
