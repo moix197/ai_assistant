@@ -210,9 +210,14 @@ decisions, the generic renderer needs zero changes:**
   only for the plural count — natural Spanish singular/plural agreement is
   used throughout rather than a literal `fila(s)` placeholder, and the two
   modes' phrasing is kept consistent with each other.
-- `effects[0]` is a fixed mode description, independent of row count:
-  `"Agrega una fila nueva al final. No cambia nada de lo existente."` for
-  `append`, `"Sobrescribe una fila que ya existe."` for `update`.
+- `effects[0]` is a mode description that agrees in number with `rowCount`,
+  the same singular/plural agreement `action` uses above (code review
+  finding: this line used to stay grammatically singular even when `action`
+  had already pluralized for a multi-row write): `append` reads `"Agrega una
+  fila nueva al final. No cambia nada de lo existente."` for one row or
+  `"Agrega N filas nuevas al final. No cambia nada de lo existente."` for more
+  than one; `update` reads `"Sobrescribe una fila que ya existe."` for one row
+  or `"Sobrescribe N filas que ya existen."` for more than one.
 - `items` previews at most the first 3 rows of `values`; each row's cells are
   joined (`", "`-separated), whitespace runs (including newlines/tabs) are
   collapsed to a single space, and *then* the collapsed string is truncated
@@ -325,6 +330,28 @@ fields) lands in `sheet_write_log` for free, because `performWrite`'s
 existing `sheetWriteLogRepo.complete(dedupeKey, outcome)` call records
 whatever the eventual success `outcome` object contains — Phase 7 just adds
 fields to that object before `complete()` sees it.
+
+**`replaced`'s truncation fields carry a disambiguating `note` (code review
+finding):** `truncated`/`returnedRows`/`totalRows` sat top-level beside this
+write's own `updatedRows`/`updatedColumns`/`updatedCells` with nothing
+distinguishing which operation they described, and nothing told the model
+what `replaced` even is. Rather than rename or nest existing fields a
+consumer might already depend on, the success result gains one additional
+`note?: string` field, present whenever `replaced` is: `"replaced is a
+snapshot of this range's values from immediately before this write
+overwrote them, not the write's own result; when truncated is true,
+returnedRows/totalRows describe only that snapshot."`
+
+**Registry `slug`/`description` are truncated before reaching the prompt
+(code review finding):** `entry.slug` and `entry.description` are
+operator-controlled, but `description` is an unbounded `text` column with no
+CHECK constraint — both are routed through the same `truncateForPrompt`
+helper (100-char cap, matching this file's row-preview limit) the row
+preview and `valueInputOption` consequence sentence already use, so a
+newline or oversized value in either can't inject extra lines into the
+approval prompt. The plan's internal `sheetSlug` (`ctx.plan`, used by the
+handler to actually resolve the write) is the untruncated original — only
+the prompt-facing `action`/`target` copies are capped.
 
 **Known gap, deliberately deferred (Tier 2):** `target` is the sheet's
 registry `description`, and is **omitted** when that description is empty —

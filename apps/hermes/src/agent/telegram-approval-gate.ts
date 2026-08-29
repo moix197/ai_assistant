@@ -6,8 +6,8 @@ import { formatBatchPrompt, formatResolvedText } from "./approval-prompt-rendere
 /** An unanswered approval resolves as a denial after this long (settled decision 7). */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** The identical reply for an unknown, already-resolved, or post-restart callback id — one branch, three causes (settled decision 7). */
-const EXPIRED_CALLBACK_TEXT = "this approval has expired, please ask again";
+/** The identical reply for an unknown, already-resolved, or post-restart callback id — one branch, three causes (settled decision 7). Spanish tuteo, matching this plan's other user-facing copy (e.g. `sheets-write.ts`'s approval-prompt text). */
+const EXPIRED_CALLBACK_TEXT = "esta aprobación ya expiró, pídelo de nuevo";
 
 const APPROVE_LABEL = "Aprobar";
 const DENY_LABEL = "Rechazar";
@@ -135,7 +135,7 @@ export function createTelegramApprovalGate(
     if (resolvedByTimer) {
       // A tap already made its own editMessage call inside handleCallback —
       // only edit here when this race, not a tap, won the resolution.
-      const label = "Denied (or expired).";
+      const label = "Rechazado (o expiró).";
       await channel
         .editMessage(target, messageId, formatResolvedText(batch, label))
         .catch(() => {});
@@ -162,7 +162,7 @@ export function createTelegramApprovalGate(
     const decision: "approved" | "denied" = action === "approve" ? "approved" : "denied";
     entry.resolve(decision);
 
-    const label = decision === "approved" ? "Approved." : "Denied.";
+    const label = decision === "approved" ? "Aprobado." : "Rechazado.";
     await channel.answerCallback(callback.callbackId, label).catch(() => {});
     await channel
       .editMessage(entry.target, entry.messageId, formatResolvedText(entry.batch, label))

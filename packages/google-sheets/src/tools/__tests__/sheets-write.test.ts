@@ -19,6 +19,10 @@ const CTX = {
 
 const CTX_OTHER_TURN = { ...CTX, turnId: "turn-2" };
 
+/** Mirrors `sheets-write.ts`'s own `REPLACED_SNAPSHOT_NOTE` constant — asserted against, not imported, since it's package-internal. */
+const REPLACED_SNAPSHOT_NOTE =
+  "replaced is a snapshot of this range's values from immediately before this write overwrote them, not the write's own result; when truncated is true, returnedRows/totalRows describe only that snapshot.";
+
 function fakeEntry(overrides: Partial<SheetRegistryEntry> = {}): SheetRegistryEntry {
   return {
     slug: "clients",
@@ -303,6 +307,78 @@ describe("sheets_write", () => {
       expect(result).toMatchObject({ summary: { action: "¿Reemplazar 2 filas en clients?" } });
     });
 
+    it("append mode with multiple rows: plural agreement in both the question line and the mode-description effect line", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(
+        {
+          ...APPEND_ARGS,
+          values: [
+            ["Jane", "555-0100"],
+            ["John", "555-0200"],
+          ],
+        },
+        CTX,
+      );
+
+      expect(result).toMatchObject({
+        summary: {
+          action: "¿Agregar 2 filas a clients?",
+          effects: ["Agrega 2 filas nuevas al final. No cambia nada de lo existente."],
+        },
+      });
+    });
+
+    it("update mode with multiple rows: plural agreement in both the question line and the mode-description effect line", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(
+        {
+          ...APPEND_ARGS,
+          mode: "update" as const,
+          values: [
+            ["Jane", "555-0100"],
+            ["John", "555-0200"],
+          ],
+        },
+        CTX,
+      );
+
+      expect(result).toMatchObject({
+        summary: {
+          action: "¿Reemplazar 2 filas en clients?",
+          effects: ["Sobrescribe 2 filas que ya existen."],
+        },
+      });
+    });
+
+    it("registry description with an embedded newline is collapsed and truncated before reaching the approval prompt's target field (unbounded text column, no CHECK constraint)", async () => {
+      const longDescription = `Line one\nLine two\n${"x".repeat(150)}`;
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ description: longDescription })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(APPEND_ARGS, CTX);
+      const target = (result as { summary: { target?: string } }).summary.target;
+
+      expect(target).not.toContain("\n");
+      expect(target).toHaveLength(101); // 100 chars + the ellipsis
+      expect(target?.endsWith("…")).toBe(true);
+    });
+
     it("row preview: caps at 3 rows, truncates each joined row to ~100 chars (per row, not per cell), and reports itemsTotal for the count line", async () => {
       const tool = createSheetsWriteTool({
         sheetRegistry: fakeRegistry([fakeEntry()]),
@@ -394,7 +470,10 @@ describe("sheets_write", () => {
           action: "¿Agregar 0 filas a clients?",
           target: "Clients",
           items: [],
-          effects: ["Agrega una fila nueva al final. No cambia nada de lo existente."],
+          // Agrees with `action`'s plural "0 filas" above — the mode-
+          // description effect line no longer stays singular regardless of
+          // row count (code review fix).
+          effects: ["Agrega 0 filas nuevas al final. No cambia nada de lo existente."],
         },
       });
       expect((result as { summary: { itemsTotal?: number } }).summary.itemsTotal).toBeUndefined();
@@ -558,6 +637,7 @@ describe("sheets_write", () => {
       mode: "update",
       ...writeResult,
       replaced: [],
+      note: REPLACED_SNAPSHOT_NOTE,
     });
   });
 
@@ -704,6 +784,7 @@ describe("sheets_write", () => {
       mode: "update",
       ...writeResult,
       replaced: [],
+      note: REPLACED_SNAPSHOT_NOTE,
     });
     expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
     expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
@@ -740,6 +821,7 @@ describe("sheets_write", () => {
       updatedRange: "Sheet1!A2:B2",
       updatedRows: 1,
       replaced: [],
+      note: REPLACED_SNAPSHOT_NOTE,
     });
   });
 
@@ -906,6 +988,7 @@ describe("sheets_write", () => {
         updatedRange: "Sheet1!A1:B1",
         updatedRows: 1,
         replaced: [["OldJane", "555-9999"]],
+        note: REPLACED_SNAPSHOT_NOTE,
       });
     });
 

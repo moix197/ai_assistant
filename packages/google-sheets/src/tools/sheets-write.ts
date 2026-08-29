@@ -123,8 +123,14 @@ const PENDING_CLAIM_MESSAGE =
 const ROW_PREVIEW_MAX_ROWS = 3;
 const ROW_PREVIEW_CHAR_LIMIT = 100;
 
-const APPEND_MODE_EFFECT = "Agrega una fila nueva al final. No cambia nada de lo existente.";
-const UPDATE_MODE_EFFECT = "Sobrescribe una fila que ya existe.";
+/**
+ * Disambiguates `replaced`'s fields from this write's own result fields
+ * (`updatedRows` etc.) — code review finding: `truncated`/`returnedRows`/
+ * `totalRows` sat top-level beside `updatedRows` with nothing telling the
+ * model which operation they described, or what `replaced` even is.
+ */
+const REPLACED_SNAPSHOT_NOTE =
+  "replaced is a snapshot of this range's values from immediately before this write overwrote them, not the write's own result; when truncated is true, returnedRows/totalRows describe only that snapshot.";
 
 /**
  * The approval prompt's mode-specific question line — never the A1 `range`
@@ -145,6 +151,24 @@ function buildWriteAction(mode: "append" | "update", rowCount: number, slug: str
     return `¿Reemplazar una fila en ${slug}?`;
   }
   return `¿Reemplazar ${rowCount} filas en ${slug}?`;
+}
+
+/**
+ * The prompt's fixed mode-description `effects` line — singular/plural
+ * agreement with the actual row count, mirroring `buildWriteAction`'s own
+ * agreement above (code review finding: this line used to stay grammatically
+ * singular ("Agrega una fila nueva...") even when `buildWriteAction` above
+ * had already pluralized the question for a multi-row write).
+ */
+function buildModeEffect(mode: "append" | "update", rowCount: number): string {
+  if (mode === "append") {
+    return rowCount === 1
+      ? "Agrega una fila nueva al final. No cambia nada de lo existente."
+      : `Agrega ${rowCount} filas nuevas al final. No cambia nada de lo existente.`;
+  }
+  return rowCount === 1
+    ? "Sobrescribe una fila que ya existe."
+    : `Sobrescribe ${rowCount} filas que ya existen.`;
 }
 
 /**
@@ -193,15 +217,27 @@ export interface SheetsWriteSuccessResult {
    * snapshot read itself failed (non-fatal — the write still completes).
    */
   replaced?: unknown[][];
+  /**
+   * Describe `replaced` only, never this write's own `updatedRows` (code
+   * review finding: these three sat top-level beside `updatedRows` with
+   * nothing distinguishing which operation they described). Present only
+   * when `replaced` was itself truncated.
+   */
   truncated?: boolean;
   returnedRows?: number;
   totalRows?: number;
+  /**
+   * Model-facing disambiguation, present whenever `replaced` is (least-
+   * invasive fix for the finding above: adds context instead of renaming or
+   * nesting fields a consumer may already depend on).
+   */
+  note?: string;
 }
 
 /** The subset of `SheetsWriteSuccessResult` `captureReplacedSnapshot` (below) can populate — merged into the eventual success outcome, never present on its own. */
 type ReplacedSnapshot = Pick<
   SheetsWriteSuccessResult,
-  "replaced" | "truncated" | "returnedRows" | "totalRows"
+  "replaced" | "truncated" | "returnedRows" | "totalRows" | "note"
 >;
 
 /**
@@ -355,6 +391,7 @@ async function captureReplacedSnapshot(
 
   return {
     replaced: capped.items,
+    note: REPLACED_SNAPSHOT_NOTE,
     ...(capped.truncated && {
       truncated: true,
       returnedRows: capped.returnedCount,
@@ -455,11 +492,19 @@ async function prepareWrite(
     parsed.valueInputOption ?? entry.valueInputOption;
 
   const rowCount = parsed.values.length;
-  const modeEffect = parsed.mode === "append" ? APPEND_MODE_EFFECT : UPDATE_MODE_EFFECT;
+  const modeEffect = buildModeEffect(parsed.mode, rowCount);
   const valueInputConsequence = detectValueInputConsequence(
     parsed.values,
     effectiveValueInputOption,
   );
+  // `entry.slug`/`entry.description` are operator-registered, but
+  // `description` is an unbounded `text` column with no CHECK constraint —
+  // routed through the same `truncateForPrompt` helper the row preview and
+  // value-input-consequence sentence already use, so a newline or huge value
+  // there can't inject extra lines into this approval prompt either (code
+  // review finding: this was the last unguarded path into the prompt).
+  const promptSlug = truncateForPrompt(entry.slug, ROW_PREVIEW_CHAR_LIMIT);
+  const promptDescription = truncateForPrompt(entry.description, ROW_PREVIEW_CHAR_LIMIT);
 
   return {
     ok: true,
@@ -469,8 +514,8 @@ async function prepareWrite(
       effectiveValueInputOption,
     },
     summary: {
-      action: buildWriteAction(parsed.mode, rowCount, entry.slug),
-      target: entry.description || undefined,
+      action: buildWriteAction(parsed.mode, rowCount, promptSlug),
+      target: promptDescription || undefined,
       ...buildRowItems(parsed.values),
       effects: [modeEffect, ...(valueInputConsequence ? [valueInputConsequence] : [])],
     },

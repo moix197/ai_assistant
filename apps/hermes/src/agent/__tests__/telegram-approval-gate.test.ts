@@ -111,12 +111,12 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
     expect(await decisionPromise).toBe("approved");
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
-      expect.stringContaining("Approved"),
+      expect.stringContaining("Aprobado"),
     );
     expect(channel.editMessage).toHaveBeenCalledWith(
       "555",
       "msg-1",
-      expect.stringContaining("Approved"),
+      expect.stringContaining("Aprobado"),
     );
     // handleCallback is the sole owner of the edit on a tap — requestApproval
     // must not also edit once it wakes up from the resolved promise.
@@ -133,11 +133,14 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
     await gate.handleCallback(makeCallback(approvalId, "deny"));
 
     expect(await decisionPromise).toBe("denied");
-    expect(channel.answerCallback).toHaveBeenCalledWith("cbq-1", expect.stringContaining("Denied"));
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      expect.stringContaining("Rechazado"),
+    );
     expect(channel.editMessage).toHaveBeenCalledWith(
       "555",
       "msg-1",
-      expect.stringContaining("Denied"),
+      expect.stringContaining("Rechazado"),
     );
     // Same single-owner invariant as the approve case above.
     expect(channel.editMessage).toHaveBeenCalledTimes(1);
@@ -153,7 +156,7 @@ describe("createTelegramApprovalGate — unknown, already-resolved, or post-rest
 
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
-      "this approval has expired, please ask again",
+      "esta aprobación ya expiró, pídelo de nuevo",
     );
     expect(channel.editMessage).not.toHaveBeenCalled();
   });
@@ -174,7 +177,7 @@ describe("createTelegramApprovalGate — unknown, already-resolved, or post-rest
 
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
-      "this approval has expired, please ask again",
+      "esta aprobación ya expiró, pídelo de nuevo",
     );
     // The second tap resolves nothing further — no second edit either.
     expect(channel.editMessage).not.toHaveBeenCalled();
@@ -196,7 +199,7 @@ describe("createTelegramApprovalGate — timeout", () => {
     expect(channel.editMessage).toHaveBeenCalledWith(
       "555",
       "msg-1",
-      expect.stringContaining("Denied"),
+      expect.stringContaining("Rechazado"),
     );
   });
 
@@ -217,7 +220,7 @@ describe("createTelegramApprovalGate — timeout", () => {
     expect(await decisionPromise).toBe("denied");
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
-      "this approval has expired, please ask again",
+      "esta aprobación ya expiró, pídelo de nuevo",
     );
   });
 });

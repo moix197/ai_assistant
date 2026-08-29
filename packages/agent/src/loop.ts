@@ -463,7 +463,12 @@ function buildApprovalBatch(preparations: GatedCallPreparation[]): {
  * asked the human. The "declares `prepare` but reached the handler with no
  * `plan`" backstop is defense in depth only: unreachable by construction,
  * since `prepareGatedCall` never returns "ready" for a `prepare`-declaring
- * tool without a resolved `plan`.
+ * tool without a resolved `plan`. It resolves *this one call* as the same
+ * `prepare_failed` refusal `prepareGatedCall` itself produces for a
+ * `prepare` failure (rather than throwing and aborting the whole turn) —
+ * code review finding: by the time this backstop can fire, the human has
+ * already approved, so throwing here would abort every other call in the
+ * same batch over one tool's own defect.
  */
 function runReadyGatedCalls(
   ready: Extract<GatedCallPreparation, { status: "ready" }>[],
@@ -481,8 +486,16 @@ function runReadyGatedCalls(
         throw new Error(`no ToolSpec found for ready gated call "${prepared.toolCall.name}"`);
       }
       if (spec.prepare && prepared.plan === undefined) {
-        throw new Error(
-          `tool "${spec.name}" declares prepare but reached its handler with no plan`,
+        const content = JSON.stringify({ ok: false, reason: "prepare_failed" });
+        return finishToolCall(
+          prepared.toolCall,
+          deps,
+          threadId,
+          turnId,
+          Date.now(),
+          { content, error: content },
+          false,
+          approvalWaitMs,
         );
       }
       assertToolInvocationAllowed(deps.signal);

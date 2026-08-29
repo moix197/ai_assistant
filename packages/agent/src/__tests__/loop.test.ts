@@ -1520,6 +1520,51 @@ describe("runTurn — prepare hook (06-legible-approvals-bounded-reads Phase 3)"
     expect(threadRepo.appendMessages).not.toHaveBeenCalled();
   });
 
+  it("resolves the post-approval 'declares prepare but no plan' backstop as a prepare_failed refusal for that call, without throwing or aborting the rest of the turn", async () => {
+    const handler = vi.fn();
+    // A `prepare`-declaring tool that resolves `ok: true` with `plan:
+    // undefined` — the backstop in `runReadyGatedCalls` this test targets is
+    // defense in depth against exactly this: `prepared.plan === undefined`
+    // reaching the post-approval handler-invocation step.
+    const noPlanTool: ToolSpec = {
+      name: "no_plan",
+      description: "prepare resolves ok with no plan",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn().mockResolvedValue({
+        ok: true,
+        plan: undefined,
+        summary: { action: "¿Hacer esto?", effects: [] },
+      }),
+      handler,
+    };
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({ toolCalls: [{ id: "c1", name: "no_plan", arguments: {} }], text: "" }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    const text = await runTurn(
+      definition({ tools: [noPlanTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    // The turn completes normally — the backstop no longer throws and
+    // aborts the whole turn once the human has already approved.
+    expect(text).toBe("done");
+    expect(handler).not.toHaveBeenCalled();
+    const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+    expect(findToolMessage(secondRequest, "c1")?.content).toContain("prepare_failed");
+  });
+
   it("never calls requestApproval when every gated call in the batch refuses during prepare (empty-batch skip)", async () => {
     const handler = vi.fn();
     const refusedTool: ToolSpec = {

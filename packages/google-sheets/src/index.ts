@@ -5,13 +5,7 @@ export {
   type UnknownSheetResult,
 } from "./resolve-sheet";
 export type { SheetRegistryEntry, SheetRegistryPort } from "./sheet-registry-port";
-export {
-  MAX_CELLS,
-  MAX_VALUE_CHARS,
-  truncateBySize,
-  type TruncateBySizeCaps,
-  type TruncateBySizeResult,
-} from "./truncate";
+export { truncateBySize, type TruncateBySizeResult } from "./truncate";
 export {
   createSheetsClient,
   SheetsAmbiguousWriteError,
