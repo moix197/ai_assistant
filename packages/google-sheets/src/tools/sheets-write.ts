@@ -15,22 +15,23 @@ const cellValue = z.union([z.string(), z.number(), z.boolean()]);
 const valuesSchema = z.array(z.array(cellValue));
 const valueInputOptionSchema = z.enum(["RAW", "USER_ENTERED"]).optional();
 
-const schema = z.discriminatedUnion("mode", [
-  z.object({
-    mode: z.literal("append"),
-    sheet: z.string(),
-    range: z.string(),
-    values: valuesSchema,
-    valueInputOption: valueInputOptionSchema,
-  }),
-  z.object({
-    mode: z.literal("update"),
-    sheet: z.string(),
-    range: z.string(),
-    values: valuesSchema,
-    valueInputOption: valueInputOptionSchema,
-  }),
-]);
+/**
+ * A flat `z.object`, not `z.discriminatedUnion("mode", [...])` — the two
+ * modes have identical field sets (only the `mode` literal differs), so the
+ * union bought no extra validation, but its JSON Schema conversion
+ * (`z.toJSONSchema` in `packages/agent/src/prompt.ts`) emits a top-level
+ * `anyOf` with no `type: "object"`, which OpenAI-compatible providers (e.g.
+ * DeepSeek) reject outright — and since every tool schema is sent on every
+ * completion request, that one malformed schema failed every turn, not just
+ * writes. See `apps/hermes/src/agent/__tests__/tool-schemas.test.ts`.
+ */
+const schema = z.object({
+  mode: z.enum(["append", "update"]),
+  sheet: z.string(),
+  range: z.string(),
+  values: valuesSchema,
+  valueInputOption: valueInputOptionSchema,
+});
 
 /** The claim/complete port over `sheet_write_log` (`@hermes/store`'s `sheet-write-log-repo.ts`) — declared here, the consumer, per this codebase's consumer-declares-its-port convention (`SheetRegistryPort`/`AccessTokenPort` follow the same shape). `apps/hermes/src/boot.ts` binds this directly to `@hermes/store`'s `claimSheetWrite`/`completeSheetWrite`, the same inline-object wiring `apps/hermes/src/handlers/complete.ts`'s `dedupeRepo` already uses for `llm_dedupe`. */
 export interface SheetWriteLogPort {
