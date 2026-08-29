@@ -1169,9 +1169,9 @@ just from the local `google_accounts` table.
       Partial-grant messaging was exercised live at step 10 of the golden
       path (identity-only account refused a Sheets read).
 - [x] Overall success criteria met
-- [ ] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
+- [x] `sync-knowledge` run to close out `.ai/` per the Knowledge Base Impact
       table below, including the ROADMAP §non-goals "not a dashboard" line
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
 
 ## Documentation
 
