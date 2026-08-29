@@ -3,7 +3,12 @@ import type { GoogleAccount, GoogleAccountRepo } from "@hermes/google-auth";
 import { describe, expect, it, vi } from "vitest";
 import { createWhoamiTool } from "../whoami";
 
-const CTX = { signal: new AbortController().signal, channel: "telegram", channelUserId: "111" };
+const CTX = {
+  signal: new AbortController().signal,
+  channel: "telegram",
+  channelUserId: "111",
+  turnId: "turn-1",
+};
 
 function fakeAccount(overrides: Partial<GoogleAccount> = {}): GoogleAccount {
   return {
@@ -94,7 +99,12 @@ describe("whoami tool", () => {
 
     await whoamiTool.handler(
       {},
-      { signal: new AbortController().signal, channel: "other-channel", channelUserId: "999" },
+      {
+        signal: new AbortController().signal,
+        channel: "other-channel",
+        channelUserId: "999",
+        turnId: "turn-1",
+      },
     );
 
     expect(repo.getAccount).toHaveBeenCalledWith("other-channel", "999");

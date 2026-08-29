@@ -11,12 +11,14 @@ import { ConfigError, type Env, loadConfig, toRedactedLog } from "@hermes/config
 import { type Logger, createLogger, systemClock } from "@hermes/core";
 import {
   type ConnectFlow,
+  type GoogleAccountRepo,
   type PendingConnectionStore,
   createConnectFlow,
   createGoogleRefreshAccessToken,
   createPendingConnectionStore,
   createRefreshCoordinator,
 } from "@hermes/google-auth";
+import { createSheetsClient } from "@hermes/google-sheets";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
 import {
   INSTANCE_LOCK_KEY,
@@ -36,7 +38,8 @@ import {
   waitForDatabase,
 } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
-import { buildAgent } from "./agent/build-agent";
+import { type SheetsDeps, buildAgent } from "./agent/build-agent";
+import { buildAccessTokenPort } from "./google/build-access-token-port";
 import { buildGoogleOAuthClient } from "./google/build-google-oauth-client";
 import {
   type OauthCallbackRoute,
@@ -60,6 +63,7 @@ import { startHealthServer } from "./health";
 import { buildLlmProvider } from "./llm/build-llm-provider";
 import { buildProviderProfiles } from "./llm/build-provider-profiles";
 import { buildGoogleAccountRepo } from "./store/build-google-account-repo";
+import { buildSheetRegistryRepo } from "./store/build-sheet-registry-repo";
 import { buildStatsRepo } from "./telemetry/build-stats-repo";
 import { buildTelemetryRecorder } from "./telemetry/build-telemetry-recorder";
 
@@ -483,6 +487,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     signal,
     telemetryRecorder,
   );
+  const sheetsDeps = buildSheetsDeps(pool, config, buildGoogleAccountRepo(pool));
   const { agent, handleApprovalCallback } = buildAgent(
     pool,
     llmProvider,
@@ -490,6 +495,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     telemetryRecorder,
     signal,
     channel,
+    sheetsDeps,
   );
 
   return {
@@ -630,6 +636,52 @@ function buildRefreshSweep(
     clock: systemClock,
     logger,
   });
+}
+
+/**
+ * Builds the Sheets tools' three real-infra dependencies (`05-google-sheets`
+ * Phase 4): the registry port, the `AccessTokenPort` bound to the refresh
+ * seam, and the Sheets HTTP client. Constructs its own `OAuth2Client`/
+ * `RefreshCoordinator` when Google's env group is set, rather than sharing
+ * `buildRefreshSweep`'s instance — the same reasoning `buildRefreshSweep`
+ * itself uses for not sharing `buildConnectFlow`'s: both are stateless-per-
+ * call constructions with no correctness reason to share one process-wide
+ * instance. When Google's all-or-none env group is unset, `accessTokenPort`
+ * falls back to a throwing stub rather than `undefined` — the Sheets tools
+ * are still wired unconditionally (matching `whoami`'s own unconditional
+ * construction), since `withRequiredScopes` always gates every call on a
+ * connected account first, and no account can exist without this same env
+ * group (there is no other way to complete `/connect google`), so the stub
+ * is never actually reached.
+ */
+function buildSheetsDeps(
+  pool: Pool,
+  config: Env,
+  googleAccountRepo: GoogleAccountRepo,
+): SheetsDeps {
+  const googleOAuth = buildGoogleOAuthClient(config);
+  const accessTokenPort = googleOAuth
+    ? buildAccessTokenPort({
+        pool,
+        googleAccountRepo,
+        refreshCoordinator: createRefreshCoordinator({
+          refreshAccessToken: createGoogleRefreshAccessToken(googleOAuth.oauthClient),
+          cryptoKey: googleOAuth.cryptoKey,
+        }),
+      })
+    : {
+        getAccessToken: async (): Promise<string> => {
+          throw new Error(
+            "Google Sheets is not configured (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/TOKEN_ENCRYPTION_KEY unset)",
+          );
+        },
+      };
+
+  return {
+    sheetRegistry: buildSheetRegistryRepo(pool),
+    accessTokenPort,
+    sheetsClient: createSheetsClient(),
+  };
 }
 
 /**

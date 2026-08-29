@@ -16,7 +16,12 @@ describe("getCurrentTimeTool", () => {
     const before = Date.now();
     const result = await getCurrentTimeTool.handler(
       {},
-      { signal: new AbortController().signal, channel: "telegram", channelUserId: "123" },
+      {
+        signal: new AbortController().signal,
+        channel: "telegram",
+        channelUserId: "123",
+        turnId: "turn-1",
+      },
     );
     const after = Date.now();
 

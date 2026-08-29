@@ -1,5 +1,14 @@
-import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "@hermes/agent";
+import {
+  type Agent,
+  type AgentDefinition,
+  type ThreadRepo,
+  type ToolSpec,
+  createAgent,
+} from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
+import { SHEETS_SCOPES } from "@hermes/google-auth";
+import type { AccessTokenPort, SheetRegistryPort, SheetsClient } from "@hermes/google-sheets";
+import { createSheetsInspectTool, createSheetsReadTool } from "@hermes/google-sheets";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
@@ -9,6 +18,37 @@ import { createTelegramApprovalGate } from "./telegram-approval-gate";
 import { echoTool } from "./tools/echo";
 import { getCurrentTimeTool } from "./tools/get-current-time";
 import { createWhoamiTool } from "./tools/whoami";
+import { withRequiredScopes } from "./with-required-scopes";
+
+/**
+ * The Sheets tools' three real-infra dependencies — constructed in
+ * `boot.ts` (`buildSheetsDeps`) and passed in already-built, the same
+ * already-built-dependency-injection shape every other `buildAgent`
+ * parameter follows (`pool`/`llmProvider`/`channel`/...).
+ */
+export interface SheetsDeps {
+  sheetRegistry: SheetRegistryPort;
+  accessTokenPort: AccessTokenPort;
+  sheetsClient: SheetsClient;
+}
+
+/**
+ * `05-google-sheets` Phase 4's tools set `ToolSpec.timeoutMs: 30_000` (a
+ * real outbound HTTP call can legitimately outrun the 10s default), but
+ * `withRequiredScopes`'s `decorate()` reconstructs its returned `ToolSpec`
+ * explicitly and does not forward `timeoutMs` (`apps/hermes/src/agent/
+ * with-required-scopes.ts` predates this field, from `04-google-auth`/
+ * `05-google-sheets` Phase 2, and `ScopedToolSpec` has no such field to
+ * carry it through). Re-applying it here, after wrapping, keeps the gated
+ * tool's real 30s budget instead of silently falling back to 10s — a
+ * correctness gap worth flagging for `apps/hermes/src/agent/
+ * with-required-scopes.ts` to close properly in a follow-up, since every
+ * future tool with a non-default `timeoutMs` would hit the same silent
+ * drop if gated through this decorator.
+ */
+function withTimeoutMsPreserved(spec: ToolSpec, gated: ToolSpec): ToolSpec {
+  return { ...gated, timeoutMs: spec.timeoutMs };
+}
 
 /**
  * Fixed placeholder — the same text `apps/hermes/src/handlers/complete.ts`
@@ -89,7 +129,11 @@ export interface BuiltAgent {
  * (`boot.ts`'s `buildConnectFlow`), closed over via `createWhoamiTool` —
  * which (05-google-sheets Phase 2) now wraps its handler in
  * `withRequiredScopes`, the same decorator the Sheets tools (Phase 4/5) gate
- * on, rather than checking scopes inline.
+ * on, rather than checking scopes inline. `sheetsInspectTool`/`sheetsReadTool`
+ * (Phase 4) are appended to the **end** of the tools array — existing prefix
+ * bytes untouched (settled decision 16) — built from `@hermes/google-sheets`'s
+ * base (ungated) tool factories over `sheetsDeps` (constructed in `boot.ts`,
+ * passed in already-built) and gated the same way `whoamiTool` is.
  */
 export function buildAgent(
   pool: Pool,
@@ -98,16 +142,30 @@ export function buildAgent(
   telemetryRecorder: TelemetryRecorderHandle,
   signal: AbortSignal,
   channel: TelegramPoller,
+  sheetsDeps: SheetsDeps,
 ): BuiltAgent {
   const { threadRepo, resolveChatId } = createThreadRepoWithChatIndex(pool);
   const approvalGate = createTelegramApprovalGate(channel, resolveChatId);
-  const whoamiTool = createWhoamiTool(buildGoogleAccountRepo(pool));
+  const googleAccountRepo = buildGoogleAccountRepo(pool);
+  const whoamiTool = createWhoamiTool(googleAccountRepo);
+
+  const scopeGateDeps = { googleAccountRepo, requiredScopes: SHEETS_SCOPES };
+  const baseSheetsInspectTool = createSheetsInspectTool(sheetsDeps);
+  const baseSheetsReadTool = createSheetsReadTool(sheetsDeps);
+  const sheetsInspectTool = withTimeoutMsPreserved(
+    baseSheetsInspectTool,
+    withRequiredScopes("sheets_inspect", scopeGateDeps)(baseSheetsInspectTool),
+  );
+  const sheetsReadTool = withTimeoutMsPreserved(
+    baseSheetsReadTool,
+    withRequiredScopes("sheets_read", scopeGateDeps)(baseSheetsReadTool),
+  );
 
   const definition: AgentDefinition = {
     name: "hermes",
     model,
     systemPrompt: SYSTEM_PROMPT,
-    tools: [getCurrentTimeTool, echoTool, whoamiTool],
+    tools: [getCurrentTimeTool, echoTool, whoamiTool, sheetsInspectTool, sheetsReadTool],
     channels: [CHANNEL_TELEGRAM],
   };
 

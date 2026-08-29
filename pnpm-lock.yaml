@@ -44,6 +44,9 @@ importers:
       '@hermes/google-auth':
         specifier: workspace:*
         version: link:../../packages/google-auth
+      '@hermes/google-sheets':
+        specifier: workspace:*
+        version: link:../../packages/google-sheets
       '@hermes/llm':
         specifier: workspace:*
         version: link:../../packages/llm
@@ -98,6 +101,15 @@ importers:
       google-auth-library:
         specifier: ^9.15.0
         version: 9.15.1
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+
+  packages/google-sheets:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: ^3.25.0
         version: 3.25.76

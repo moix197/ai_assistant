@@ -82,19 +82,40 @@ extracted into its own small module and unit-tested there:
 - `src/store/build-thread-repo.ts` — binds `@hermes/store`'s
   `getOrCreateThread`/`appendMessages` to `@hermes/agent`'s injected
   `ThreadRepo` port (03-agent-core).
+- `src/store/build-sheet-registry-repo.ts` (`05-google-sheets` Phase 4) —
+  binds `@hermes/store`'s `getSheetRegistryEntryBySlug`/
+  `listSheetRegistryEntries` to `@hermes/google-sheets`'s injected
+  `SheetRegistryPort`, the same shape `build-thread-repo.ts` uses. No
+  caching, no boot-time snapshot — every call goes straight to `pool`
+  (settled decision 5).
+- `src/google/build-access-token-port.ts` (`05-google-sheets` Phase 4) —
+  binds `@hermes/google-sheets`'s injected `AccessTokenPort` to
+  `@hermes/google-auth`'s `RefreshCoordinator.getValidAccessToken` — the
+  single refresh seam `04-google-auth` Phase 4 built (see "Google token
+  refresh" below), never a second refresh path (settled decision 18).
+  Persists a refreshed account via the same **UPDATE-only**
+  `updateRefreshedTokens` the refresh sweep uses, and only when the
+  coordinator actually refreshed (a reference-inequality check against the
+  account it was given) — no write-back on every tool call for an
+  already-fresh token.
 - `src/agent/build-agent.ts` — the only place allowed to import both
   `@hermes/agent` and construct the one hardcoded `AgentDefinition` (the D4
   multi-agent seam, reserved not built): `model` from the active provider
   profile, `systemPrompt` a fixed placeholder, `tools: [getCurrentTimeTool,
-  echoTool, whoamiTool]`, `channels: ["telegram"]` — reusing the exact
-  `"telegram"` string `complete.ts`'s dedupe key already spells out, not a
-  new constant. Also the only place that constructs the
-  `TelegramApprovalGate` (Phase 3, `03-agent-core`) and wires it into the
-  agent's deps — see "Approval gate" below — and (`04-google-auth` Phase 3)
-  the `whoamiTool` itself, via `createWhoamiTool` closed over a `pool`-backed
-  `buildGoogleAccountRepo`. Returns `{ agent, handleApprovalCallback }`, not
-  a bare `Agent`: `boot.ts` needs the latter to route inbound button taps
-  into the gate.
+  echoTool, whoamiTool, sheetsInspectTool, sheetsReadTool]`, `channels:
+  ["telegram"]` — reusing the exact `"telegram"` string `complete.ts`'s
+  dedupe key already spells out, not a new constant. Also the only place
+  that constructs the `TelegramApprovalGate` (Phase 3, `03-agent-core`) and
+  wires it into the agent's deps — see "Approval gate" below — and
+  (`04-google-auth` Phase 3) the `whoamiTool` itself, via `createWhoamiTool`
+  closed over a `pool`-backed `buildGoogleAccountRepo`. `05-google-sheets`
+  Phase 4 adds `sheetsInspectTool`/`sheetsReadTool`, built from
+  `@hermes/google-sheets`'s base tool factories over a `sheetsDeps` object
+  (`boot.ts` constructs it and passes it in already-built — see "Google
+  Sheets tools" below) and gated the same way `whoamiTool` is, appended to
+  the **end** of the tools array so the existing prefix stays byte-stable.
+  Returns `{ agent, handleApprovalCallback }`, not a bare `Agent`:
+  `boot.ts` needs the latter to route inbound button taps into the gate.
 - `src/google/refresh-sweep.ts` (`04-google-auth` Phase 4) — `createRefreshSweep`;
   see "Google token refresh" below.
 
@@ -110,9 +131,10 @@ resolve "who is asking" (`04-google-auth` Phase 3) — replies with its text,
 then marks the dedupe key completed — the same load-bearing claim → reply →
 complete ordering this handler has always used, unchanged. History now
 persists per `(channel, chat_id)` in Postgres (`packages/store`'s `threads`
-table) and survives a restart. The turn now has three tools
-(`get_current_time`, `echo`, `whoami`) and an approval gate for the one
-that's gated (`echo`) — see "Approval gate" below.
+table) and survives a restart. The turn now has five tools
+(`get_current_time`, `echo`, `whoami`, `sheets_inspect`, `sheets_read` —
+`05-google-sheets` Phase 4) and an approval gate for the one that's gated
+(`echo`) — see "Approval gate" below.
 
 ## Approval gate
 
@@ -174,6 +196,17 @@ the email. `TOOL_REQUIRED_SCOPES` (`@hermes/google-auth`) is a tool name →
 required scopes reference map; `withRequiredScopes` call sites pass
 `requiredScopes` explicitly rather than looking it up, so the map stays
 documentation until a future phase decides to make it authoritative.
+
+**Known gap, worked around, not yet fixed at the source:**
+`withRequiredScopes`'s `decorate()` reconstructs its returned `ToolSpec`
+field-by-field and does not forward `ToolSpec.timeoutMs`
+(`05-google-sheets` Phase 4, `packages/agent`) — `ScopedToolSpec` predates
+that field and has nowhere to carry it. `sheetsInspectTool`/`sheetsReadTool`
+each need their 30s budget to survive gating, so `build-agent.ts` re-applies
+`timeoutMs` onto the already-gated `ToolSpec` immediately after wrapping
+(`withTimeoutMsPreserved`) rather than editing this file. Any future gated
+tool with a non-default `timeoutMs` needs the same treatment until
+`with-required-scopes.ts` itself is updated to forward the field.
 
 - **In-memory only, never persisted.** A pending approval lives in a
   `Map<approvalId, ...>` inside the gate's closure. Restarting the process
@@ -269,6 +302,45 @@ needing to trigger a refresh itself.
 
 See `.ai/decisions/google-token-refresh.md` for the full design and its
 dependency on the advisory lock.
+
+## Google Sheets tools (`05-google-sheets` Phase 4)
+
+`sheets_inspect { sheet }` and `sheets_read { sheet, range,
+valueRenderOption? }` — the first two real Google-backed capabilities, over
+`@hermes/google-sheets`'s generic (non-trading) read tools. Both are gated
+behind `withRequiredScopes(name, { googleAccountRepo, requiredScopes:
+SHEETS_SCOPES })`, the same pattern `whoami` uses (see "Scope-gated tools"
+above): **fail-closed** — an identity-only account, or no account at all,
+never reaches the Sheets tool's own handler, never fetches an access token,
+never calls the Sheets API. The model relays `{ ok: false, reason:
+"not_connected" }`/`{ ok: false, reason: "missing_scope", fix: "run
+/connect google sheets" }` as a plain-language "run /connect google sheets"
+message.
+
+- **`sheet` is always a registered slug, never a raw spreadsheet ID/URL
+  typed in chat.** `@hermes/google-sheets`'s `resolveSheet` looks the slug
+  up against the *live* registry (`SheetRegistryPort`, bound in
+  `src/store/build-sheet-registry-repo.ts` — no caching, so a slug
+  registered via `hermes-sheets add` mid-conversation is usable on the very
+  next tool call). An unknown slug — including an entirely empty registry —
+  returns `{ ok: false, reason: "unknown_sheet", available: string[] }`
+  (`available: []` when nothing is registered yet), which the model relays
+  listing the real registered slugs instead of a bare refusal.
+- **The access token comes from the existing refresh seam, never a second
+  one.** `src/google/build-access-token-port.ts` binds `AccessTokenPort` to
+  `RefreshCoordinator.getValidAccessToken` — see "Google token refresh"
+  above and settled decision 18. A Sheets tool call never triggers its own
+  independent OAuth refresh logic.
+- **Both tools set `ToolSpec.timeoutMs: 30_000`** (`packages/agent`, this
+  phase) — a real Sheets API call, including `@hermes/google-sheets`'s own
+  internal retries, can outrun the 10s default meant for local computation.
+  See the "known gap" note under "Scope-gated tools" above for how
+  `build-agent.ts` keeps this budget through gating.
+- **`sheets_read` permits any registered `access` value** (`read` or
+  `readwrite`) — only `sheets_write` (Phase 5) checks `access`, and only
+  that tool requires human approval; both Phase 4 tools are
+  `requiresApproval: false`, the same posture `whoami` has (a read has no
+  consequence to confirm).
 
 ## Handlers
 

@@ -15,7 +15,8 @@
       "@hermes/llm": ["packages/llm/src/index.ts"],
       "@hermes/telemetry": ["packages/telemetry/src/index.ts"],
       "@hermes/agent": ["packages/agent/src/index.ts"],
-      "@hermes/google-auth": ["packages/google-auth/src/index.ts"]
+      "@hermes/google-auth": ["packages/google-auth/src/index.ts"],
+      "@hermes/google-sheets": ["packages/google-sheets/src/index.ts"]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,

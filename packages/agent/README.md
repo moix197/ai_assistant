@@ -9,30 +9,49 @@ two-strikes per-tool-call retry counter, a per-tool-call handler timeout, and
 concurrent execution of every tool call in one model response. Phase 3
 (`03-agent-core`) added the approval gate: some tools require a human's
 yes/no before they run. `04-google-auth` Phase 3 widened `ToolSpec.handler`'s
-`ctx` with `channel`/`channelUserId` — see below.
+`ctx` with `channel`/`channelUserId` — see below. `05-google-sheets` Phase 4
+widens `ctx` again with `turnId`, and adds `ToolSpec.timeoutMs?: number` so a
+tool making a real outbound HTTP call (the Sheets tools) can override the
+default 10s handler timeout — see below.
 
 ## Port contract
 
 `src/types.ts`:
 
 - `Message` — reused from `@hermes/core`, never redefined.
-- `ToolSpec { name, description, schema: z.ZodTypeAny, handler, requiresApproval }`
+- `ToolSpec { name, description, schema: z.ZodTypeAny, handler, requiresApproval, timeoutMs? }`
   — a tool made available to the model. `handler(args: unknown, { signal,
-  channel, channelUserId }): Promise<unknown>` receives its `safeParse`d
-  args and the turn's `AbortSignal`, plus `channel`/`channelUserId` —
-  identifying who is asking, threaded from `runTurn`'s own parameters (the
-  latter itself threaded from `Agent.handleMessage`, `04-google-auth`'s Phase
-  3). `whoami` (`apps/hermes/src/agent/tools/whoami.ts`) is the first tool
-  that reads these — a Google-identity lookup scoped to the asking chat, with
-  no hardcoded channel constant. **This was a required-field widening of the
-  contract, not an additive one**: every existing `ctx` literal, including in
-  tests that invoke a handler directly, had to gain both fields. No mutable
-  `register()`: tools are supplied once, at `AgentDefinition` construction,
-  because registration-order nondeterminism would threaten the byte-stable
-  prefix invariant #6 depends on. The registry itself (a `Map<string,
-  ToolSpec>` keyed by name) is built fresh inside `loop.ts`'s `converse()` on
-  every `runTurn` call — it isn't a standalone module, and doesn't need to be
-  with a handful of tools.
+  channel, channelUserId, turnId }): Promise<unknown>` receives its
+  `safeParse`d args and the turn's `AbortSignal`, plus `channel`/
+  `channelUserId` — identifying who is asking, threaded from `runTurn`'s own
+  parameters (the latter itself threaded from `Agent.handleMessage`,
+  `04-google-auth`'s Phase 3) — and `turnId` (`05-google-sheets` Phase 4),
+  the same id `runTurn` already generates and sends the provider as
+  `CompletionRequest.turnId`. `whoami`
+  (`apps/hermes/src/agent/tools/whoami.ts`) is the first tool that reads
+  `channel`/`channelUserId` — a Google-identity lookup scoped to the asking
+  chat, with no hardcoded channel constant. `sheets_write` (Phase 5) is the
+  first to read `turnId`, as part of its write-dedupe key. **Each of these
+  was a required-field widening of the contract, not an additive one**:
+  every existing `ctx` literal, including in tests that invoke a handler
+  directly, had to gain the new field. No mutable `register()`: tools are
+  supplied once, at `AgentDefinition` construction, because
+  registration-order nondeterminism would threaten the byte-stable prefix
+  invariant #6 depends on. The registry itself (a `Map<string, ToolSpec>`
+  keyed by name) is built fresh inside `loop.ts`'s `converse()` on every
+  `runTurn` call — it isn't a standalone module, and doesn't need to be with
+  a handful of tools.
+  `timeoutMs` (`05-google-sheets` Phase 4) overrides `loop.ts`'s default
+  10s handler timeout (`TOOL_HANDLER_TIMEOUT_MS`) for one tool — a real
+  outbound HTTP call (`sheets_inspect`/`sheets_read`, each set to 30s) can
+  legitimately take longer than a local computation once its own internal
+  retries are counted. Every tool that leaves it `undefined` keeps the 10s
+  default unchanged — this is additive, not a widening: no existing `ToolSpec`
+  literal needed a change. The trade-off is explicit UX cost, not free: a
+  turn can stall up to the configured timeout with the user watching a
+  silent chat. ROADMAP invariant 9 ("every loop bounded") still holds — the
+  bound is explicit and finite, just larger than the default for the tools
+  that opt in.
 - `AgentDefinition { name, model, systemPrompt, tools, channels }` — the one
   configuration object per agent, and the entire D4 multi-agent seam
   (settled decision 10): reserved, not built. `apps/hermes` passes one
@@ -55,6 +74,14 @@ fetches the account once, and — only on success — calls the wrapped
 correctly reject that). A tool built this way (`whoami`, and the Sheets
 tools Phase 4/5 add) never calls `googleAccountRepo.getAccount` a second
 time inside its own handler — one DB read per tool invocation, not two.
+`with-required-scopes.ts`'s decorator needs **no code change** for either of
+this package's `ctx` widenings: `ScopedToolContext`/`ToolContext` there are
+derived types (`Parameters<ToolSpec["handler"]>[1]`), so `turnId` reaching
+`ToolSpec.handler` automatically reaches the decorator's ctx too, and it
+passes `ctx` through to the wrapped handler unchanged either way. The
+`ApprovalGate` (`requestApproval(batch, { threadId, turnId }, signal)`)
+already received `turnId` as its own explicit parameter, sourced the same
+place `ctx.turnId` now is, not through `ctx` — also unaffected.
 
 `packages/agent` depends only on `@hermes/core`, `@hermes/llm` (for
 `LlmProvider`/`CompletionRequest`/`ToolDefinition`/`MAX_TOKENS_PER_TURN`/
@@ -191,21 +218,22 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
    never decremented by an intervening success, and is isolated per tool
    name — a different tool's first failure in the same turn still gets its
    own corrective round-trip.
-4. On successful validation, `spec.handler(args, { signal: deps.signal })`
-   runs inside a `Promise.race` against `delay(TOOL_HANDLER_TIMEOUT_MS, ...)`
-   (`delay` reused from `@hermes/core`) — a handler that never resolves feeds
-   back `"tool timed out after <ms>ms"` instead of stalling the turn.
-   `deps.signal.aborted` is checked immediately before invocation. A handler
-   that **throws** feeds back the thrown error's message — like every other
-   failure mode here, this never aborts the turn. The race's `delay` runs
-   against `deps.signal` composed (`AbortSignal.any`) with a controller
-   `invokeTool` owns and aborts once the race settles either way: this
-   cancels the timer immediately when the handler wins instead of leaking it
-   for up to `TOOL_HANDLER_TIMEOUT_MS`, and lets a turn-level shutdown that
-   lands mid-handler resolve the race early too — reported back as `"tool
-   aborted: agent turn was shut down before the handler finished"`, distinct
-   from a genuine timeout (`deps.signal.aborted` disambiguates the two once
-   the race settles).
+4. On successful validation, `spec.handler(args, { signal, channel,
+   channelUserId, turnId })` runs inside a `Promise.race` against
+   `delay(spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS, ...)` (`delay` reused
+   from `@hermes/core`) — a handler that never resolves feeds back `"tool
+   timed out after <ms>ms"` instead of stalling the turn. `deps.signal.aborted`
+   is checked immediately before invocation. A handler that **throws** feeds
+   back the thrown error's message — like every other failure mode here,
+   this never aborts the turn. The race's `delay` runs against `deps.signal`
+   composed (`AbortSignal.any`) with a controller `invokeTool` owns and
+   aborts once the race settles either way: this cancels the timer
+   immediately when the handler wins instead of leaking it for up to the
+   effective timeout, and lets a turn-level shutdown that lands mid-handler
+   resolve the race early too — reported back as `"tool aborted: agent turn
+   was shut down before the handler finished"`, distinct from a genuine
+   timeout (`deps.signal.aborted` disambiguates the two once the race
+   settles).
 5. **Every tool call in one model response executes concurrently** via
    `Promise.all`/`.map()` — each call's synchronous work (registry lookup,
    `safeParse`, the abort check) runs before its first `await`, so there's no

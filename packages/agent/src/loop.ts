@@ -18,7 +18,9 @@ export const MAX_ITERATIONS = 8;
  * Bounds a single tool handler invocation, independent of the turn-level
  * iteration cap above — a handler that never resolves must not stall the
  * whole turn. Package-internal, not env-configurable, same posture as
- * `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`.
+ * `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`. The default for every tool that
+ * leaves `ToolSpec.timeoutMs` unset; a tool may override it (see
+ * `invokeTool`).
  */
 const TOOL_HANDLER_TIMEOUT_MS = 10_000;
 
@@ -123,11 +125,11 @@ function truncateToolError(message: string): string {
 const TOOL_TIMEOUT = Symbol("tool-handler-timeout");
 
 /**
- * Runs one validated tool call inside a race against `TOOL_HANDLER_TIMEOUT_MS`
- * (`delay`, reused from `@hermes/core`) — a handler that never returns
- * produces a timeout result instead of stalling the turn. A handler that
- * throws never aborts the turn either: its message becomes the tool result
- * (settled decision 15).
+ * Runs one validated tool call inside a race against `spec.timeoutMs ??
+ * TOOL_HANDLER_TIMEOUT_MS` (`delay`, reused from `@hermes/core`) — a handler
+ * that never returns produces a timeout result instead of stalling the
+ * turn. A handler that throws never aborts the turn either: its message
+ * becomes the tool result (settled decision 15).
  *
  * The race's `delay` is driven by `raceSignal` — `signal` composed
  * (`AbortSignal.any`, same composition `packages/llm`'s adapter uses) with a
@@ -146,19 +148,21 @@ async function invokeTool(
   signal: AbortSignal,
   channel: string,
   channelUserId: string,
+  turnId: string,
 ): Promise<{ content: string; error?: string }> {
+  const timeoutMs = spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS;
   const handlerWon = new AbortController();
   const raceSignal = AbortSignal.any([signal, handlerWon.signal]);
   try {
     const outcome = await Promise.race([
-      spec.handler(args, { signal, channel, channelUserId }),
-      delay(TOOL_HANDLER_TIMEOUT_MS, raceSignal).then(() => TOOL_TIMEOUT),
+      spec.handler(args, { signal, channel, channelUserId, turnId }),
+      delay(timeoutMs, raceSignal).then(() => TOOL_TIMEOUT),
     ]);
 
     if (outcome === TOOL_TIMEOUT) {
       const message = signal.aborted
         ? "tool aborted: agent turn was shut down before the handler finished"
-        : `tool timed out after ${TOOL_HANDLER_TIMEOUT_MS}ms`;
+        : `tool timed out after ${timeoutMs}ms`;
       return { content: message, error: message };
     }
     return { content: typeof outcome === "string" ? outcome : JSON.stringify(outcome) };
@@ -273,7 +277,7 @@ async function resolveToolCall(
   assertToolInvocationAllowed(deps.signal);
 
   const startedAt = Date.now();
-  const outcome = await invokeTool(spec, parsed.data, deps.signal, channel, channelUserId);
+  const outcome = await invokeTool(spec, parsed.data, deps.signal, channel, channelUserId, turnId);
   return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome, true, approvalWaitMs);
 }
 

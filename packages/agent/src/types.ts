@@ -22,10 +22,14 @@ export interface ToolSpec {
    * the first tool that needs this: a required-field widening of this
    * contract, not an additive one, so every existing `ctx` literal
    * (including in tests that invoke a handler directly) must supply both.
+   * `ctx.turnId` (`05-google-sheets` Phase 4) widens the contract the same
+   * way, for `sheets_write`'s dedupe key (Phase 5) — `loop.ts` always knew
+   * the turn's id, it just never forwarded it into the handler's `ctx`
+   * before now.
    */
   handler: (
     args: unknown,
-    ctx: { signal: AbortSignal; channel: string; channelUserId: string },
+    ctx: { signal: AbortSignal; channel: string; channelUserId: string; turnId: string },
   ) => Promise<unknown>;
   /**
    * Gates this tool behind the approval flow: `true` routes the call through
@@ -34,6 +38,18 @@ export interface ToolSpec {
    * (`apps/hermes/src/agent/tools/echo.ts`) is the one tool that sets this.
    */
   requiresApproval: boolean;
+  /**
+   * Overrides `loop.ts`'s default handler timeout (10s, see
+   * `TOOL_HANDLER_TIMEOUT_MS`) for this one tool — a real outbound HTTP call
+   * (e.g. `sheets_inspect`/`sheets_read`, `05-google-sheets` Phase 4) can
+   * legitimately take longer than a local computation, especially once its
+   * own internal retries are counted. Costs UX when set high (settled
+   * decision 14): a turn can stall up to this many ms with the user watching
+   * a silent chat. ROADMAP invariant 9 ("every loop bounded") still holds —
+   * the bound is explicit and finite, just larger than the default.
+   * `undefined` (every existing tool) keeps the 10s default unchanged.
+   */
+  timeoutMs?: number;
 }
 
 /**

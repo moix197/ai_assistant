@@ -1,9 +1,10 @@
 import type { TelegramPoller } from "@hermes/channels";
+import type { AccessTokenPort, SheetRegistryPort, SheetsClient } from "@hermes/google-sheets";
 import type { LlmProvider } from "@hermes/llm";
 import type { Pool } from "@hermes/store";
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { describe, expect, it, vi } from "vitest";
-import { buildAgent } from "../build-agent";
+import { type SheetsDeps, buildAgent } from "../build-agent";
 
 /** `rows` seeds every `pool.query` call, mirroring `build-llm-provider.test.ts`'s shape. */
 function createMockPool(rows: unknown[] = []): Pool & { query: ReturnType<typeof vi.fn> } {
@@ -14,6 +15,17 @@ function createMockPool(rows: unknown[] = []): Pool & { query: ReturnType<typeof
 
 function createMockRecorder(): TelemetryRecorderHandle & { record: ReturnType<typeof vi.fn> } {
   return { record: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) };
+}
+
+/** Never exercised by these tests (no Sheets tool call is triggered) — just needs to satisfy the type. */
+function createFakeSheetsDeps(): SheetsDeps {
+  const sheetRegistry: SheetRegistryPort = {
+    getBySlug: vi.fn().mockResolvedValue(undefined),
+    listAll: vi.fn().mockResolvedValue([]),
+  };
+  const accessTokenPort: AccessTokenPort = { getAccessToken: vi.fn() };
+  const sheetsClient: SheetsClient = { getSpreadsheetMeta: vi.fn(), getValues: vi.fn() };
+  return { sheetRegistry, accessTokenPort, sheetsClient };
 }
 
 /** Never exercised by these tests (no gated tool call is triggered) — just needs to satisfy the type. */
@@ -51,6 +63,7 @@ describe("buildAgent — wiring", () => {
       recorder,
       new AbortController().signal,
       createMockChannel(),
+      createFakeSheetsDeps(),
     );
     const reply = await agent.handleMessage("telegram", "555", "111", "hello");
 
@@ -74,7 +87,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, whoami) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, whoami) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -94,6 +107,7 @@ describe("buildAgent — wiring", () => {
       createMockRecorder(),
       new AbortController().signal,
       createMockChannel(),
+      createFakeSheetsDeps(),
     );
     await agent.handleMessage("telegram", "999", "111", "hi");
 
@@ -102,13 +116,49 @@ describe("buildAgent — wiring", () => {
         model: "another-model",
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
         // for deterministic output — "echo" precedes "get_current_time"
-        // precedes "whoami".
+        // precedes "sheets_inspect" precedes "sheets_read" precedes "whoami".
+        // The existing prefix (echo, get_current_time, whoami) is byte-stable —
+        // 05-google-sheets Phase 4 only inserts the two new entries.
         tools: [
           expect.objectContaining({ name: "echo" }),
           expect.objectContaining({ name: "get_current_time" }),
+          expect.objectContaining({ name: "sheets_inspect" }),
+          expect.objectContaining({ name: "sheets_read" }),
           expect.objectContaining({ name: "whoami" }),
         ],
       }),
     );
+  });
+
+  it("constructing the agent does not itself touch the Sheets deps — nothing is called until a turn actually invokes a Sheets tool", async () => {
+    const pool = createMockPool([
+      { id: "thread-3", channel: "telegram", chat_id: "888", messages: [] },
+    ]);
+    const complete = vi.fn().mockResolvedValue({
+      text: "ok",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
+      finishReason: "stop",
+      costUsd: 0,
+    });
+    const llmProvider: LlmProvider = { complete };
+    const sheetsDeps = createFakeSheetsDeps();
+
+    const { agent } = buildAgent(
+      pool,
+      llmProvider,
+      "some-model",
+      createMockRecorder(),
+      new AbortController().signal,
+      createMockChannel(),
+      sheetsDeps,
+    );
+    await agent.handleMessage("telegram", "888", "111", "hi");
+
+    expect(sheetsDeps.sheetRegistry.getBySlug).not.toHaveBeenCalled();
+    expect(sheetsDeps.sheetRegistry.listAll).not.toHaveBeenCalled();
+    expect(sheetsDeps.accessTokenPort.getAccessToken).not.toHaveBeenCalled();
+    expect(sheetsDeps.sheetsClient.getSpreadsheetMeta).not.toHaveBeenCalled();
+    expect(sheetsDeps.sheetsClient.getValues).not.toHaveBeenCalled();
   });
 });

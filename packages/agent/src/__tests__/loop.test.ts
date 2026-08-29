@@ -647,6 +647,118 @@ describe("runTurn — tool execution", () => {
     }
   });
 
+  it("honors a tool's own timeoutMs instead of the 10s default when set (05-google-sheets Phase 4)", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveHandler!: (value: string) => void;
+      const handler = vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveHandler = resolve;
+          }),
+      );
+      const longTool = tool({ name: "slow", handler, timeoutMs: 30_000 });
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(
+          completionResult({ toolCalls: [{ id: "c1", name: "slow", arguments: {} }], text: "" }),
+        )
+        .mockResolvedValueOnce(completionResult({ text: "done" }));
+      const llmProvider: LlmProvider = { complete };
+      const threadRepo = fakeThreadRepo();
+
+      const resultPromise = runTurn(
+        definition({ tools: [longTool] }),
+        { llmProvider, threadRepo, signal: new AbortController().signal },
+        "telegram",
+        "555",
+        "111",
+        "hello",
+      );
+
+      // Past the 10s default but still inside the tool's own 30s budget —
+      // the handler must not have been timed out yet.
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(handler).toHaveBeenCalledTimes(1);
+      resolveHandler("still going");
+      await vi.runAllTimersAsync();
+      const text = await resultPromise;
+
+      expect(text).toBe("done");
+      const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+      expect(findToolMessage(secondRequest, "c1")?.content).toBe("still going");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still applies the 10s default when a tool leaves timeoutMs unset — regression guard for the timeoutMs widening", async () => {
+    vi.useFakeTimers();
+    try {
+      const hangingHandler = vi.fn(() => new Promise<never>(() => {}));
+      const hangingTool = tool({ name: "hangs", handler: hangingHandler });
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(
+          completionResult({ toolCalls: [{ id: "c1", name: "hangs", arguments: {} }], text: "" }),
+        )
+        .mockResolvedValueOnce(completionResult({ text: "done" }));
+      const llmProvider: LlmProvider = { complete };
+      const threadRepo = fakeThreadRepo();
+
+      const resultPromise = runTurn(
+        definition({ tools: [hangingTool] }),
+        { llmProvider, threadRepo, signal: new AbortController().signal },
+        "telegram",
+        "555",
+        "111",
+        "hello",
+      );
+
+      await vi.runAllTimersAsync();
+      const text = await resultPromise;
+
+      expect(text).toBe("done");
+      const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+      expect(findToolMessage(secondRequest, "c1")?.content).toContain(
+        "tool timed out after 10000ms",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("threads ctx.turnId through to the tool handler, matching the turn's own generated id", async () => {
+    const handler = vi.fn().mockResolvedValue("ok");
+    const noopTool = tool({ handler });
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({ toolCalls: [{ id: "call_1", name: "noop", arguments: {} }], text: "" }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "final answer" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+
+    await runTurn(
+      definition({ tools: [noopTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    // The tool handler's own turnId must equal the turnId the provider saw
+    // on its request — the one place `turnId` is independently observable
+    // outside `ctx` (CompletionRequest.turnId, packages/llm's port).
+    const firstRequest = complete.mock.calls[0]?.[0] as CompletionRequest;
+    expect(handler).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ turnId: firstRequest.turnId }),
+    );
+  });
+
   it("reports 'tool aborted', not 'tool timed out', and an aborted turn outcome when the signal fires mid-handler", async () => {
     let resolveHandlerStarted!: () => void;
     const handlerStarted = new Promise<void>((resolve) => {

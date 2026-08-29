@@ -16,7 +16,12 @@ describe("echoTool", () => {
   it("returns its input text unchanged", async () => {
     const result = await echoTool.handler(
       { text: "hello world" },
-      { signal: new AbortController().signal, channel: "telegram", channelUserId: "123" },
+      {
+        signal: new AbortController().signal,
+        channel: "telegram",
+        channelUserId: "123",
+        turnId: "turn-1",
+      },
     );
     expect(result).toBe("hello world");
   });

@@ -4,7 +4,12 @@ import { z } from "zod/v4";
 import type { ScopedToolContext, ScopedToolSpec } from "../with-required-scopes";
 import { withRequiredScopes } from "../with-required-scopes";
 
-const CTX = { signal: new AbortController().signal, channel: "telegram", channelUserId: "111" };
+const CTX = {
+  signal: new AbortController().signal,
+  channel: "telegram",
+  channelUserId: "111",
+  turnId: "turn-1",
+};
 const IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"];
 const SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 
