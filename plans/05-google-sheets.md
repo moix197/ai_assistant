@@ -581,7 +581,7 @@ already works.
       — write the test as "wrapped handler is a spy that must be called
       exactly zero times" for both failure branches, not just "the wrapped
       handler's result never surfaces"
-- [ ] Confirm `whoami`'s refactor changes no observable behavior: re-run
+- [x] Confirm `whoami`'s refactor changes no observable behavior: re-run
       `04-google-auth`'s existing manual exit-criterion check (`/connect
       google` → `whoami` → real email) against the refactored tool
 - [x] Grep `apps/hermes/src/agent/tools/whoami.ts` after the refactor to
@@ -604,28 +604,33 @@ already works.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm test:db` green
 - [x] `pnpm lint` green
-- [ ] Manual: `/connect google` still connects identity-only exactly as
+- [x] Manual: `/connect google` still connects identity-only exactly as
       before (regression check against `04-google-auth`'s exit criterion)
-- [ ] Manual: `/connect google sheets` → complete consent granting both
+- [x] Manual: `/connect google sheets` → complete consent granting both
       scopes → Telegram confirms connection; `/status` afterward lists the
       spreadsheets scope in its scopes output
-- [ ] Manual: `/connect google sheets` → on Google's consent screen,
+- [x] Manual: `/connect google sheets` → on Google's consent screen,
       untick the Sheets permission if the UI allows it (or simulate via a
       test double if it doesn't) → Hermes still connects (identity present)
       and tells the user Sheets wasn't granted
+      — **satisfied via the test-double branch, not the UI**: Google renders
+      no per-scope checkbox when a single sensitive scope is requested, so
+      the consent screen offered nothing to untick. Covered by the
+      `grantedScopes`-identity-only case in `connect-flow.test.ts` and the
+      partial-grant case in `build-oauth-callback-route.test.ts`.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat: scope upgrade for /connect google sheets, withRequiredScopes decorator`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
