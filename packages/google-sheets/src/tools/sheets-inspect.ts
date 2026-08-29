@@ -74,7 +74,7 @@ export function createSheetsInspectTool(deps: CreateSheetsInspectToolDeps) {
           truncated: true,
           returnedTabs: capped.returnedCount,
           totalTabs: capped.totalCount,
-          note: "Hay más pestañas de las que se muestran — pedí sheets_inspect otra vez si necesitás ver el resto.",
+          note: "La planilla tiene más pestañas de las que se muestran acá — solo se listan las primeras.",
         }),
       };
     },

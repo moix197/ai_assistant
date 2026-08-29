@@ -9,14 +9,16 @@ import { createSheetsInspectTool } from "../sheets-inspect";
  * Builds a `SheetMeta` with one tab per entry in `headerLens` — each tab's
  * header row is `headerLens[i]` single-char cells, so its cell count
  * (`cells` in `sheets-inspect.ts`'s `measure`) is exactly `headerLens[i]`.
- * Title/sheetId are fixed across tabs so per-tab JSON length stays uniform,
- * keeping the char cap comfortably out of reach in tests that only mean to
- * exercise the cell cap.
+ * Titles are distinguishable (`Tab1`, `Tab2`, ...) so tab order is
+ * observable in assertions; sheetId is fixed since it's not exercised. The
+ * per-index digit is the only length variation across tabs, which keeps the
+ * char cap comfortably out of reach in tests that only mean to exercise the
+ * cell cap.
  */
 function makeMetaWithHeaderLens(headerLens: number[]): SheetMeta {
   return {
-    sheets: headerLens.map((len) => ({
-      properties: { sheetId: 0, title: "Tab" },
+    sheets: headerLens.map((len, i) => ({
+      properties: { sheetId: 0, title: `Tab${i + 1}` },
       data: [
         {
           rowData: [{ values: Array.from({ length: len }, () => ({ formattedValue: "h" })) }],
@@ -186,9 +188,11 @@ describe("sheets_inspect", () => {
       truncated: true,
       returnedTabs: 5,
       totalTabs: 6,
-      note: "Hay más pestañas de las que se muestran — pedí sheets_inspect otra vez si necesitás ver el resto.",
+      note: "La planilla tiene más pestañas de las que se muestran acá — solo se listan las primeras.",
     });
-    expect((result as { tabs: unknown[] }).tabs).toHaveLength(5);
+    const tabs = (result as { tabs: { title: string }[] }).tabs;
+    expect(tabs).toHaveLength(5);
+    expect(tabs.map((tab) => tab.title)).toEqual(["Tab1", "Tab2", "Tab3", "Tab4", "Tab5"]);
   });
 
   it("a tab with an empty header row contributes zero cells and is kept, still counting correctly toward returnedTabs/totalTabs", async () => {
@@ -215,7 +219,7 @@ describe("sheets_inspect", () => {
     expect(tabs[5]?.headerRow).toEqual([]);
   });
 
-  it("returns a single tab whose header row alone exceeds the caps whole, never split", async () => {
+  it("returns a single tab whose header row alone exceeds the cell cap whole, never split", async () => {
     const meta = makeMetaWithHeaderLens([600]);
     const tool = createSheetsInspectTool({
       sheetRegistry: fakeRegistry([fakeEntry()]),

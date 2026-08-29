@@ -457,7 +457,7 @@ either a context-flooding dump or (today) no limit at all.
 **File changes:**
 | Action | File | What changes |
 |---|---|---|
-| modify | `packages/google-sheets/src/tools/sheets-inspect.ts` | after `summarizeTabs(meta)`, call `truncateBySize(allTabs, (tab) => ({ cells: tab.headerRow.length, chars: JSON.stringify(tab).length }))`; return `{ok:true, sheet, tabs: capped.items, ...(capped.truncated && {truncated:true, returnedTabs:capped.returnedCount, totalTabs:capped.totalCount, note:"Hay más pestañas de las que se muestran — pedí sheets_inspect otra vez si necesitás ver el resto."})}` |
+| modify | `packages/google-sheets/src/tools/sheets-inspect.ts` | after `summarizeTabs(meta)`, call `truncateBySize(allTabs, (tab) => ({ cells: tab.headerRow.length, chars: JSON.stringify(tab).length }))`; return `{ok:true, sheet, tabs: capped.items, ...(capped.truncated && {truncated:true, returnedTabs:capped.returnedCount, totalTabs:capped.totalCount, note:"La planilla tiene más pestañas de las que se muestran acá — solo se listan las primeras."})}` |
 | modify | `packages/google-sheets/README.md` | document `sheets_inspect`'s use of the same shared helper, tab-granularity instead of row-granularity |
 
 **Steps:**
