@@ -811,42 +811,42 @@ valid registered slugs are listed in the result.
 
 **Steps:**
 
-- [ ] `ToolSpec.timeoutMs` change first, in isolation, with its own
+- [x] `ToolSpec.timeoutMs` change first, in isolation, with its own
       regression test (existing tools keep the 10s default) — before any
       Sheets tool exists to consume it
-- [ ] `ctx.turnId` widening, bundled into the same commit as `timeoutMs`
+- [x] `ctx.turnId` widening, bundled into the same commit as `timeoutMs`
       (see Dependencies & Risks): update `invokeTool`/`resolveToolCall` in
       `loop.ts`, then fix the two pre-existing hand-built `ctx` literals
       (`get-current-time.test.ts`, `echo.test.ts`) and this plan's own
       Phase 2 literals (`with-required-scopes.test.ts`, `whoami.test.ts`) —
       run `pnpm -r typecheck` and confirm all four are the only call sites
       needing a fix, not a surprise fifth
-- [ ] `resolve-sheet.ts`'s unknown-slug shape is written and tested once,
+- [x] `resolve-sheet.ts`'s unknown-slug shape is written and tested once,
       including the **empty-registry** case (`listAll()` returns `[]`, not
       an error) as its own explicit assertion, not merely implied by the
       unknown-slug case — then both `sheets_inspect` and `sheets_read`
       import it — do not duplicate the lookup-and-branch logic per tool file
-- [ ] **Fail-closed proof, not assumption**: write the test as "the fake
+- [x] **Fail-closed proof, not assumption**: write the test as "the fake
       Sheets HTTP client (or `AccessTokenPort`) is a spy that must be called
       exactly zero times" for an unconnected account and for a
       connected-but-under-scoped account, mirroring `with-required-scopes.test.ts`'s
       rigor from Phase 2
-- [ ] `sheets-client.ts`'s classification: write a test asserting a 429
+- [x] `sheets-client.ts`'s classification: write a test asserting a 429
       response is classified as rate-limited (retried per the core helper's
       contract) and a 5xx after a successfully-sent request is classified
       differently from a 429 — reads may retry either freely since `GET` is
       idempotent; this distinction matters starting Phase 5 for writes, but
       the classification itself is defined here where the client is built
-- [ ] Confirm `getBySlug`/`listAll` in `build-sheet-registry-repo.ts` hit
+- [x] Confirm `getBySlug`/`listAll` in `build-sheet-registry-repo.ts` hit
       the pool on every call — no in-memory cache, no boot-time snapshot;
       write a test proving two consecutive tool calls after a registry
       mutation between them see the mutation
-- [ ] `AccessTokenPort`'s persist step: confirm it calls
+- [x] `AccessTokenPort`'s persist step: confirm it calls
       `updateRefreshedTokens`, not `upsertAccount` — a test asserting a
       disconnected account (deleted mid-session) is **not** resurrected by
       a token-fetch attempting to persist a refresh, mirroring the exact
       bug `04-google-auth`'s Final Verification fixed in the sweep
-- [ ] Confirm `apps/hermes/package.json` and `pnpm-lock.yaml` pick up the
+- [x] Confirm `apps/hermes/package.json` and `pnpm-lock.yaml` pick up the
       new workspace package cleanly (`pnpm install` with no unexpected diff)
 
 **Tests:**
@@ -865,11 +865,11 @@ valid registered slugs are listed in the result.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] `pnpm lint` green
-- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line)
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] `pnpm lint` green
+- [ ] `docker compose build` succeeds (catches a missing `Dockerfile` COPY line) — deferred to Phase 7 Final Verification (no container builds run during afk execution)
 - [ ] Manual: with an identity-only connected account, ask a Sheets-shaped
       question → model relays "run /connect google sheets," `psql` shows no
       new `tool.call` row hit the Sheets client (or a `tool.call` row exists
@@ -883,14 +883,14 @@ valid registered slugs are listed in the result.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: google-sheets package, sheets_inspect and sheets_read tools`
+- [x] Changes committed: `feat: google-sheets package, sheets_inspect and sheets_read tools` (e54d1ee, fixes 33c1c61, 60c44da)
 - [ ] Phase marked complete
 
 ---
