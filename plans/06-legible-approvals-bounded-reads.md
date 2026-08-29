@@ -304,25 +304,32 @@ error and no test failure unless one is written specifically to catch it
   the rename: nothing outside this file compares against the literal label
   strings (`callbackData` encodes `"approve"`/`"deny"` as lowercase action
   tokens, not the display labels) — confirm this holds at execution time.
-- **Resolved during the Phase 3 code review (finding 5): batch rendering for
-  >1 gated call, and the fallback format's header.** The settled decisions
-  specify single-call prompt shapes (decisions 21, 22). Today's
-  `echo`+`sheets_write` are the only two gated tools, so a batch of 2+ gated
-  calls in one model response is rare but possible. The shipped renderer
-  (`apps/hermes/src/agent/approval-prompt-renderer.ts`) settled on: a batch
-  where **every** call resolved a usable `ApprovalSummary` renders the new,
-  headerless format, each call's own block joined by a blank line, with no
-  shared trailing question line (the two buttons already say
-  "Aprobar"/"Rechazar", so a redundant question line adds nothing); a batch
-  where **any** call lacks a usable summary (prepare-less, or a malformed
-  summary — see the defensive-summary bullet below) renders the **whole**
-  batch, instead, in the pre-Phase-3 raw-JSON format — `"The model wants to
-  run:"` followed by one `- tool(args)` line per call, joined by a single
-  newline, again minus the trailing question line — rather than mixing a
-  legible Spanish block and raw-JSON lines in the same prompt. The header
-  line itself must never be dropped for the fallback format: an earlier
-  version of this renderer (commit `8dfabfc`) omitted it entirely, which the
-  review caught and this text now corrects.
+- **Resolved during the Phase 3 code review (finding 5), then corrected
+  again post-Phase-3 (a batch must never mask a legible call behind a sibling
+  call's missing summary): batch rendering for >1 gated call, and the
+  fallback format's header.** The settled decisions specify single-call
+  prompt shapes (decisions 21, 22). Today's `echo`+`sheets_write` are the
+  only two gated tools, so a batch of 2+ gated calls in one model response is
+  rare but possible. The shipped renderer
+  (`apps/hermes/src/agent/approval-prompt-renderer.ts`) renders **per call,
+  independently**: each call with a usable `ApprovalSummary` renders the new
+  legible block; each call without one (prepare-less, or a malformed
+  summary — see the defensive-summary bullet below) renders that one call's
+  raw-JSON `- tool(args)` line instead — never the whole batch dropping to
+  raw JSON because one sibling call lacks a summary. These per-call blocks
+  are joined by a blank line, headerless, with no shared trailing question
+  line (the two buttons already say "Aprobar"/"Rechazar", so a redundant
+  question line adds nothing). The one exception is the all-fallback case —
+  **every** call in the batch lacks a usable summary — which instead renders
+  as a single pre-Phase-3-shaped block: `"The model wants to run:"` followed
+  by one `- tool(args)` line per call, joined by a single newline, again
+  minus the trailing question line; this keeps that case byte-identical to
+  today's format. The header line itself must never be dropped from that
+  all-fallback case: an earlier version of this renderer (commit `8dfabfc`)
+  omitted it entirely, which the Phase 3 review caught; a later version then
+  over-corrected by making *any* prepare-less call in a batch drop the
+  header-plus-raw-JSON format onto every call in that batch, which this text
+  now corrects back to per-call rendering.
 - **The update-mode `replaced` snapshot read stays inside the scope
   decorator's already-proven fail-closed guarantee (settled decision 23).**
   It happens in the *handler*, after consent, which already runs inside
@@ -563,7 +570,7 @@ generic formatter — Phases 5 and 6 add no new renderer logic, only richer
 | modify | `packages/agent/src/loop.ts` | `resolveToolCall`'s `safeParse` + one corrective retry now runs before `runGatedToolCalls` builds its batch, for the gated path (settled decision 9); new `prepareGatedCall(spec, call, ctx)` helper (≤30 lines): re-derives `parsedArgs` via the already-moved `safeParse` step, calls `spec.prepare(parsedArgs, ctx)` (races it against `spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS` via the existing `delay(ms, signal)` pattern) when declared, and returns a discriminated `{status:"refused", result} | {status:"ready", plan, parsedArgs, batchEntry}`; **`batchEntry` is always `{tool: call.name, args: call.arguments, ...(summary && {summary})}` — `call.arguments` (the RAW, unparsed args), never `parsedArgs`** (see the Dependencies & Risks bullet on this — it is the one detail most likely to regress silently); a prepare-less tool always resolves `{status:"ready", plan: undefined, parsedArgs, batchEntry:{tool, args: call.arguments}}`; a throw/timeout/abort-during-prepare resolves `{status:"refused", result:{ok:false, reason:"prepare_failed"}}`; new `buildApprovalBatch(calls)` helper (≤30 lines) splits refusals (returned immediately, `approved:false` on their `tool.call` event) from ready calls and skips calling `requestApproval` entirely when no ready calls remain (settled decision 11); on approval, each ready call's handler runs as `spec.handler(parsedArgs, {...ctx, plan})`; a runtime backstop throws if a tool declaring `prepare` somehow reaches the handler without a `plan` (should be unreachable by construction — defense in depth per settled decision 6) |
 | modify | `apps/hermes/src/agent/with-required-scopes.ts` | `ScopedToolSpec` gains `prepare?`; the whitelist in `decorate()` (`L93-98`) forwards a **wrapped** `prepare`, mirroring `handler`'s existing wrap exactly: a missing account or missing scope short-circuits `prepare` itself, returning `{ok:false, result:{ok:false, reason:"not_connected"}}` or `{ok:false, result:{ok:false, reason:"missing_scope", scope, fix:"run /connect google sheets"}}` — the identical refusal shapes `handler`'s wrap already produces, just reachable one step earlier so an under-scoped user is never shown a prompt for a call already destined to fail (resolved per Dependencies & Risks — not an open question) |
 | modify | `packages/google-sheets/src/tools/sheets-write.ts` | export `SheetsWritePlan { sheetSlug: string; spreadsheetId: string; effectiveValueInputOption: ValueInputOption }`; add `prepare(args, ctx)` (args already parsed by the loop): calls `resolveSheet` (moved out of the handler); unknown slug → `{ok:false, result: resolved}` (the existing `unknown_sheet` shape, unchanged); otherwise → `{ok:true, plan:{sheetSlug, spreadsheetId, effectiveValueInputOption: overrideOption ?? entry.valueInputOption}, summary:{action:\`¿Escribir en ${entry.slug}?\`, target: entry.description || undefined, effects: []}}` — a minimal but fully valid `ApprovalSummary`; `items`/richer `effects` arrive in Phases 5/6 with no renderer change needed; `handler` now takes `ctx: SheetsToolContext & {plan: SheetsWritePlan}`, drops its own `resolveSheet` call and its own `overrideOption ?? resolved.entry.valueInputOption` computation, reading both off `ctx.plan` instead — the `access !== "readwrite"` check and `claimDedupeKey`/claim-complete-release stay in the handler for this phase, unmoved (moved to `prepare` in Phase 4; dedupe stays in the handler permanently, see Dependencies & Risks) |
-| create | `apps/hermes/src/agent/approval-prompt-renderer.ts` | extracts and replaces `formatBatchPrompt`/`formatResolvedText` out of `telegram-approval-gate.ts` into their own testable module (small-focused-function / separation-of-concerns per CLAUDE.md); **fully generic, final rendering logic** — no tool-name branching, no cast, no import from `@hermes/google-sheets`: for a request with a `summary` whose `action` is non-empty, render `action` as line 1, `target` (if present) as line 2, a blank line, each `items` entry indented two spaces (if present) followed by an "…y N más (M en total)." count line when `itemsTotal > items.length`, a blank line, then each `effects` entry as its own line; when **every** call in the batch has a usable summary, these blocks are joined by a blank line with no shared trailing question line; when **any** call lacks one (no `summary`, or a malformed one — falsy/empty `action`, defensive, see Dependencies & Risks), the **whole batch** falls back to the pre-Phase-3 raw-JSON format instead — `"The model wants to run:"` followed by one `` `- ${tool}(${JSON.stringify(args)})` `` line per call, joined by a single newline, minus only the trailing "Approve or deny?" line (see Dependencies & Risks — corrected post-review, finding 5: the header must never be dropped) |
+| create | `apps/hermes/src/agent/approval-prompt-renderer.ts` | extracts and replaces `formatBatchPrompt`/`formatResolvedText` out of `telegram-approval-gate.ts` into their own testable module (small-focused-function / separation-of-concerns per CLAUDE.md); **fully generic, final rendering logic** — no tool-name branching, no cast, no import from `@hermes/google-sheets`: for a request with a `summary` whose `action` is non-empty, render `action` as line 1, `target` (if present) as line 2, a blank line, each `items` entry indented two spaces (if present) followed by an "…y N más (M en total)." count line when `itemsTotal > items.length`, a blank line, then each `effects` entry as its own line; a request with **no** `summary`, or a malformed one (falsy/empty `action` — defensive, see Dependencies & Risks), falls back to today's `` `- ${tool}(${JSON.stringify(args)})` `` line unchanged **for that call only** — it does not drag the rest of the batch into fallback; joins every call's own block (summary block or raw-JSON line) with a blank line, no shared trailing question line; the one exception is when **every** call in the batch lacks a usable summary, which instead renders as a single pre-Phase-3-shaped block — `"The model wants to run:"` followed by one `` `- ${tool}(${JSON.stringify(args)})` `` line per call, joined by a single newline, minus only the trailing "Approve or deny?" line — kept byte-identical to today's all-raw-JSON format (see Dependencies & Risks — corrected post-review, finding 5, then corrected again post-Phase-3 to render per call instead of per batch: the header must never be dropped from the all-fallback case, and a batch must never mask a legible call's summary behind a sibling call's missing one) |
 | modify | `apps/hermes/src/agent/telegram-approval-gate.ts` | imports `formatBatchPrompt`/`formatResolvedText` from the new renderer module instead of defining them inline; `APPROVE_LABEL`/`DENY_LABEL` translated to `"Aprobar"`/`"Rechazar"`; add a `logger: Logger` param to `createTelegramApprovalGate` (new dependency — `@hermes/core`'s `createLogger`, wired from `apps/hermes/src/agent/build-agent.ts`), and call `logger.debug("approval prompt prepared", {tool, args, plan})` for each ready call right before sending the prompt — raw args + the resolved plan (including `spreadsheetId` and effective `valueInputOption`, per settled decision 20; note `plan`, not `summary` — `summary` never carries `spreadsheetId`) at debug level only, off by default in production |
 | modify | `apps/hermes/src/agent/build-agent.ts` | pass a logger into `createTelegramApprovalGate` |
 | modify | `apps/hermes/README.md` | begin correcting the Approval gate section's overclaim (full correction lands in Phase 8 once the whole prompt shape exists; this phase's edit removes the now-false "unchanged by Phase 5" / raw-args claim for `sheets_write` specifically) |

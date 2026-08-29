@@ -47,13 +47,22 @@ describe("formatBatchPrompt", () => {
     );
   });
 
-  it("renders the WHOLE batch in fallback format (header, one raw-JSON line per call) when any call lacks a usable summary, rather than mixing styles", () => {
+  it("renders a mixed batch per call: the summary call gets its legible block, the prepare-less call gets its own raw-JSON line, headerless, joined by a blank line", () => {
     const batch: ApprovalRequest[] = [
       {
         tool: "sheets_write",
         args: { sheet: "clients" },
         summary: { action: "¿Escribir en clients?", effects: [] },
       },
+      { tool: "echo", args: { text: "hi" } },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe('¿Escribir en clients?\n\n- echo({"text":"hi"})');
+  });
+
+  it("renders the whole batch in the pre-Phase-3 fallback format (header, one raw-JSON line per call), byte-identical to today, only when EVERY call lacks a usable summary", () => {
+    const batch: ApprovalRequest[] = [
+      { tool: "sheets_write", args: { sheet: "clients" } },
       { tool: "echo", args: { text: "hi" } },
     ];
 

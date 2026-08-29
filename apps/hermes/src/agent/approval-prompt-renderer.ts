@@ -54,36 +54,44 @@ function formatSummaryBlock(summary: ApprovalSummary): string {
 
 /**
  * Pre-Phase-3's raw-JSON batch format, header included, minus only the
- * trailing "Approve or deny?" question line (finding 5). Used for the whole
- * batch whenever ANY call in it lacks a usable summary — a batch renders in
- * one consistent style or the other, never a jumble of legible Spanish prose
- * and raw-JSON lines in the same prompt.
+ * trailing "Approve or deny?" question line (finding 5). Used only when
+ * EVERY call in the batch lacks a usable summary — byte-identical to
+ * today's format for that case.
  */
 function formatFallbackBatch(batch: ApprovalRequest[]): string {
   return [FALLBACK_HEADER, ...batch.map(formatRawFallbackLine)].join("\n");
 }
 
-/**
- * The generic summary rendering — used only when every call in the batch
- * resolved a usable `ApprovalSummary`. Headerless (matches the plan's
- * worked example): each call's own legible block, joined by a blank line
- * when the batch has more than one.
- */
-function formatSummaryBatch(batch: ApprovalRequest[]): string {
-  return batch
-    .map((request) => formatSummaryBlock(request.summary as ApprovalSummary))
-    .join("\n\n");
+/** A call's own block: the legible summary rendering when it has a usable summary, else the raw-JSON fallback line. */
+function formatCallBlock(request: ApprovalRequest): string {
+  return hasUsableSummary(request)
+    ? formatSummaryBlock(request.summary as ApprovalSummary)
+    : formatRawFallbackLine(request);
 }
 
 /**
- * Renders a whole batch's prompt body. All-summary batches get the new,
- * headerless generic rendering; a batch with any prepare-less or malformed
- * call falls back, as a whole, to the pre-Phase-3 raw-JSON format (header
- * included, minus the trailing question line) rather than mixing the two
- * styles in one prompt.
+ * Per-call rendering — used whenever at least one call in the batch resolved
+ * a usable `ApprovalSummary` (all-summary or mixed). Headerless (matches the
+ * plan's worked example): each call renders independently via
+ * `formatCallBlock`, joined by a blank line, so a mixed batch shows legible
+ * prose for the calls that have it and a raw-JSON line only for the calls
+ * that don't — never the whole batch dropping to raw JSON because of one
+ * prepare-less call.
+ */
+function formatPerCallBatch(batch: ApprovalRequest[]): string {
+  return batch.map(formatCallBlock).join("\n\n");
+}
+
+/**
+ * Renders a whole batch's prompt body. Only the all-fallback case (no call
+ * in the batch has a usable summary) uses the pre-Phase-3 header-plus-raw-
+ * JSON format, kept byte-identical to today. Every other case — all-summary
+ * or mixed — renders per call and drops the header, per the plan's Phase 3
+ * file-changes row ("a request with no summary" falls back per-request, not
+ * per-batch).
  */
 export function formatBatchPrompt(batch: ApprovalRequest[]): string {
-  return batch.every(hasUsableSummary) ? formatSummaryBatch(batch) : formatFallbackBatch(batch);
+  return batch.some(hasUsableSummary) ? formatPerCallBatch(batch) : formatFallbackBatch(batch);
 }
 
 /** The prompt body plus a trailing resolution label, shown once a batch has been answered (or timed out/aborted). */
