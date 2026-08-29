@@ -1122,15 +1122,15 @@ just from the local `google_accounts` table.
 **Steps:**
 
 - [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–6 together
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review reflected back into this plan file
-- [ ] `pnpm lint` — zero errors
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green
-- [ ] No CLAUDE.md invariants violated
+- [~] Reviewer handoff prompt emitted in a fenced code block, scoped to end-to-end review of Phases 1–6 together — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review reflected back into this plan file
+- [x] `pnpm lint` — zero errors
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green
+- [x] No CLAUDE.md invariants violated
 - [ ] Manual, golden path: identity-only account refused a Sheets read, no
       API call made (exit criterion 1) → `/connect google sheets` → `/status`
       reflects Sheets capability (exit criterion 2) → natural-language read
