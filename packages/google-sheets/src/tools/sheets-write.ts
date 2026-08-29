@@ -233,7 +233,7 @@ async function prepareWrite(
   args: unknown,
   ctx: SheetsToolContext,
 ): Promise<
-  | { ok: false; result: ResolveSheetResult | ReadOnlySheetResult }
+  | { ok: false; result: Extract<ResolveSheetResult, { ok: false }> | ReadOnlySheetResult }
   | {
       ok: true;
       plan: SheetsWritePlan;
