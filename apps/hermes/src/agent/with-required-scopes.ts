@@ -30,6 +30,8 @@ export interface ScopedToolSpec {
   schema: ToolSpec["schema"];
   handler: (args: unknown, ctx: ScopedToolContext) => Promise<unknown>;
   requiresApproval: boolean;
+  /** Forwarded verbatim onto the gated `ToolSpec` — see `ToolSpec.timeoutMs`. `undefined` keeps the 10s default. */
+  timeoutMs?: number;
 }
 
 export interface WithRequiredScopesDeps {
@@ -90,6 +92,7 @@ export function withRequiredScopes(
       description: spec.description,
       schema: spec.schema,
       requiresApproval: spec.requiresApproval,
+      timeoutMs: spec.timeoutMs,
       handler: async (args: unknown, ctx: ToolContext): Promise<unknown> => {
         const account = await deps.googleAccountRepo.getAccount(ctx.channel, ctx.channelUserId);
         if (!account) {

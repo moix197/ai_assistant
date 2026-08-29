@@ -13,6 +13,7 @@ import {
   type ConnectFlow,
   type GoogleAccountRepo,
   type PendingConnectionStore,
+  type RefreshCoordinator,
   createConnectFlow,
   createGoogleRefreshAccessToken,
   createPendingConnectionStore,
@@ -460,6 +461,18 @@ export interface MessageHandlerDeps {
    * minted here would never resolve there.
    */
   connectFlow: ConnectFlow | undefined;
+  /**
+   * The one process-lifetime `RefreshCoordinator` (Phase 4 code review fix)
+   * — shared with the boot-owned refresh sweep (`buildRefreshSweep`) rather
+   * than each constructing its own. `RefreshCoordinator`'s single-flight map
+   * (`packages/google-auth/src/refresh.ts`) is per-instance state; two
+   * separately-constructed coordinators for the same account could refresh
+   * concurrently and both write tokens, contradicting settled decision 18's
+   * single-seam invariant. `undefined` when Google's all-or-none env group
+   * is unset — the same "cleanly absent, not a boot failure" contract every
+   * other Google-gated dependency here follows.
+   */
+  refreshCoordinator: RefreshCoordinator | undefined;
 }
 
 /**
@@ -477,7 +490,16 @@ interface MessageHandlerWiring {
 }
 
 function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
-  const { channel, pool, config, logger, signal, telemetryRecorder, connectFlow } = deps;
+  const {
+    channel,
+    pool,
+    config,
+    logger,
+    signal,
+    telemetryRecorder,
+    connectFlow,
+    refreshCoordinator,
+  } = deps;
   const providerProfiles = buildProviderProfiles(config);
   const llmProvider = buildLlmProvider(
     pool,
@@ -487,7 +509,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     signal,
     telemetryRecorder,
   );
-  const sheetsDeps = buildSheetsDeps(pool, config, buildGoogleAccountRepo(pool));
+  const sheetsDeps = buildSheetsDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
   const { agent, handleApprovalCallback } = buildAgent(
     pool,
     llmProvider,
@@ -600,29 +622,48 @@ function buildConnectFlow(
 }
 
 /**
- * Builds the boot-owned refresh sweep (Phase 4), or `undefined` when
- * Google's all-or-none env group is unset — the same "cleanly absent, not a
- * boot failure" contract `buildConnectFlow` follows. Constructs its own
- * `OAuth2Client` via `buildGoogleOAuthClient` rather than sharing
- * `buildConnectFlow`'s instance: the two are independent, stateless-per-call
- * constructions (`getToken`/`refreshToken` take their own arguments; neither
- * mutates the client), so there is no correctness reason to share one, and
- * keeping each builder self-contained matches `buildConnectFlow`'s own
- * shape.
+ * Builds the ONE `RefreshCoordinator` for the process's lifetime — shared by
+ * both the boot-owned refresh sweep (`buildRefreshSweep`) and the Sheets
+ * tools' `AccessTokenPort` (`buildSheetsDeps`), per `wireRuntimeAndShutdown`
+ * below. `RefreshCoordinator`'s single-flight map
+ * (`packages/google-auth/src/refresh.ts`) is per-instance state: two
+ * separately-constructed coordinators refreshing the same account
+ * concurrently could both hit Google's token endpoint and both write tokens
+ * back, contradicting settled decision 18's "single seam, no second refresh
+ * path" invariant — an earlier version of this file constructed one
+ * coordinator per caller on exactly that (incorrect) "stateless, nothing to
+ * share" reasoning; this is the fix. `undefined` when Google's all-or-none
+ * env group is unset — the same "cleanly absent, not a boot failure"
+ * contract `buildConnectFlow` follows. Constructs its own `OAuth2Client` via
+ * `buildGoogleOAuthClient` rather than sharing `buildConnectFlow`'s
+ * instance: unlike the coordinator's single-flight map, the `OAuth2Client`
+ * itself is a stateless-per-call construction, so there is no correctness
+ * reason for it to be shared too.
  */
-function buildRefreshSweep(
-  pool: Pool,
-  config: Env,
-  channel: Pick<TelegramPoller, "send">,
-  logger: Logger,
-): RefreshSweep | undefined {
+function buildGoogleRefreshCoordinator(config: Env): RefreshCoordinator | undefined {
   const googleOAuth = buildGoogleOAuthClient(config);
   if (!googleOAuth) return undefined;
 
-  const coordinator = createRefreshCoordinator({
+  return createRefreshCoordinator({
     refreshAccessToken: createGoogleRefreshAccessToken(googleOAuth.oauthClient),
     cryptoKey: googleOAuth.cryptoKey,
   });
+}
+
+/**
+ * Builds the boot-owned refresh sweep (Phase 4) over the shared
+ * `RefreshCoordinator` `wireRuntimeAndShutdown` passes in, or `undefined`
+ * when `coordinator` is `undefined` (Google's all-or-none env group unset)
+ * — the same "cleanly absent, not a boot failure" contract `buildConnectFlow`
+ * follows.
+ */
+export function buildRefreshSweep(
+  pool: Pool,
+  channel: Pick<TelegramPoller, "send">,
+  logger: Logger,
+  coordinator: RefreshCoordinator | undefined,
+): RefreshSweep | undefined {
+  if (!coordinator) return undefined;
 
   return createRefreshSweep({
     repo: {
@@ -641,34 +682,26 @@ function buildRefreshSweep(
 /**
  * Builds the Sheets tools' three real-infra dependencies (`05-google-sheets`
  * Phase 4): the registry port, the `AccessTokenPort` bound to the refresh
- * seam, and the Sheets HTTP client. Constructs its own `OAuth2Client`/
- * `RefreshCoordinator` when Google's env group is set, rather than sharing
- * `buildRefreshSweep`'s instance — the same reasoning `buildRefreshSweep`
- * itself uses for not sharing `buildConnectFlow`'s: both are stateless-per-
- * call constructions with no correctness reason to share one process-wide
- * instance. When Google's all-or-none env group is unset, `accessTokenPort`
- * falls back to a throwing stub rather than `undefined` — the Sheets tools
- * are still wired unconditionally (matching `whoami`'s own unconditional
- * construction), since `withRequiredScopes` always gates every call on a
- * connected account first, and no account can exist without this same env
- * group (there is no other way to complete `/connect google`), so the stub
- * is never actually reached.
+ * seam, and the Sheets HTTP client. Binds `AccessTokenPort` to the same
+ * shared `RefreshCoordinator` `wireRuntimeAndShutdown` passes into
+ * `buildRefreshSweep` — see that coordinator's own doc comment for why a
+ * second, separately-constructed instance is a correctness bug, not a
+ * harmless duplication. When `coordinator` is `undefined` (Google's
+ * all-or-none env group unset), `accessTokenPort` falls back to a throwing
+ * stub rather than `undefined` — the Sheets tools are still wired
+ * unconditionally (matching `whoami`'s own unconditional construction),
+ * since `withRequiredScopes` always gates every call on a connected account
+ * first, and no account can exist without this same env group (there is no
+ * other way to complete `/connect google`), so the stub is never actually
+ * reached.
  */
-function buildSheetsDeps(
+export function buildSheetsDeps(
   pool: Pool,
-  config: Env,
   googleAccountRepo: GoogleAccountRepo,
+  coordinator: RefreshCoordinator | undefined,
 ): SheetsDeps {
-  const googleOAuth = buildGoogleOAuthClient(config);
-  const accessTokenPort = googleOAuth
-    ? buildAccessTokenPort({
-        pool,
-        googleAccountRepo,
-        refreshCoordinator: createRefreshCoordinator({
-          refreshAccessToken: createGoogleRefreshAccessToken(googleOAuth.oauthClient),
-          cryptoKey: googleOAuth.cryptoKey,
-        }),
-      })
+  const accessTokenPort = coordinator
+    ? buildAccessTokenPort({ pool, googleAccountRepo, refreshCoordinator: coordinator })
     : {
         getAccessToken: async (): Promise<string> => {
           throw new Error(
@@ -697,6 +730,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
   logger: Logger,
   signal: AbortSignal,
   connectFlow: ConnectFlow | undefined,
+  refreshCoordinator: RefreshCoordinator | undefined,
 ): TelemetryRecorderHandle {
   const telemetryRecorder = buildTelemetryRecorder(pool, logger);
 
@@ -708,6 +742,7 @@ function buildTelemetryRecorderAndSubscribeHandlers(
     signal,
     telemetryRecorder,
     connectFlow,
+    refreshCoordinator,
   });
 
   return telemetryRecorder;
@@ -751,6 +786,10 @@ function wireRuntimeAndShutdown(
     shutdownController.signal,
   );
 
+  // Built once, shared by buildRefreshSweep and buildSheetsDeps' Sheets
+  // AccessTokenPort below — see buildGoogleRefreshCoordinator's doc comment.
+  const refreshCoordinator = buildGoogleRefreshCoordinator(config);
+
   const google = buildConnectFlow(pool, config);
   if (google) {
     oauthCallbackRoute.bind({
@@ -769,6 +808,7 @@ function wireRuntimeAndShutdown(
     logger,
     shutdownController.signal,
     google?.connectFlow,
+    refreshCoordinator,
   );
 
   // Constructed and started here, strictly after acquireInstanceLockOrExit
@@ -777,7 +817,7 @@ function wireRuntimeAndShutdown(
   // process per database (Dependencies & Risks). runOnce() fires immediately
   // inside start(), which is what makes "survives a restart" true without
   // waiting out a full REFRESH_SWEEP_INTERVAL_MS.
-  const refreshSweep = buildRefreshSweep(pool, config, telegramChannel, logger);
+  const refreshSweep = buildRefreshSweep(pool, telegramChannel, logger, refreshCoordinator);
   refreshSweep?.start(REFRESH_SWEEP_INTERVAL_MS, shutdownController.signal);
 
   registerShutdown({

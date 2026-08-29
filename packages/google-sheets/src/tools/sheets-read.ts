@@ -1,8 +1,7 @@
 import { z } from "zod/v4";
-import type { AccessTokenPort } from "../access-token-port";
 import { resolveSheet } from "../resolve-sheet";
-import type { SheetRegistryPort } from "../sheet-registry-port";
-import type { SheetsClient, ValueRenderOption } from "../sheets-client";
+import type { ValueRenderOption } from "../sheets-client";
+import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const schema = z.object({
   sheet: z.string(),
@@ -12,11 +11,7 @@ const schema = z.object({
     .default("FORMATTED_VALUE"),
 });
 
-export interface CreateSheetsReadToolDeps {
-  sheetRegistry: SheetRegistryPort;
-  accessTokenPort: AccessTokenPort;
-  sheetsClient: SheetsClient;
-}
+export type CreateSheetsReadToolDeps = SheetsToolDeps;
 
 /**
  * `sheets_read`: given a registered slug and an A1-notation range, returns
@@ -35,10 +30,7 @@ export function createSheetsReadTool(deps: CreateSheetsReadToolDeps) {
     schema,
     timeoutMs: 30_000,
     requiresApproval: false,
-    handler: async (
-      args: unknown,
-      ctx: { signal: AbortSignal; channel: string; channelUserId: string; turnId: string },
-    ): Promise<unknown> => {
+    handler: async (args: unknown, ctx: SheetsToolContext): Promise<unknown> => {
       const { sheet, range, valueRenderOption } = args as z.infer<typeof schema>;
       const resolved = await resolveSheet(deps.sheetRegistry, sheet);
       if (!resolved.ok) return resolved;

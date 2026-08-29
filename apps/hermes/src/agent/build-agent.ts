@@ -1,10 +1,4 @@
-import {
-  type Agent,
-  type AgentDefinition,
-  type ThreadRepo,
-  type ToolSpec,
-  createAgent,
-} from "@hermes/agent";
+import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
 import { SHEETS_SCOPES } from "@hermes/google-auth";
 import type { AccessTokenPort, SheetRegistryPort, SheetsClient } from "@hermes/google-sheets";
@@ -30,24 +24,6 @@ export interface SheetsDeps {
   sheetRegistry: SheetRegistryPort;
   accessTokenPort: AccessTokenPort;
   sheetsClient: SheetsClient;
-}
-
-/**
- * `05-google-sheets` Phase 4's tools set `ToolSpec.timeoutMs: 30_000` (a
- * real outbound HTTP call can legitimately outrun the 10s default), but
- * `withRequiredScopes`'s `decorate()` reconstructs its returned `ToolSpec`
- * explicitly and does not forward `timeoutMs` (`apps/hermes/src/agent/
- * with-required-scopes.ts` predates this field, from `04-google-auth`/
- * `05-google-sheets` Phase 2, and `ScopedToolSpec` has no such field to
- * carry it through). Re-applying it here, after wrapping, keeps the gated
- * tool's real 30s budget instead of silently falling back to 10s — a
- * correctness gap worth flagging for `apps/hermes/src/agent/
- * with-required-scopes.ts` to close properly in a follow-up, since every
- * future tool with a non-default `timeoutMs` would hit the same silent
- * drop if gated through this decorator.
- */
-function withTimeoutMsPreserved(spec: ToolSpec, gated: ToolSpec): ToolSpec {
-  return { ...gated, timeoutMs: spec.timeoutMs };
 }
 
 /**
@@ -150,16 +126,14 @@ export function buildAgent(
   const whoamiTool = createWhoamiTool(googleAccountRepo);
 
   const scopeGateDeps = { googleAccountRepo, requiredScopes: SHEETS_SCOPES };
-  const baseSheetsInspectTool = createSheetsInspectTool(sheetsDeps);
-  const baseSheetsReadTool = createSheetsReadTool(sheetsDeps);
-  const sheetsInspectTool = withTimeoutMsPreserved(
-    baseSheetsInspectTool,
-    withRequiredScopes("sheets_inspect", scopeGateDeps)(baseSheetsInspectTool),
-  );
-  const sheetsReadTool = withTimeoutMsPreserved(
-    baseSheetsReadTool,
-    withRequiredScopes("sheets_read", scopeGateDeps)(baseSheetsReadTool),
-  );
+  const sheetsInspectTool = withRequiredScopes(
+    "sheets_inspect",
+    scopeGateDeps,
+  )(createSheetsInspectTool(sheetsDeps));
+  const sheetsReadTool = withRequiredScopes(
+    "sheets_read",
+    scopeGateDeps,
+  )(createSheetsReadTool(sheetsDeps));
 
   const definition: AgentDefinition = {
     name: "hermes",

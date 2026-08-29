@@ -196,17 +196,9 @@ the email. `TOOL_REQUIRED_SCOPES` (`@hermes/google-auth`) is a tool name →
 required scopes reference map; `withRequiredScopes` call sites pass
 `requiredScopes` explicitly rather than looking it up, so the map stays
 documentation until a future phase decides to make it authoritative.
-
-**Known gap, worked around, not yet fixed at the source:**
-`withRequiredScopes`'s `decorate()` reconstructs its returned `ToolSpec`
-field-by-field and does not forward `ToolSpec.timeoutMs`
-(`05-google-sheets` Phase 4, `packages/agent`) — `ScopedToolSpec` predates
-that field and has nowhere to carry it. `sheetsInspectTool`/`sheetsReadTool`
-each need their 30s budget to survive gating, so `build-agent.ts` re-applies
-`timeoutMs` onto the already-gated `ToolSpec` immediately after wrapping
-(`withTimeoutMsPreserved`) rather than editing this file. Any future gated
-tool with a non-default `timeoutMs` needs the same treatment until
-`with-required-scopes.ts` itself is updated to forward the field.
+`ScopedToolSpec` also carries `timeoutMs?: number`, forwarded verbatim onto
+the gated `ToolSpec` by `decorate()` — a scoped tool's `ToolSpec.timeoutMs`
+survives gating unchanged.
 
 - **In-memory only, never persisted.** A pending approval lives in a
   `Map<approvalId, ...>` inside the gate's closure. Restarting the process
@@ -334,8 +326,8 @@ message.
 - **Both tools set `ToolSpec.timeoutMs: 30_000`** (`packages/agent`, this
   phase) — a real Sheets API call, including `@hermes/google-sheets`'s own
   internal retries, can outrun the 10s default meant for local computation.
-  See the "known gap" note under "Scope-gated tools" above for how
-  `build-agent.ts` keeps this budget through gating.
+  `withRequiredScopes` forwards `timeoutMs` onto the gated `ToolSpec` (see
+  "Scope-gated tools" above), so this budget survives gating unchanged.
 - **`sheets_read` permits any registered `access` value** (`read` or
   `readwrite`) — only `sheets_write` (Phase 5) checks `access`, and only
   that tool requires human approval; both Phase 4 tools are

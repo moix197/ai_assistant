@@ -152,6 +152,29 @@ describe("withRequiredScopes", () => {
     expect(gated.requiresApproval).toBe(false);
   });
 
+  it("forwards timeoutMs onto the gated ToolSpec unchanged", () => {
+    const spec = fakeSpec();
+    spec.timeoutMs = 30_000;
+    const repo = fakeRepo(undefined);
+    const gated = withRequiredScopes("some-tool", {
+      googleAccountRepo: repo,
+      requiredScopes: IDENTITY_SCOPES,
+    })(spec);
+
+    expect(gated.timeoutMs).toBe(30_000);
+  });
+
+  it("leaves timeoutMs undefined on the gated ToolSpec when the wrapped spec doesn't set it", () => {
+    const spec = fakeSpec();
+    const repo = fakeRepo(undefined);
+    const gated = withRequiredScopes("some-tool", {
+      googleAccountRepo: repo,
+      requiredScopes: IDENTITY_SCOPES,
+    })(spec);
+
+    expect(gated.timeoutMs).toBeUndefined();
+  });
+
   it("throws at decoration time when toolName doesn't match the wrapped spec's name", () => {
     const spec = fakeSpec();
     const repo = fakeRepo(undefined);

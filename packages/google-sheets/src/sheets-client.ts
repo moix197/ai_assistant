@@ -146,10 +146,17 @@ export type ValueRenderOption = "FORMATTED_VALUE" | "UNFORMATTED_VALUE" | "FORMU
 
 export interface SheetsClient {
   /**
-   * `GET /v4/spreadsheets/{spreadsheetId}?fields=sheets.properties,sheets.data.rowData.values.formattedValue`
-   * — a `fields` mask rather than the unbounded default response, so a
-   * large spreadsheet's cell data doesn't come back in full just to list tab
-   * names/dimensions/header rows. Backs `sheets_inspect`.
+   * Two Sheets API calls, not one: `GET .../spreadsheets/{id}
+   * ?fields=sheets.properties` first, to learn each tab's title with no cell
+   * data at all, then `GET .../spreadsheets/{id}?fields=sheets.properties,
+   * sheets.data.rowData.values.formattedValue&ranges=<title>!1:1` (one
+   * `ranges` entry per tab) to fetch just its header row. Google's `ranges`
+   * param only bounds the spreadsheet's *first* sheet when left unqualified
+   * — bounding every tab's cell data to its own header row, not the
+   * unbounded default response (a large spreadsheet's every row of every
+   * tab), needs each tab's title known first. Backs `sheets_inspect`, which
+   * only needs tab names, dimensions, and header rows — never full cell
+   * data.
    */
   getSpreadsheetMeta(
     accessToken: string,
@@ -173,14 +180,40 @@ export interface CreateSheetsClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * A1-notation sheet-name quoting: a title containing anything but letters,
+ * digits, or underscores must be single-quoted, with any embedded single
+ * quote doubled — the same rule Sheets applies to its own A1 ranges. Most
+ * real spreadsheet tab names have spaces, so this is the common case, not
+ * an edge case.
+ */
+function quoteSheetTitle(title: string): string {
+  return /^\w+$/.test(title) ? title : `'${title.replace(/'/g, "''")}'`;
+}
+
 /** Thin `fetch`-based client over the Sheets v4 REST API — no `googleapis`, no new third-party HTTP client (settled decision 20). */
 export function createSheetsClient(opts: CreateSheetsClientOptions = {}): SheetsClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   return {
     async getSpreadsheetMeta(accessToken, spreadsheetId, signal) {
+      const propertiesFields = "sheets.properties";
+      const propertiesUrl = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}?fields=${encodeURIComponent(propertiesFields)}`;
+      const propertiesOnly = (await getWithRetry(
+        fetchImpl,
+        propertiesUrl,
+        accessToken,
+        signal,
+      )) as SheetMeta;
+
+      const titles = propertiesOnly.sheets.map((sheet) => sheet.properties.title);
+      if (titles.length === 0) return propertiesOnly;
+
       const fields = "sheets.properties,sheets.data.rowData.values.formattedValue";
-      const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}?fields=${encodeURIComponent(fields)}`;
+      const rangesQuery = titles
+        .map((title) => `ranges=${encodeURIComponent(`${quoteSheetTitle(title)}!1:1`)}`)
+        .join("&");
+      const url = `${SHEETS_API_BASE}/${encodeURIComponent(spreadsheetId)}?fields=${encodeURIComponent(fields)}&${rangesQuery}`;
       return (await getWithRetry(fetchImpl, url, accessToken, signal)) as SheetMeta;
     },
     async getValues(accessToken, spreadsheetId, range, valueRenderOption, signal) {

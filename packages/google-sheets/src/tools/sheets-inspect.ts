@@ -1,16 +1,11 @@
 import { z } from "zod/v4";
-import type { AccessTokenPort } from "../access-token-port";
 import { resolveSheet } from "../resolve-sheet";
-import type { SheetRegistryPort } from "../sheet-registry-port";
-import type { SheetMeta, SheetsClient } from "../sheets-client";
+import type { SheetMeta } from "../sheets-client";
+import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const schema = z.object({ sheet: z.string() });
 
-export interface CreateSheetsInspectToolDeps {
-  sheetRegistry: SheetRegistryPort;
-  accessTokenPort: AccessTokenPort;
-  sheetsClient: SheetsClient;
-}
+export type CreateSheetsInspectToolDeps = SheetsToolDeps;
 
 interface SheetTabSummary {
   title: string;
@@ -51,10 +46,7 @@ export function createSheetsInspectTool(deps: CreateSheetsInspectToolDeps) {
     schema,
     timeoutMs: 30_000,
     requiresApproval: false,
-    handler: async (
-      args: unknown,
-      ctx: { signal: AbortSignal; channel: string; channelUserId: string; turnId: string },
-    ): Promise<unknown> => {
+    handler: async (args: unknown, ctx: SheetsToolContext): Promise<unknown> => {
       const { sheet } = args as z.infer<typeof schema>;
       const resolved = await resolveSheet(deps.sheetRegistry, sheet);
       if (!resolved.ok) return resolved;
