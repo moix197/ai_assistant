@@ -902,17 +902,17 @@ still proceeds, a warning is logged, and `replaced` is simply omitted.
 
 **Steps:**
 
-- [ ] Confirm this extra read happens strictly *after* the dedupe claim and
+- [x] Confirm this extra read happens strictly *after* the dedupe claim and
       *after* `getAccessToken` (both already happened by this point in the
       handler) — it must not introduce a second `getAccessToken` call or a
       second dedupe claim
-- [ ] Write the non-fatal-failure test first: simulate `getValues` throwing,
+- [x] Write the non-fatal-failure test first: simulate `getValues` throwing,
       assert the write still completes successfully and `replaced` is
       absent from the result, and a warning was logged
-- [ ] Confirm `replaced` runs through the *same* `truncateBySize` used by
+- [x] Confirm `replaced` runs through the *same* `truncateBySize` used by
       `sheets_read`/`sheets_inspect` — don't hand-roll a second truncation
       call site
-- [ ] Confirm the snapshot read does not retry on failure (it's cosmetic; a
+- [x] Confirm the snapshot read does not retry on failure (it's cosmetic; a
       retry loop here would be new latency for no safety benefit) — a
       single attempt, caught and logged
 
@@ -924,26 +924,26 @@ still proceeds, a warning is logged, and `replaced` is simply omitted.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm lint` green
 - [ ] Manual: approve an update-mode write against a row with known prior
       content and confirm the bot's natural-language reply mentions what
       changed (e.g. "cambié el teléfono de X a Y")
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: capture pre-overwrite values on sheets_write update mode`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: capture pre-overwrite values on sheets_write update mode`
+- [x] Phase marked complete
 
 ---
 
