@@ -1,7 +1,7 @@
 import { Pool } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getDefaultMigrationsDir, runMigrations } from "../migrate";
-import { claim, complete } from "../sheet-write-log-repo";
+import { claim, complete, release } from "../sheet-write-log-repo";
 
 // Integration coverage — skipped unless TEST_DATABASE_URL is set. See
 // packages/store/README.md for how to run this locally.
@@ -47,6 +47,26 @@ describe.skipIf(!testDatabaseUrl)("sheet-write-log-repo (integration)", () => {
     await complete(pool, "key-3", outcome);
 
     const result = await claim(pool, "key-3", CLAIM_INPUT);
+    expect(result).toEqual({ alreadyComplete: true, outcome });
+  });
+
+  it("release() deletes a still-pending row, freeing the key for a fresh claim", async () => {
+    await claim(pool, "key-5", CLAIM_INPUT);
+
+    await release(pool, "key-5");
+
+    const result = await claim(pool, "key-5", CLAIM_INPUT);
+    expect(result).toBe("claimed");
+  });
+
+  it("release() never deletes an already-complete row, even if called against it by mistake", async () => {
+    await claim(pool, "key-6", CLAIM_INPUT);
+    const outcome = { ok: true, sheet: "clients", mode: "append", updatedRows: 1 };
+    await complete(pool, "key-6", outcome);
+
+    await release(pool, "key-6");
+
+    const result = await claim(pool, "key-6", CLAIM_INPUT);
     expect(result).toEqual({ alreadyComplete: true, outcome });
   });
 

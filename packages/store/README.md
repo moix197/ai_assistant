@@ -445,6 +445,19 @@ allowed to proceed and write again.
 - `completeSheetWrite(pool, dedupeKey, outcome)` (exported as `complete`,
   aliased the same way) — marks the row `complete` and stores `outcome`,
   retrievable by a later duplicate claim within the same turn.
+- `releaseSheetWrite(pool, dedupeKey)` (exported as `release`, aliased the
+  same way) — `DELETE ... WHERE dedupe_key = $1 AND status = 'pending'`. Used
+  by `sheets-write.ts` only after a *provably-definitive* write failure (the
+  request reached Google and was rejected outright, or an exhausted 429 that
+  never got applied) — either way the sheet was never mutated, so the claim
+  is released instead of left to permanently `alreadyPending`-hedge a
+  legitimate same-turn retry. The `status = 'pending'` guard means this can
+  never delete a row a genuine `completeSheetWrite` already recorded, even if
+  called racily. Never called for a genuinely ambiguous failure (a post-send
+  timeout, a 5xx after the request reached Google) — those still go through
+  `completeSheetWrite` with the ambiguous outcome (`appendValues`) or simply
+  keep the row `pending` (`alreadyPending`), so the fail-closed hedge still
+  applies.
 
 This table is also this plan's durable write audit: every claimed
 `sheets_write` call leaves a `psql`-inspectable row recording exactly what

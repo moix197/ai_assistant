@@ -190,6 +190,19 @@ request reached Google) is where the two modes diverge, because `POST
   other outcome, so a same-turn duplicate claim returns the same hedge
   without a second API call.
 
+**Definitive-failure claim release**: a fatal `SheetsApiError` reaching
+`sheets-write.ts`'s `mode: "append"` catch block (a non-429 4xx, thrown
+immediately by `classifyWrite` — Google rejected the request outright — or
+an exhausted 429, thrown after retries — Google never got past quota
+enforcement to apply it) is provably **not** ambiguous: the sheet was never
+mutated. That branch calls `sheetWriteLogRepo.release` (optional on
+`SheetWriteLogPort`; `@hermes/store`'s `releaseSheetWrite`, `apps/hermes/src/
+boot.ts`-wired) to delete the still-`pending` row before rethrowing, so a
+legitimate same-turn retry isn't blocked by `alreadyPending`'s hedge over a
+write that definitely never landed. Any other error (a network failure that
+can't be proven pre-send, a malformed response body after a 2xx, ...) keeps
+the pending row — the fail-safe default stays "when in doubt, hedge."
+
 **`valueInputOption` stakes** (settled decision 17): `USER_ENTERED` parses
 cell content the way a human typing it would (real dates/numbers land
 correctly, but e.g. a phone number like `+1-555-0100` can misparse as a

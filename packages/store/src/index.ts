@@ -32,6 +32,7 @@ export { acquireInstanceLock, INSTANCE_LOCK_KEY, type InstanceLock } from "./adv
 export {
   claim as claimSheetWrite,
   complete as completeSheetWrite,
+  release as releaseSheetWrite,
   type SheetWriteLogClaimInput,
   type SheetWriteLogClaimResult,
 } from "./sheet-write-log-repo";

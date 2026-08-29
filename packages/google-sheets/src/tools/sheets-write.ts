@@ -3,6 +3,7 @@ import { canonicalizeArgs, computeDedupeKey } from "../canonical-args";
 import { resolveSheet } from "../resolve-sheet";
 import {
   SheetsAmbiguousWriteError,
+  SheetsApiError,
   type SheetsWriteResult,
   type ValueInputOption,
 } from "../sheets-client";
@@ -44,6 +45,18 @@ export interface SheetWriteLogPort {
     },
   ): Promise<"claimed" | { alreadyComplete: true; outcome: unknown } | { alreadyPending: true }>;
   complete(dedupeKey: string, outcome: unknown): Promise<void>;
+  /**
+   * Releases a still-`pending` claim after a *provably-definitive* write
+   * failure — the request reached Google and was rejected outright, or
+   * never got past quota enforcement — so a legitimate same-turn retry
+   * isn't permanently blocked by `alreadyPending`'s fail-closed hedge over a
+   * write that definitely never landed. Optional: a caller that never
+   * constructs this branch (e.g. a fake in a test not exercising it) need
+   * not implement it. Never called for a genuinely ambiguous failure — the
+   * fail-safe default stays "when in doubt, hedge" (see the `handler`'s
+   * `SheetsApiError` branch below).
+   */
+  release?(dedupeKey: string): Promise<void>;
 }
 
 export interface CreateSheetsWriteToolDeps extends SheetsToolDeps {
@@ -103,11 +116,17 @@ export interface SheetsWriteSuccessResult {
  * `appendValues`, never retried there) is caught here and turned into a
  * structured `AmbiguousWriteResult`, recorded via `complete` the same as any
  * other outcome so a same-turn duplicate claim returns the same hedge
- * without a second API call. `mode: "update"`'s client-internal single retry
- * means this handler never sees that ambiguity at all — any error thrown by
- * `updateValues` past that point is a genuine fatal error and is left to
- * propagate (`packages/agent`'s `invokeTool` turns a thrown handler error
- * into the tool-result message itself, settled decision 15).
+ * without a second API call. A definitive failure — a `SheetsApiError`,
+ * meaning the request reached Google and was rejected outright, or an
+ * exhausted 429 that never got applied — releases the claim instead (via
+ * `sheetWriteLogRepo.release`) before rethrowing, so a legitimate same-turn
+ * retry isn't blocked hedging over a write that provably never landed; any
+ * other error keeps the pending row (fail-safe default). `mode: "update"`'s
+ * client-internal single retry means this handler never sees that ambiguity
+ * at all — any error thrown by `updateValues` past that point is a genuine
+ * fatal error and is left to propagate (`packages/agent`'s `invokeTool`
+ * turns a thrown handler error into the tool-result message itself, settled
+ * decision 15).
  */
 export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
   return {
@@ -179,6 +198,20 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
             };
             await deps.sheetWriteLogRepo.complete(dedupeKey, outcome);
             return outcome;
+          }
+          if (error instanceof SheetsApiError) {
+            // Definitive, not ambiguous: `sheets-client.ts`'s `classifyWrite`
+            // only ever lets a `SheetsApiError` escape `appendValues` for a
+            // non-429 4xx (thrown immediately — Google rejected the request
+            // outright) or an exhausted 429 (thrown after retries — Google
+            // never got past quota enforcement to apply it). Either way the
+            // request never mutated the sheet, so the pending claim is
+            // released rather than left to permanently hedge a legitimate
+            // same-turn retry. Any other error here (a network failure that
+            // can't be proven pre-send, a malformed body after a 2xx, ...)
+            // falls through unreleased — fail-safe stays "when in doubt,
+            // hedge" (settled decision 15).
+            await deps.sheetWriteLogRepo.release?.(dedupeKey);
           }
           throw error;
         }

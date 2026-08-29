@@ -4,6 +4,7 @@ import type { AccessTokenPort } from "../../access-token-port";
 import type { SheetRegistryPort } from "../../sheet-registry-port";
 import {
   SheetsAmbiguousWriteError,
+  SheetsApiError,
   type SheetsClient,
   type SheetsWriteResult,
 } from "../../sheets-client";
@@ -67,6 +68,7 @@ function fakeSheetsClient(
 function fakeSheetWriteLogRepo(): SheetWriteLogPort & {
   claim: ReturnType<typeof vi.fn>;
   complete: ReturnType<typeof vi.fn>;
+  release: ReturnType<typeof vi.fn>;
 } {
   const rows = new Map<string, { status: "pending" | "complete"; outcome?: unknown }>();
   const claim = vi.fn(async (dedupeKey: string) => {
@@ -85,7 +87,15 @@ function fakeSheetWriteLogRepo(): SheetWriteLogPort & {
   const complete = vi.fn(async (dedupeKey: string, outcome: unknown) => {
     rows.set(dedupeKey, { status: "complete", outcome });
   });
-  return { claim, complete };
+  // Mirrors the real repo's release: only ever deletes a still-pending row,
+  // never one a legitimate complete() already recorded.
+  const release = vi.fn(async (dedupeKey: string) => {
+    const existing = rows.get(dedupeKey);
+    if (existing?.status === "pending") {
+      rows.delete(dedupeKey);
+    }
+  });
+  return { claim, complete, release };
 }
 
 const APPEND_ARGS = {
@@ -267,6 +277,59 @@ describe("sheets_write", () => {
     });
     expect(sheetsClient.appendValues).toHaveBeenCalledTimes(1);
     expect(sheetWriteLogRepo.complete).toHaveBeenCalledWith(expect.any(String), result);
+  });
+
+  it("mode: append's genuinely ambiguous post-send failure still blocks a same-turn retry with the same hedge, without a second client call", async () => {
+    const sheetsClient = fakeSheetsClient();
+    sheetsClient.appendValues.mockRejectedValueOnce(
+      new SheetsAmbiguousWriteError("may or may not have landed"),
+    );
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+    const tool = createSheetsWriteTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+      sheetWriteLogRepo,
+    });
+
+    const first = await tool.handler(APPEND_ARGS, CTX);
+    const second = await tool.handler(APPEND_ARGS, CTX);
+
+    expect(second).toEqual(first);
+    expect(sheetsClient.appendValues).toHaveBeenCalledTimes(1);
+    expect(sheetWriteLogRepo.release).not.toHaveBeenCalled();
+  });
+
+  it("mode: append's definitively-failed write (a 4xx SheetsApiError, reached Google and was rejected) releases the pending claim instead of leaving it stuck ambiguous, and a same-turn retry can call the client again", async () => {
+    const sheetsClient = fakeSheetsClient();
+    const apiError = new SheetsApiError("Sheets API returned HTTP 400: bad request", 400);
+    sheetsClient.appendValues.mockRejectedValueOnce(apiError);
+    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+    const tool = createSheetsWriteTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+      sheetWriteLogRepo,
+    });
+
+    await expect(tool.handler(APPEND_ARGS, CTX)).rejects.toBe(apiError);
+
+    expect(sheetWriteLogRepo.release).toHaveBeenCalledTimes(1);
+    expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
+
+    // The claim was released, not left pending — a same-turn retry (same
+    // channel/channelUserId/turnId/args) is allowed to call the client
+    // again rather than being told the write is ambiguous.
+    const result = await tool.handler(APPEND_ARGS, CTX);
+
+    expect(sheetsClient.appendValues).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      ok: true,
+      sheet: "clients",
+      mode: "append",
+      updatedRange: "Sheet1!A2:B2",
+      updatedRows: 1,
+    });
   });
 
   it("mode: update's post-send ambiguity is already resolved by the client — a resolved updateValues call returns a normal success with no hedge, the opposite outcome from the append-mode ambiguity test above for the same fault class", async () => {

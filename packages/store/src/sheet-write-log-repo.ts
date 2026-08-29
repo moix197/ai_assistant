@@ -80,3 +80,25 @@ export async function complete(pool: Pool, dedupeKey: string, outcome: unknown):
     [dedupeKey, JSON.stringify(outcome)],
   );
 }
+
+/**
+ * Deletes `dedupeKey`'s row, but only while it's still `pending` — releases
+ * a claim for a write that provably never reached the sheet (the request
+ * reached Google and was rejected outright, or never got past quota
+ * enforcement), so a legitimate same-turn retry isn't permanently blocked by
+ * `alreadyPending`'s fail-closed hedge over a write that definitely never
+ * landed. The `status = 'pending'` guard means a call racing a legitimate
+ * `completeSheetWrite` from the attempt that actually owns this claim can
+ * never delete an already-completed row out from under it.
+ *
+ * Never call this for a genuinely ambiguous failure (a post-send timeout, a
+ * 5xx after the request reached Google) — those keep the pending row (or, in
+ * `sheets-write.ts`'s case, get recorded via `complete` with the ambiguous
+ * outcome) so the fail-closed hedge still applies. See `sheets-write.ts`'s
+ * `SheetsApiError` handling for which failures qualify as definitive.
+ */
+export async function release(pool: Pool, dedupeKey: string): Promise<void> {
+  await pool.query("DELETE FROM sheet_write_log WHERE dedupe_key = $1 AND status = 'pending'", [
+    dedupeKey,
+  ]);
+}
