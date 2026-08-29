@@ -20,5 +20,13 @@ export {
   type LlmCallStats,
   type TopToolCount,
 } from "./telemetry-stats-repo";
+export {
+  getBySlug as getSheetRegistryEntryBySlug,
+  listAll as listSheetRegistryEntries,
+  remove as removeSheetRegistryEntry,
+  type SheetRegistryEntry,
+  upsert as upsertSheetRegistryEntry,
+  type UpsertSheetRegistryEntryInput,
+} from "./sheet-registry-repo";
 export { acquireInstanceLock, INSTANCE_LOCK_KEY, type InstanceLock } from "./advisory-lock";
 export type { Pool } from "pg";

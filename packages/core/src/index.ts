@@ -24,8 +24,12 @@ export type {
   RetryClassConfig,
   RetryClassification,
 } from "./http-retry";
-export { googleAccountSchema, tokenEnvelopeSchema } from "./google-types";
-export type { GoogleAccount, TokenEnvelope } from "./google-types";
+export {
+  googleAccountSchema,
+  sheetRegistryEntrySchema,
+  tokenEnvelopeSchema,
+} from "./google-types";
+export type { GoogleAccount, SheetRegistryEntry, TokenEnvelope } from "./google-types";
 export { messageSchema, messagesArraySchema } from "./llm-types";
 export type {
   LlmUsageEntry,

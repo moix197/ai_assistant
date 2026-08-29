@@ -19,6 +19,10 @@ Postgres pool and migration runner. Raw `pg`, no ORM.
   `hermes-migrate` bin) — a standalone CLI that calls the exact same
   `runMigrations` function as `apps/hermes`'s boot path, reading
   `DATABASE_URL` directly from the environment.
+- `bin/sheets.ts` (built to `dist/sheets-cli.js`, exposed as the
+  `hermes-sheets` bin) — the operator CLI for `sheet_registry`, reading
+  `DATABASE_URL` directly from the environment the same self-contained way
+  `bin/migrate.ts` does. See "Sheet registry" below.
 
 ## Telegram offset persistence
 
@@ -70,9 +74,9 @@ their connection closes, crash or not.
 `src/migrations/` holds, in apply order, `001_telegram_offset.sql`,
 `002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`,
 `005_telemetry_event_total_cost.sql`, `006_threads.sql`,
-`007_google_accounts.sql`. A new migration is numbered one past whatever is
-actually highest in the directory — re-list it rather than trusting an
-assumed number.
+`007_google_accounts.sql`, `008_sheet_registry.sql`. A new migration is
+numbered one past whatever is actually highest in the directory — re-list it
+rather than trusting an assumed number.
 
 ## LLM usage accounting
 
@@ -313,6 +317,91 @@ shape lives in `core` rather than in `@hermes/google-auth` for the same
 reason `LlmUsageEntry` does: this package and `google-auth` are siblings, so
 neither may import the other.
 
+## Sheet registry
+
+`src/migrations/008_sheet_registry.sql` creates `sheet_registry` (`slug text
+primary key, spreadsheet_id text not null, description text not null default
+'', access text not null default 'read' check (access in ('read',
+'readwrite')), value_input_option text not null default 'USER_ENTERED' check
+(value_input_option in ('RAW', 'USER_ENTERED')), created_at timestamptz not
+null default now(), updated_at timestamptz not null default now()`). One row
+per operator-registered spreadsheet, keyed by `slug` alone — unlike
+`google_accounts`, this is operator-level configuration shared across every
+connected identity in this single-tenant deployment, not per-user data. See
+`.ai/patterns/db-backed-tool-config.md` for the general shape this table is
+the first instance of.
+
+- `getSheetRegistryEntryBySlug(pool, slug)` — a plain `SELECT`, returning
+  `undefined` when no row matches.
+- `listSheetRegistryEntries(pool)` — all rows, ordered by `slug`; `[]` on an
+  empty table.
+- `upsertSheetRegistryEntry(pool, entry)` — `INSERT ... ON CONFLICT (slug) DO
+  UPDATE`. **The second `DO UPDATE` exception in this package** (after
+  `upsertAccount`): re-registering a slug must overwrite every field, not
+  silently keep stale config. `entry.description`/`access`/`valueInputOption`
+  are optional; when omitted, the generated SQL passes the literal `DEFAULT`
+  keyword for that column instead of a bound parameter, so the migration's own
+  `DEFAULT` is what resolves the value — not a JS-side fallback that could
+  drift out of sync with the schema. This holds on both a fresh insert and a
+  re-registration: omitting a field on a re-registration resets it to the
+  migration default, it does not preserve the prior value.
+- `removeSheetRegistryEntry(pool, slug)` — deletes the row; a missing slug is
+  a no-op, the same idempotent-removal posture `/disconnect` uses.
+
+Row reads validate against `@hermes/core`'s schema-first `sheetRegistryEntrySchema`
+through the same `parseValidatedJson` helper described below.
+`SheetRegistryEntry`'s shape lives in `@hermes/core`, not here and not in the
+not-yet-existing `@hermes/google-sheets`, for the same reason `GoogleAccount`
+does — this package and `google-sheets` are siblings and must never import
+each other.
+
+### `hermes-sheets` CLI
+
+`bin/sheets.ts`'s argument parsing lives in `src/sheets-cli.ts`
+(`parseArgs`), unit-tested independent of both the CLI entry point and the
+database; `bin/sheets.ts` itself is a thin wrapper that parses, then calls
+straight into the repo functions above against a short-lived `Pool`, closed
+on exit. An invalid `--access`/`--value-input-option` value is rejected by
+`parseArgs` with a `CliUsageError` before any query runs — never passed
+through to the table's `CHECK` constraint.
+
+```
+hermes-sheets add <slug> <spreadsheetId> [--desc <text>] [--access read|readwrite] [--value-input-option RAW|USER_ENTERED]
+hermes-sheets list
+hermes-sheets remove <slug>
+```
+
+Local dev, against the compose stack's published Postgres port:
+
+```
+DATABASE_URL=postgres://hermes:hermes@localhost:5432/hermes \
+  pnpm --filter @hermes/store exec hermes-sheets add clients <spreadsheetId> --desc "Client roster" --access readwrite
+```
+
+Production, inside the running container (reuses its already-set
+`DATABASE_URL`) — invoke the bin **directly**, not via `node`:
+
+```
+docker compose exec hermes node_modules/.bin/hermes-sheets add clients <spreadsheetId> --desc "Client roster" --access readwrite
+```
+
+`node_modules/.bin/hermes-sheets` is a shell wrapper script on Linux, not
+JavaScript — `node node_modules/.bin/hermes-sheets ...` fails with
+`SyntaxError: missing ) after argument list`, confirmed live in the built
+production image. Its own shebang line handles execution directly. Running
+the built entry point through `node` explicitly also works, if ever needed:
+`node node_modules/@hermes/store/dist/sheets-cli.js list`.
+
+**Windows note:** `pnpm install` does not link `hermes-migrate`/`hermes-sheets`
+into `node_modules/.bin` on Windows (`ENOENT ... migrate-cli.js.EXE`) — a
+pre-existing pnpm-on-Windows quirk affecting both bins, not something Phase 3
+introduced or fixed. Local dev on Windows invokes the built entry point
+directly instead: `node packages/store/dist/sheets-cli.js add ...`.
+
+Nothing reads this table yet — Phase 3 only makes the registry exist and be
+operable. A future phase's tools read it live, at call-time, never a
+boot-time snapshot.
+
 ## Row validation
 
 `src/validate-row.ts` exports `parseValidatedJson(schema, value, context)` —
@@ -330,10 +419,12 @@ silently-returned best-effort value.
 
 `thread-repo.ts`'s `toThread` validates `row.messages` against `@hermes/core`'s
 `messagesArraySchema`; `google-account-repo.ts`'s `toGoogleAccount` validates
-the whole mapped row against `@hermes/core`'s `googleAccountSchema`.
-The helper is deliberately schema-agnostic — it takes any matching schema —
-so both reuse the one implementation unmodified, each against its own
-schema-first type.
+the whole mapped row against `@hermes/core`'s `googleAccountSchema`;
+`sheet-registry-repo.ts`'s `toSheetRegistryEntry` validates the whole mapped
+row against `@hermes/core`'s `sheetRegistryEntrySchema`. The helper is
+deliberately schema-agnostic — it takes any matching schema — so all three
+reuse the one implementation unmodified, each against its own schema-first
+type.
 
 ## Testing
 
@@ -416,6 +507,24 @@ same way: `upsertAccount` called twice for the same `(channel,
 channel_user_id)` overwrites the row rather than duplicating it (the one
 `DO UPDATE` exception); `getAccount` round-trips `token_envelope` byte-for-
 byte as opaque JSON; `deleteAccount` removes the row.
+
+`src/__tests__/sheet-registry-repo.test.ts` is integration-only, gated the
+same way: `upsertSheetRegistryEntry` called twice for the same `slug`
+overwrites every field, not just `updated_at`; a minimal upsert with no
+`access`/`valueInputOption`/`description` supplied round-trips the
+migration's own defaults (`'read'`/`'USER_ENTERED'`/`''`), proving the DB
+default itself rather than any caller-side fallback; re-registering a slug
+with fields omitted resets them to those defaults rather than preserving the
+prior values; `getSheetRegistryEntryBySlug` round-trips; `listSheetRegistryEntries`
+returns `[]` on an empty table and every row otherwise;
+`removeSheetRegistryEntry` deletes and is idempotent on a slug that was never
+registered.
+
+`src/__tests__/sheets-cli.test.ts` is a plain unit-test file (no database,
+always runs): `parseArgs` for `add`/`list`/`remove`, including the
+no-optional-flags case (asserting the parsed fields are `undefined`, not a
+JS-side default) and rejection of an invalid `--access`/`--value-input-option`
+value with a `CliUsageError` before any query could run.
 
 The guard and URL resolution in `src/__tests__/db-env.ts` are published to
 other packages through this package's `./testing` subpath export, so

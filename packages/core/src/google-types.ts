@@ -41,3 +41,30 @@ export const googleAccountSchema = z.object({
   expiresAt: z.date(),
 });
 export type GoogleAccount = z.infer<typeof googleAccountSchema>;
+
+/**
+ * An operator-registered spreadsheet, keyed by a short `slug` the model and
+ * `/connect`ed operator both refer to instead of a raw spreadsheet id/URL.
+ * Declared here, not in `@hermes/store` (which writes the row) or the
+ * not-yet-existing `@hermes/google-sheets` (whose port and tools will read
+ * it), for the same reason `GoogleAccount` lives here: those two packages are
+ * siblings and must never import each other. This is Phase 3 of
+ * `05-google-sheets` applying that lesson from the start, rather than fixing
+ * a sibling edge after the fact the way `04-google-auth` had to.
+ *
+ * `access` gates whether a write tool may target this sheet at all;
+ * `valueInputOption` is the per-sheet default for how Sheets parses cell
+ * content on write (`RAW` vs `USER_ENTERED`), overridable per call once a
+ * write tool exists (Phase 5) — this schema exists before either consumer
+ * does, on purpose (see `.ai/patterns/db-backed-tool-config.md`).
+ */
+export const sheetRegistryEntrySchema = z.object({
+  slug: z.string().min(1),
+  spreadsheetId: z.string().min(1),
+  description: z.string(),
+  access: z.enum(["read", "readwrite"]),
+  valueInputOption: z.enum(["RAW", "USER_ENTERED"]),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+export type SheetRegistryEntry = z.infer<typeof sheetRegistryEntrySchema>;

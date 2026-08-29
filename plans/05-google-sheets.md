@@ -654,6 +654,7 @@ this phase — the registry exists and is operable, nothing reads it yet.
 | create | `packages/store/src/sheet-registry-repo.ts` | free functions taking `pool` first, matching `thread-repo.ts`/`google-account-repo.ts`'s shape: `getBySlug(pool, slug)`, `listAll(pool)`, `upsert(pool, entry)` (`INSERT ... ON CONFLICT (slug) DO UPDATE` — the second deliberate `DO UPDATE` exception in this codebase, justified the same way `google_accounts`' was: re-registering a slug must overwrite, not silently keep stale config), `remove(pool, slug)`; reads validated via `parseValidatedJson`-equivalent row parsing against `@hermes/core`'s `sheetRegistryEntrySchema` |
 | modify | `packages/store/src/index.ts` | export the four new functions and `SheetRegistryEntry`-adjacent types |
 | create | `packages/store/bin/sheets.ts` | CLI mirroring `packages/store/bin/migrate.ts`'s **exact** shape and location (`bin/`, not `src/bin/`): reads `DATABASE_URL` directly from `process.env` (no `@hermes/config` dependency, matching the existing migrate bin's self-contained posture), subcommands `add <slug> <spreadsheetId> [--desc <text>] [--access read\|readwrite] [--value-input-option RAW\|USER_ENTERED]`, `list`, `remove <slug>` — each a thin call into `sheet-registry-repo.ts`'s functions against a short-lived `Pool`, closed on exit |
+| create | `packages/store/src/sheets-cli.ts` | **added during execution** — the original table named the testable-argument-parsing requirement (see Steps below) but did not name where the extracted function lives; `parseArgs`/`CliUsageError`/`USAGE` live here so `bin/sheets.ts` stays a thin wrapper (mirroring `bin/migrate.ts`) and `src/__tests__/sheets-cli.test.ts` can import the parser directly, with no database or subprocess |
 | modify | `packages/store/package.json` | `build` script gains a second tsup entry, `--entry.sheets-cli=bin/sheets.ts`, alongside the existing `--entry.migrate-cli=bin/migrate.ts` (builds to `dist/sheets-cli.js`, the same flat-file convention `hermes-migrate` already uses — not a nested `dist/bin/` path); `bin` field gains `"hermes-sheets": "./dist/sheets-cli.js"` alongside the existing `"hermes-migrate": "./dist/migrate-cli.js"` entry |
 | modify | `packages/store/README.md` | document `sheet_registry`: keyed by `slug`, the `DO UPDATE` exception, `hermes-sheets` usage (including the container-exec invocation below), and that reads validate against `@hermes/core`'s schema |
 | create | `.ai/patterns/db-backed-tool-config.md` | the four rules (settled decision 7): a port is declared in the *consumer*, not the repo package; a typed table with real columns and a zod row parse, never a JSON blob; the config is read at tool-call time, never frozen at boot; a CLI bin writes through the exact same repo functions a future dashboard will call. States explicitly: this pattern has one instance (sheets) — do not extract a generic `ConfigRegistry<T>` until a second real case exists |
@@ -700,7 +701,7 @@ this phase — the registry exists and is operable, nothing reads it yet.
       `hermes-sheets` joins). Confirm by building the image and checking
       `docker compose run --rm hermes ls node_modules/.bin` lists both
       `hermes-migrate` and `hermes-sheets`. **Operator invocation, stated
-      concretely:** `docker compose exec hermes node
+      concretely:** `docker compose exec hermes
       node_modules/.bin/hermes-sheets add clients <spreadsheetId> --desc
       "Client roster" --access readwrite` — runs inside the running
       container, reusing its already-set `DATABASE_URL`. (A second, equally
@@ -709,7 +710,13 @@ this phase — the registry exists and is operable, nothing reads it yet.
       pnpm --filter @hermes/store exec hermes-sheets add ...` works from a
       host checkout without `docker compose exec` — Manual verification
       below exercises the container path specifically, since that's the one
-      production actually depends on.)
+      production actually depends on.) **Corrected during execution:** the
+      invocation originally read `docker compose exec hermes node
+      node_modules/.bin/hermes-sheets ...`, prefixing the bin with `node` —
+      on Linux that bin is a shell wrapper script, not JavaScript, and
+      running `node` against it fails with `SyntaxError: missing ) after
+      argument list`, reproduced live in the built production image. The bin
+      is invoked directly here instead; its own shebang handles execution.
 
 **Tests:**
 
@@ -735,11 +742,14 @@ this phase — the registry exists and is operable, nothing reads it yet.
       <test-spreadsheet-id> --desc "Client roster" --access readwrite` then
       `hermes-sheets list` shows the row with the right defaults;
       `hermes-sheets remove clients` then `hermes-sheets list` shows it gone
-- [ ] Manual: with the compose stack up, `docker compose exec hermes node
+- [ ] Manual: with the compose stack up, `docker compose exec hermes
       node_modules/.bin/hermes-sheets add appointments <test-spreadsheet-id>
       --desc "Appointments" --access read` then `docker compose exec hermes
-      node node_modules/.bin/hermes-sheets list` shows the row — proves the
+      node_modules/.bin/hermes-sheets list` shows the row — proves the
       concrete production invocation path, not just the dev-mode one above
+      (**corrected during execution** — see the parenthetical in the
+      deliverability Step above: the `node <wrapper>` form was found to fail
+      in the built image, so both commands here invoke the bin directly)
 
 **Phase review:**
 
