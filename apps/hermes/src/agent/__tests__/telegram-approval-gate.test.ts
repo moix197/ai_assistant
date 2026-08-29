@@ -1,5 +1,6 @@
 import type { ApprovalRequest } from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
+import type { Logger } from "@hermes/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTelegramApprovalGate } from "../telegram-approval-gate";
 
@@ -17,6 +18,10 @@ function fakeChannel(): TelegramPoller & {
     answerCallback: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function fakeLogger(): Logger & { debug: ReturnType<typeof vi.fn> } {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
 /** Recovers the generated approval id from the buttons `channel.send` was called with. */
@@ -62,7 +67,7 @@ const CONTEXT = { threadId: "thread-1", turnId: "turn-1" };
 describe("createTelegramApprovalGate — combined batch prompt", () => {
   it("sends one message with Approve/Deny buttons naming every gated call in a multi-call batch", async () => {
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
     const batch: ApprovalRequest[] = [
       { tool: "echo", args: { text: "hi" } },
       { tool: "echo", args: { text: "bye" } },
@@ -82,8 +87,8 @@ describe("createTelegramApprovalGate — combined batch prompt", () => {
     expect(text).toContain('echo({"text":"bye"})');
     expect(options.buttons).toEqual([
       [
-        { label: "Approve", callbackData: expect.stringContaining(":approve") },
-        { label: "Deny", callbackData: expect.stringContaining(":deny") },
+        { label: "Aprobar", callbackData: expect.stringContaining(":approve") },
+        { label: "Rechazar", callbackData: expect.stringContaining(":deny") },
       ],
     ]);
 
@@ -96,7 +101,7 @@ describe("createTelegramApprovalGate — combined batch prompt", () => {
 describe("createTelegramApprovalGate — resolution via tap", () => {
   it("resolves 'approved' on a matching Approve tap and edits the message to a resolved state", async () => {
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
     await waitForPromptSent(channel);
     const approvalId = extractApprovalId(channel.send);
@@ -120,7 +125,7 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
 
   it("resolves 'denied' on a matching Deny tap and edits the message to a resolved state", async () => {
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
     await waitForPromptSent(channel);
     const approvalId = extractApprovalId(channel.send);
@@ -142,7 +147,7 @@ describe("createTelegramApprovalGate — resolution via tap", () => {
 describe("createTelegramApprovalGate — unknown, already-resolved, or post-restart callbacks", () => {
   it("answers an unknown approval id with the expiry text, never resolving or executing anything", async () => {
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
 
     await gate.handleCallback(makeCallback("no-such-id", "approve"));
 
@@ -155,7 +160,7 @@ describe("createTelegramApprovalGate — unknown, already-resolved, or post-rest
 
   it("answers a second tap against an already-resolved approval with the same expiry text, not a second resolution", async () => {
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
     await waitForPromptSent(channel);
     const approvalId = extractApprovalId(channel.send);
@@ -180,7 +185,7 @@ describe("createTelegramApprovalGate — timeout", () => {
   it("resolves 'denied' via fake timers once timeoutMs elapses, never a real 5-minute wait, and edits the message", async () => {
     vi.useFakeTimers();
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555", 1_000);
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger(), 1_000);
 
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
     await vi.advanceTimersByTimeAsync(0);
@@ -198,7 +203,7 @@ describe("createTelegramApprovalGate — timeout", () => {
   it("a stale callback arriving immediately after the timer fires still gets the expiry reply, not a second resolution", async () => {
     vi.useFakeTimers();
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555", 1_000);
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger(), 1_000);
 
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
     await vi.advanceTimersByTimeAsync(0);
@@ -217,11 +222,69 @@ describe("createTelegramApprovalGate — timeout", () => {
   });
 });
 
+describe("createTelegramApprovalGate — prepared-batch debug logging (06-legible-approvals-bounded-reads Phase 3)", () => {
+  it("logs each ready call's tool/args/plan at debug level right before sending the prompt", async () => {
+    const channel = fakeChannel();
+    const logger = fakeLogger();
+    const gate = createTelegramApprovalGate(channel, () => "555", logger);
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "sheets_write",
+        args: { mode: "append", sheet: "clients" },
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          effectiveValueInputOption: "USER_ENTERED",
+        },
+        summary: { action: "¿Escribir en clients?", effects: [] },
+      },
+    ];
+
+    const decisionPromise = gate.requestApproval(batch, CONTEXT, new AbortController().signal);
+    await waitForPromptSent(channel);
+
+    expect(logger.debug).toHaveBeenCalledWith("approval prompt prepared", {
+      tool: "sheets_write",
+      args: { mode: "append", sheet: "clients" },
+      plan: {
+        sheetSlug: "clients",
+        spreadsheetId: "sheet-123",
+        effectiveValueInputOption: "USER_ENTERED",
+      },
+    });
+    // Logged before the prompt is sent, not after.
+    const debugOrder = logger.debug.mock.invocationCallOrder[0] as number;
+    const sendOrder = channel.send.mock.invocationCallOrder[0] as number;
+    expect(debugOrder).toBeLessThan(sendOrder);
+
+    await gate.handleCallback(makeCallback(extractApprovalId(channel.send), "approve"));
+    await decisionPromise;
+  });
+
+  it("never logs a plan field for a prepare-less call", async () => {
+    const channel = fakeChannel();
+    const logger = fakeLogger();
+    const gate = createTelegramApprovalGate(channel, () => "555", logger);
+
+    const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
+    await waitForPromptSent(channel);
+
+    expect(logger.debug).toHaveBeenCalledWith("approval prompt prepared", {
+      tool: "echo",
+      args: { text: "hi" },
+      plan: undefined,
+    });
+
+    await gate.handleCallback(makeCallback(extractApprovalId(channel.send), "approve"));
+    await decisionPromise;
+  });
+});
+
 describe("createTelegramApprovalGate — abort mid-wait", () => {
   it("resolves 'denied' immediately when the signal aborts, without advancing fake timers, and skips the edit", async () => {
     vi.useFakeTimers();
     const channel = fakeChannel();
-    const gate = createTelegramApprovalGate(channel, () => "555");
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
     const controller = new AbortController();
 
     const decisionPromise = gate.requestApproval(BATCH, CONTEXT, controller.signal);

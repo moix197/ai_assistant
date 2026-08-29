@@ -1,6 +1,7 @@
 import type { ApprovalGate, ApprovalRequest } from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
-import { delay, newId } from "@hermes/core";
+import { type Logger, delay, newId } from "@hermes/core";
+import { formatBatchPrompt, formatResolvedText } from "./approval-prompt-renderer";
 
 /** An unanswered approval resolves as a denial after this long (settled decision 7). */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -8,8 +9,8 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 /** The identical reply for an unknown, already-resolved, or post-restart callback id — one branch, three causes (settled decision 7). */
 const EXPIRED_CALLBACK_TEXT = "this approval has expired, please ask again";
 
-const APPROVE_LABEL = "Approve";
-const DENY_LABEL = "Deny";
+const APPROVE_LABEL = "Aprobar";
+const DENY_LABEL = "Rechazar";
 
 export interface TelegramApprovalGate extends ApprovalGate {
   /** Resolves a tapped Approve/Deny button — wire this into the channel's callback inbound kind (`subscribeCallback`) in `boot.ts`. */
@@ -23,17 +24,26 @@ interface PendingApproval {
   resolve: (decision: "approved" | "denied") => void;
 }
 
-function formatBatchPrompt(batch: ApprovalRequest[]): string {
-  const lines = batch.map((request) => `- ${request.tool}(${JSON.stringify(request.args)})`);
-  return ["The model wants to run:", ...lines, "", "Approve or deny?"].join("\n");
-}
-
-function formatResolvedText(batch: ApprovalRequest[], label: string): string {
-  return `${formatBatchPrompt(batch)}\n\n${label}`;
-}
-
 function callbackData(approvalId: string, action: "approve" | "deny"): string {
   return `${approvalId}:${action}`;
+}
+
+/**
+ * Logs each ready call's raw args and resolved plan at debug level, right
+ * before the prompt is sent — `06-legible-approvals-bounded-reads` Phase 3.
+ * `plan` (never `summary`, which never carries this level of detail, e.g.
+ * `sheets_write`'s `spreadsheetId`/effective `valueInputOption`) so an
+ * operator can see exactly what a tool resolved without it ever reaching
+ * chat. Off by default in production (debug level).
+ */
+function logPreparedBatch(logger: Logger, batch: ApprovalRequest[]): void {
+  for (const request of batch) {
+    logger.debug("approval prompt prepared", {
+      tool: request.tool,
+      args: request.args,
+      plan: request.plan,
+    });
+  }
 }
 
 /**
@@ -56,8 +66,9 @@ function callbackData(approvalId: string, action: "approve" | "deny"): string {
  * resolution. The timeout races against `signal` using `delay(timeoutMs,
  * signal)` composed (`AbortSignal.any`) with a controller this function
  * aborts once a tap wins first — the same early-cancel pattern
- * `packages/agent`'s `invokeTool` uses for its own handler-timeout race — so
- * an abort or a tap never leaves the other trigger's timer leaking.
+ * `packages/agent`'s `invokeToolHandler` uses for its own handler-timeout
+ * race — so an abort or a tap never leaves the other trigger's timer
+ * leaking.
  *
  * `targetResolver` maps a turn's `threadId` to the Telegram chat id to
  * send/edit into — `apps/hermes/src/agent/build-agent.ts` supplies one
@@ -68,6 +79,7 @@ function callbackData(approvalId: string, action: "approve" | "deny"): string {
 export function createTelegramApprovalGate(
   channel: TelegramPoller,
   targetResolver: (threadId: string) => string,
+  logger: Logger,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): TelegramApprovalGate {
   const pending = new Map<string, PendingApproval>();
@@ -79,6 +91,7 @@ export function createTelegramApprovalGate(
   ): Promise<"approved" | "denied"> {
     const approvalId = newId();
     const target = targetResolver(context.threadId);
+    logPreparedBatch(logger, batch);
     const { messageId } = await channel.send(target, formatBatchPrompt(batch), {
       buttons: [
         [

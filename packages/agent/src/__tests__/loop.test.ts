@@ -1241,6 +1241,379 @@ describe("runTurn — approval gate", () => {
   });
 });
 
+describe("runTurn — prepare hook (06-legible-approvals-bounded-reads Phase 3)", () => {
+  it("calls a gated tool's prepare before sending the approval prompt, and threads its resolved plan into the handler's ctx", async () => {
+    const prepare = vi.fn().mockResolvedValue({
+      ok: true,
+      plan: { resolvedId: "abc" },
+      summary: { action: "¿Hacer algo?", effects: [] },
+    });
+    const handler = vi.fn().mockResolvedValue("done");
+    const gatedTool: ToolSpec<{ resolvedId: string }> = {
+      name: "prep_tool",
+      description: "a tool with prepare",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare,
+      handler,
+    };
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "prep_tool", arguments: {} }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    await runTurn(
+      definition({ tools: [gatedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(approvalGate.requestApproval).toHaveBeenCalledWith(
+      [
+        {
+          tool: "prep_tool",
+          args: {},
+          plan: { resolvedId: "abc" },
+          summary: { action: "¿Hacer algo?", effects: [] },
+        },
+      ],
+      expect.objectContaining({ threadId: "thread-1" }),
+      expect.anything(),
+    );
+    expect(handler).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ plan: { resolvedId: "abc" } }),
+    );
+
+    const prepareOrder = prepare.mock.invocationCallOrder[0] as number;
+    const approvalOrder = (approvalGate.requestApproval as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0] as number;
+    expect(prepareOrder).toBeLessThan(approvalOrder);
+  });
+
+  it("carries the model's raw arguments in the approval batch even though prepare/handler receive the safeParse'd (defaulted) form — the raw-vs-parsed-args regression", async () => {
+    const schema = z.object({ mode: z.string().default("append") });
+    const prepare = vi.fn().mockImplementation(async (parsedArgs: unknown) => ({
+      ok: true,
+      plan: { seenArgs: parsedArgs },
+      summary: { action: "¿Hacer algo?", effects: [] },
+    }));
+    const handler = vi.fn().mockResolvedValue("done");
+    const gatedTool: ToolSpec<{ seenArgs: unknown }> = {
+      name: "defaulting_tool",
+      description: "has a schema default the raw args omit",
+      schema,
+      requiresApproval: true,
+      prepare,
+      handler,
+    };
+    const rawArgs = {};
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "defaulting_tool", arguments: rawArgs }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    await runTurn(
+      definition({ tools: [gatedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(approvalGate.requestApproval).toHaveBeenCalledWith(
+      [expect.objectContaining({ tool: "defaulting_tool", args: rawArgs })],
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(prepare).toHaveBeenCalledWith({ mode: "append" }, expect.anything());
+    expect(handler).toHaveBeenCalledWith(
+      { mode: "append" },
+      expect.objectContaining({ plan: { seenArgs: { mode: "append" } } }),
+    );
+  });
+
+  it("resolves a prepare that returns {ok:false} as a refusal, never invoking the handler or the approval gate", async () => {
+    const handler = vi.fn();
+    const refusedTool: ToolSpec = {
+      name: "refuses",
+      description: "prepare refuses",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn().mockResolvedValue({ ok: false, result: { ok: false, reason: "nope" } }),
+      handler,
+    };
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({ toolCalls: [{ id: "c1", name: "refuses", arguments: {} }], text: "" }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+    const text = await runTurn(
+      definition({ tools: [refusedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(text).toBe("done");
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("resolves prepare's thrown error as a prepare_failed refusal, never invoking the handler or the approval gate", async () => {
+    const handler = vi.fn();
+    const throwingTool: ToolSpec = {
+      name: "throws_in_prepare",
+      description: "prepare throws",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn().mockRejectedValue(new Error("boom during prepare")),
+      handler,
+    };
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "throws_in_prepare", arguments: {} }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+    await runTurn(
+      definition({ tools: [throwingTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+    expect(findToolMessage(secondRequest, "c1")?.content).toContain("prepare_failed");
+  });
+
+  it("times out a hanging prepare using the tool's own timeoutMs, resolving a prepare_failed refusal without ever sending a prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const handler = vi.fn();
+      const hangingTool: ToolSpec = {
+        name: "hangs_in_prepare",
+        description: "prepare never resolves",
+        schema: z.object({}),
+        requiresApproval: true,
+        timeoutMs: 5_000,
+        prepare: vi.fn(() => new Promise<never>(() => {})),
+        handler,
+      };
+      const complete = vi
+        .fn()
+        .mockResolvedValueOnce(
+          completionResult({
+            toolCalls: [{ id: "c1", name: "hangs_in_prepare", arguments: {} }],
+            text: "",
+          }),
+        )
+        .mockResolvedValueOnce(completionResult({ text: "done" }));
+      const llmProvider: LlmProvider = { complete };
+      const threadRepo = fakeThreadRepo();
+      const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+      const resultPromise = runTurn(
+        definition({ tools: [hangingTool] }),
+        { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+        "telegram",
+        "555",
+        "111",
+        "hello",
+      );
+
+      await vi.runAllTimersAsync();
+      const text = await resultPromise;
+
+      expect(text).toBe("done");
+      expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+      expect(findToolMessage(secondRequest, "c1")?.content).toContain("prepare_failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves a mid-prepare abort as a prepare_failed refusal — never a hang, and never a prompt sent into a shutting-down turn", async () => {
+    let resolvePrepareStarted!: () => void;
+    const prepareStarted = new Promise<void>((resolve) => {
+      resolvePrepareStarted = resolve;
+    });
+    const handler = vi.fn();
+    const controller = new AbortController();
+    const hangingTool: ToolSpec = {
+      name: "hangs_in_prepare",
+      description: "prepare hangs until aborted",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn(async () => {
+        resolvePrepareStarted();
+        return new Promise<never>(() => {});
+      }),
+      handler,
+    };
+    const complete = vi.fn().mockResolvedValueOnce(
+      completionResult({
+        toolCalls: [{ id: "c1", name: "hangs_in_prepare", arguments: {} }],
+        text: "",
+      }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+    const resultPromise = runTurn(
+      definition({ tools: [hangingTool] }),
+      { llmProvider, threadRepo, signal: controller.signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    await prepareStarted;
+    controller.abort();
+
+    await expect(resultPromise).rejects.toBeInstanceOf(LlmAbortedError);
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(threadRepo.appendMessages).not.toHaveBeenCalled();
+  });
+
+  it("never calls requestApproval when every gated call in the batch refuses during prepare (empty-batch skip)", async () => {
+    const handler = vi.fn();
+    const refusedTool: ToolSpec = {
+      name: "refuses",
+      description: "always refuses",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn().mockResolvedValue({ ok: false, result: { ok: false, reason: "nope" } }),
+      handler,
+    };
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({ toolCalls: [{ id: "c1", name: "refuses", arguments: {} }], text: "" }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+    const text = await runTurn(
+      definition({ tools: [refusedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(text).toBe("done");
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("sends a prompt naming only the surviving call when one of two gated calls refuses during prepare, and the refused call's result returns immediately without waiting on the prompt", async () => {
+    const survivingPrepare = vi.fn().mockResolvedValue({
+      ok: true,
+      plan: undefined,
+      summary: { action: "¿Hacer A?", effects: [] },
+    });
+    const survivingHandler = vi.fn().mockResolvedValue("ok");
+    const survivingTool: ToolSpec = {
+      name: "survives",
+      description: "prepares fine",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: survivingPrepare,
+      handler: survivingHandler,
+    };
+    const refusedHandler = vi.fn();
+    const refusedTool: ToolSpec = {
+      name: "refuses",
+      description: "prepare refuses",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn().mockResolvedValue({ ok: false, result: { ok: false, reason: "nope" } }),
+      handler: refusedHandler,
+    };
+    const complete = vi.fn().mockResolvedValueOnce(
+      completionResult({
+        toolCalls: [
+          { id: "s1", name: "survives", arguments: {} },
+          { id: "r1", name: "refuses", arguments: {} },
+        ],
+        text: "",
+      }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    // Never resolves — proves the refused call doesn't wait on it.
+    const approvalGate: ApprovalGate = {
+      requestApproval: vi.fn().mockReturnValue(new Promise(() => {})),
+    };
+
+    void runTurn(
+      definition({ tools: [survivingTool, refusedTool] }),
+      { llmProvider, threadRepo, signal: new AbortController().signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    await vi.waitFor(() =>
+      expect(approvalGate.requestApproval).toHaveBeenCalledWith(
+        [expect.objectContaining({ tool: "survives" })],
+        expect.anything(),
+        expect.anything(),
+      ),
+    );
+    expect(refusedHandler).not.toHaveBeenCalled();
+  });
+});
+
 describe("runTurn — max iterations", () => {
   it("emits outcome: max_iterations with iterations: 8 and rethrows when the model never stops calling tools", async () => {
     const alwaysToolCallTool = tool();

@@ -41,9 +41,9 @@ export function createAgent(definition: AgentDefinition, deps: RunTurnDeps): Age
   };
 }
 
-export type { ApprovalGate, ApprovalRequest } from "./approval-gate-port";
+export type { ApprovalGate, ApprovalRequest, ApprovalSummary } from "./approval-gate-port";
 export { assemblePrefix } from "./prompt";
 export type { AssembledPrefix } from "./prompt";
 export type { Thread, ThreadRepo } from "./thread-repo-port";
-export type { AgentDefinition, ToolSpec } from "./types";
+export type { AgentDefinition, ToolContext, ToolPreparation, ToolSpec } from "./types";
 export type { Message } from "@hermes/core";

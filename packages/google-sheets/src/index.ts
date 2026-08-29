@@ -40,6 +40,7 @@ export {
   type AmbiguousWriteResult,
   type CreateSheetsWriteToolDeps,
   type ReadOnlySheetResult,
+  type SheetsWritePlan,
   type SheetsWriteSuccessResult,
   type SheetWriteLogPort,
 } from "./tools/sheets-write";

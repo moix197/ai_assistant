@@ -21,6 +21,7 @@ describe("echoTool", () => {
         channel: "telegram",
         channelUserId: "123",
         turnId: "turn-1",
+        plan: undefined,
       },
     );
     expect(result).toBe("hello world");

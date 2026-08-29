@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 import { canonicalizeArgs, computeDedupeKey } from "../canonical-args";
-import { resolveSheet } from "../resolve-sheet";
+import { type ResolveSheetResult, resolveSheet } from "../resolve-sheet";
 import {
   SheetsAmbiguousWriteError,
   SheetsApiError,
@@ -68,6 +68,24 @@ export interface CreateSheetsWriteToolDeps extends SheetsToolDeps {
 export interface ReadOnlySheetResult {
   ok: false;
   reason: "read_only_sheet";
+}
+
+/**
+ * What `prepare` resolves and threads onto `ctx.plan` for the handler
+ * (`06-legible-approvals-bounded-reads` Phase 3) — everything the handler
+ * needs to finish the write without ever re-resolving the slug itself.
+ * `access` rides along even though the handler's `access !== "readwrite"`
+ * check itself stays put (unmoved to `prepare` until Phase 4, see that
+ * plan's Dependencies & Risks): without it, the handler would have to call
+ * `resolveSheet` a second time to learn what `prepare` already knows, which
+ * `sheets-write.test.ts` explicitly forbids (`resolveSheet`/the registry
+ * queried exactly once per call).
+ */
+export interface SheetsWritePlan {
+  sheetSlug: string;
+  spreadsheetId: string;
+  access: "read" | "readwrite";
+  effectiveValueInputOption: ValueInputOption;
 }
 
 /** `mode: "append"`'s non-retried post-send-ambiguous outcome — a distinct, structured "check the sheet" result, not a bare thrown error, so the model can relay it as-is (settled decision 15). */
@@ -202,15 +220,68 @@ async function claimDedupeKey(
 }
 
 /**
+ * Resolves the target sheet and builds the `plan`/`summary` the approval
+ * prompt needs — the only step of the write pipeline that runs before a
+ * human ever sees anything (`06-legible-approvals-bounded-reads` Phase 3).
+ * `args` is already parsed by the loop (`packages/agent/src/loop.ts`'s
+ * `prepareGatedCall`). Deliberately does **not** check `access` — a
+ * `read`-access sheet still resolves `ok: true` this phase, so the approval
+ * prompt is still shown for it (the "asked to approve something already
+ * destined to fail" defect this leaves for read-only sheets is closed in
+ * Phase 4, not here — see that plan's Dependencies & Risks); the handler's
+ * own `access !== "readwrite"` check (unmoved) is what actually refuses it,
+ * post-approval, reading `plan.access` rather than re-resolving.
+ */
+async function prepareWrite(
+  deps: CreateSheetsWriteToolDeps,
+  args: unknown,
+  ctx: SheetsToolContext,
+): Promise<
+  | { ok: false; result: ResolveSheetResult }
+  | {
+      ok: true;
+      plan: SheetsWritePlan;
+      summary: { action: string; target?: string; effects: string[] };
+    }
+> {
+  const parsed = args as z.infer<typeof schema>;
+  const resolved = await resolveSheet(deps.sheetRegistry, parsed.sheet);
+  if (!resolved.ok) {
+    return { ok: false, result: resolved };
+  }
+
+  const { entry } = resolved;
+  const effectiveValueInputOption: ValueInputOption =
+    parsed.valueInputOption ?? entry.valueInputOption;
+
+  return {
+    ok: true,
+    plan: {
+      sheetSlug: entry.slug,
+      spreadsheetId: entry.spreadsheetId,
+      access: entry.access,
+      effectiveValueInputOption,
+    },
+    summary: {
+      action: `¿Escribir en ${entry.slug}?`,
+      target: entry.description || undefined,
+      effects: [],
+    },
+  };
+}
+
+/**
  * `sheets_write`: appends or overwrites rows in a registered spreadsheet.
  * `requiresApproval: true` routes every call through the approval gate
- * before this handler ever runs. Order inside the handler is load-bearing
- * (see the Steps in `plans/05-google-sheets.md` Phase 5): resolve the slug,
- * enforce `access === "readwrite"`, *then* claim the dedupe key, *then* call
- * the Sheets API — a `read`-access refusal never reaches the claim or the
- * API, and a same-turn retry (identical `(channel, channelUserId, turnId,
- * tool, canonical args)`) short-circuits on the claim before ever calling
- * the client a second time.
+ * before this handler ever runs; `prepare` (above) resolves the slug ahead
+ * of the prompt, so this handler reads `ctx.plan` instead of re-resolving.
+ * Order inside the handler is load-bearing (see the Steps in
+ * `plans/05-google-sheets.md` Phase 5, unchanged by Phase 3's split): enforce
+ * `access === "readwrite"`, *then* claim the dedupe key, *then* call the
+ * Sheets API — a `read`-access refusal never reaches the claim or the API,
+ * and a same-turn retry (identical `(channel, channelUserId, turnId, tool,
+ * canonical args)`) short-circuits on the claim before ever calling the
+ * client a second time.
  *
  * Both modes share `performWrite`'s definitive-vs-ambiguous release logic: a
  * `SheetsApiError` — the request reached Google and was rejected outright,
@@ -226,8 +297,8 @@ async function claimDedupeKey(
  * without a second API call. `mode: "update"`'s client-internal single retry
  * means `updateValues` never throws that type at all — any post-send
  * ambiguity it can't resolve internally surfaces as a plain fatal error
- * (`packages/agent`'s `invokeTool` turns a thrown handler error into the
- * tool-result message itself, settled decision 15), leaving its claim
+ * (`packages/agent`'s `invokeToolHandler` turns a thrown handler error into
+ * the tool-result message itself, settled decision 15), leaving its claim
  * pending rather than released.
  */
 export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
@@ -238,14 +309,16 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
     schema,
     timeoutMs: 30_000,
     requiresApproval: true,
-    handler: async (args: unknown, ctx: SheetsToolContext): Promise<unknown> => {
+    prepare: (args: unknown, ctx: SheetsToolContext) => prepareWrite(deps, args, ctx),
+    handler: async (
+      args: unknown,
+      ctx: SheetsToolContext & { plan: SheetsWritePlan },
+    ): Promise<unknown> => {
       const parsed = args as z.infer<typeof schema>;
-      const { mode, sheet, range, values, valueInputOption: overrideOption } = parsed;
+      const { mode, range, values } = parsed;
+      const { plan } = ctx;
 
-      const resolved = await resolveSheet(deps.sheetRegistry, sheet);
-      if (!resolved.ok) return resolved;
-
-      if (resolved.entry.access !== "readwrite") {
+      if (plan.access !== "readwrite") {
         return { ok: false, reason: "read_only_sheet" } satisfies ReadOnlySheetResult;
       }
 
@@ -253,30 +326,29 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
       if ("shortCircuit" in claim) return claim.shortCircuit;
       const { dedupeKey } = claim;
 
-      const valueInputOption: ValueInputOption = overrideOption ?? resolved.entry.valueInputOption;
       const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
 
       if (mode === "append") {
-        return performWrite(deps, dedupeKey, mode, resolved.entry.slug, () =>
+        return performWrite(deps, dedupeKey, mode, plan.sheetSlug, () =>
           deps.sheetsClient.appendValues(
             accessToken,
-            resolved.entry.spreadsheetId,
+            plan.spreadsheetId,
             range,
             values,
-            valueInputOption,
+            plan.effectiveValueInputOption,
             undefined,
             ctx.signal,
           ),
         );
       }
 
-      return performWrite(deps, dedupeKey, mode, resolved.entry.slug, () =>
+      return performWrite(deps, dedupeKey, mode, plan.sheetSlug, () =>
         deps.sheetsClient.updateValues(
           accessToken,
-          resolved.entry.spreadsheetId,
+          plan.spreadsheetId,
           range,
           values,
-          valueInputOption,
+          plan.effectiveValueInputOption,
           ctx.signal,
         ),
       );

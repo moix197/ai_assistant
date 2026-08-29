@@ -143,17 +143,29 @@ gated (`echo`, `sheets_write`) — see "Approval gate" below.
 
 ## Approval gate
 
-`echo` and `sheets_write` (`05-google-sheets` Phase 5) are the two tools
-this codebase ships with `requiresApproval: true`. Before `packages/agent`'s
-loop runs either, `src/agent/build-agent.ts`'s `createTelegramApprovalGate`
+`echo` and `sheets_write` are the two tools this codebase ships with
+`requiresApproval: true`. Before `packages/agent`'s loop runs either,
+`src/agent/build-agent.ts`'s `createTelegramApprovalGate`
 (`src/agent/telegram-approval-gate.ts`) sends one Telegram message per batch
-of gated calls, with Approve/Deny buttons naming every call in it — a batch
-of two gated calls in one model turn still gets exactly one combined prompt,
-never two. The prompt text is each call's raw tool name plus its args
-(`formatBatchPrompt`, unchanged by Phase 5) — for `sheets_write` that already
-means the resolved sheet slug, `mode`, `range`, and `values` are shown
-verbatim, with no Sheets-specific formatting added: enough for a human to
-judge what they're approving without a second lookup.
+of gated calls, with **Aprobar**/**Rechazar** buttons — a batch of two gated
+calls in one model turn still gets exactly one combined prompt, never two.
+
+As of `06-legible-approvals-bounded-reads` Phase 3, the prompt is no longer
+uniformly raw JSON: a tool can declare `ToolSpec.prepare(args, ctx)`
+(`packages/agent/src/types.ts`), which resolves before the prompt is ever
+sent and returns either a refusal (skips the prompt entirely — the call
+resolves immediately, no human asked) or a `plan` (threaded onto the
+handler's `ctx.plan`) plus an `ApprovalSummary` the prompt renders instead of
+raw JSON. `sheets_write` is the first tool to declare one: its prompt now
+reads like `¿Escribir en clients?` followed by the sheet's registered
+description, not the raw `mode`/`range`/`values` args. `echo` still declares
+no `prepare`, so it renders exactly as before — the raw-JSON fallback line
+(`apps/hermes/src/agent/approval-prompt-renderer.ts`'s `formatBatchPrompt`,
+extracted from this file this phase) is unchanged, and any future
+`prepare`-less tool falls back to it too. Full documentation of the prompt
+shape lands in Phase 8, once richer `items`/`effects` content exists
+(Phases 5/6); this note only corrects the now-false "raw args, unchanged"
+claim for `sheets_write` specifically.
 
 `whoami` (`04-google-auth` Phase 3) is deliberately `requiresApproval: false`
 — a pure, idempotent read of the Google identity already granted at

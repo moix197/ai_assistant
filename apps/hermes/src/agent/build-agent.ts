@@ -1,7 +1,8 @@
 import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "@hermes/agent";
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
+import { type Logger, createLogger } from "@hermes/core";
 import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
-import type { SheetWriteLogPort, SheetsToolDeps } from "@hermes/google-sheets";
+import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
   createSheetsReadTool,
@@ -136,9 +137,19 @@ export function buildAgent(
   channel: TelegramPoller,
   sheetsDeps: SheetsToolDeps,
   sheetWriteLogRepo: SheetWriteLogPort,
+  /**
+   * `06-legible-approvals-bounded-reads` Phase 3 — `createTelegramApprovalGate`
+   * logs each ready call's raw args/resolved plan at debug level right
+   * before sending its prompt. Optional, defaulting to a fresh `createLogger()`
+   * (info level, so those debug lines stay silent) so `boot.ts`'s existing
+   * call site keeps compiling unchanged; wiring the real, config-aware
+   * logger through from `boot.ts` is left to a later pass, not this phase's
+   * scope.
+   */
+  logger: Logger = createLogger(),
 ): BuiltAgent {
   const { threadRepo, resolveChatId } = createThreadRepoWithChatIndex(pool);
-  const approvalGate = createTelegramApprovalGate(channel, resolveChatId);
+  const approvalGate = createTelegramApprovalGate(channel, resolveChatId, logger);
   const googleAccountRepo = buildGoogleAccountRepo(pool);
   const whoamiTool = createWhoamiTool(googleAccountRepo);
 
@@ -150,7 +161,7 @@ export function buildAgent(
     googleAccountRepo,
     requiredScopes: requiredScopesFor("sheets_read"),
   })(createSheetsReadTool(sheetsDeps));
-  const sheetsWriteTool = withRequiredScopes("sheets_write", {
+  const sheetsWriteTool = withRequiredScopes<SheetsWritePlan>("sheets_write", {
     googleAccountRepo,
     requiredScopes: requiredScopesFor("sheets_write"),
   })(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo }));

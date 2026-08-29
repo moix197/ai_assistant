@@ -5,7 +5,7 @@ import type { ApprovalGate, ApprovalRequest } from "./approval-gate-port";
 import { HISTORY_BUDGET_CHARS, trimHistory } from "./context-trim";
 import { assemblePrefix } from "./prompt";
 import type { Thread, ThreadRepo } from "./thread-repo-port";
-import type { AgentDefinition, ToolSpec } from "./types";
+import type { AgentDefinition, AnyToolSpec, ToolContext, ToolPreparation } from "./types";
 
 /**
  * Bounds the whole turn's model round-trips. Reached whenever the model keeps
@@ -20,7 +20,7 @@ export const MAX_ITERATIONS = 8;
  * whole turn. Package-internal, not env-configurable, same posture as
  * `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`. The default for every tool that
  * leaves `ToolSpec.timeoutMs` unset; a tool may override it (see
- * `invokeTool`).
+ * `invokeToolHandler`) — a declared `prepare` shares the exact same bound.
  */
 const TOOL_HANDLER_TIMEOUT_MS = 10_000;
 
@@ -121,46 +121,70 @@ function truncateToolError(message: string): string {
   return message.length > TOOL_ERROR_MAX_CHARS ? message.slice(0, TOOL_ERROR_MAX_CHARS) : message;
 }
 
-/** Distinguishes "the timeout race won" from a handler resolving with this exact value. */
+/** Distinguishes "the timeout race won" from a handler/prepare resolving with this exact value. */
 const TOOL_TIMEOUT = Symbol("tool-handler-timeout");
 
 /**
- * Runs one validated tool call inside a race against `spec.timeoutMs ??
- * TOOL_HANDLER_TIMEOUT_MS` (`delay`, reused from `@hermes/core`) — a handler
- * that never returns produces a timeout result instead of stalling the
- * turn. A handler that throws never aborts the turn either: its message
- * becomes the tool result (settled decision 15).
+ * Runs `spec.schema.safeParse` against the call's raw arguments and applies
+ * the two-strikes retry counter (keyed by tool name, scoped to this turn) —
+ * shared by the ungated path (`resolveToolCall`) and the gated path
+ * (`prepareGatedCall`), so both count toward the same per-tool-name budget
+ * and produce byte-identical content for the same failure.
+ */
+function parseToolCallArgs(
+  toolCall: ToolCall,
+  spec: AnyToolSpec,
+  retryCounts: Map<string, number>,
+): { success: true; data: unknown } | { success: false; content: string } {
+  const parsed = spec.schema.safeParse(toolCall.arguments);
+  if (parsed.success) {
+    return { success: true, data: parsed.data };
+  }
+  const attempt = (retryCounts.get(spec.name) ?? 0) + 1;
+  retryCounts.set(spec.name, attempt);
+  const zodMessage = parsed.error.message;
+  const content = attempt >= 2 ? `invalid arguments, giving up: ${zodMessage}` : zodMessage;
+  return { success: false, content };
+}
+
+/**
+ * Runs one already-validated tool call's handler inside a race against
+ * `spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS` (`delay`, reused from
+ * `@hermes/core`) — a handler that never returns produces a timeout result
+ * instead of stalling the turn. A handler that throws never aborts the turn
+ * either: its message becomes the tool result (settled decision 15). Shared
+ * by the ungated path (`plan: undefined`) and the approved-gated path
+ * (`plan` already resolved by `prepareGatedCall`) — both dispatch through
+ * this one function, never two divergent invocation paths.
  *
- * The race's `delay` is driven by `raceSignal` — `signal` composed
+ * The race's `delay` is driven by `raceSignal` — `ctx.signal` composed
  * (`AbortSignal.any`, same composition `packages/llm`'s adapter uses) with a
  * `handlerWon` controller this function owns — for two reasons: (1) when the
  * handler wins the race, the `finally` below aborts `handlerWon`, which
  * cancels `delay`'s still-pending timer immediately instead of leaking it
- * for up to `TOOL_HANDLER_TIMEOUT_MS`; (2) when `signal` itself fires
+ * for up to `TOOL_HANDLER_TIMEOUT_MS`; (2) when `ctx.signal` itself fires
  * (shutdown) before the handler resolves, the same early-resolve path is
  * taken, so `outcome === TOOL_TIMEOUT` is ambiguous between "really timed
- * out" and "shut down mid-handler" — resolved below by checking `signal`
+ * out" and "shut down mid-handler" — resolved below by checking `ctx.signal`
  * itself, not the race outcome.
  */
-async function invokeTool(
-  spec: ToolSpec,
+async function invokeToolHandler(
+  spec: AnyToolSpec,
   args: unknown,
-  signal: AbortSignal,
-  channel: string,
-  channelUserId: string,
-  turnId: string,
+  ctx: ToolContext,
+  plan: unknown,
 ): Promise<{ content: string; error?: string }> {
   const timeoutMs = spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS;
   const handlerWon = new AbortController();
-  const raceSignal = AbortSignal.any([signal, handlerWon.signal]);
+  const raceSignal = AbortSignal.any([ctx.signal, handlerWon.signal]);
   try {
     const outcome = await Promise.race([
-      spec.handler(args, { signal, channel, channelUserId, turnId }),
+      spec.handler(args, { ...ctx, plan }),
       delay(timeoutMs, raceSignal).then(() => TOOL_TIMEOUT),
     ]);
 
     if (outcome === TOOL_TIMEOUT) {
-      const message = signal.aborted
+      const message = ctx.signal.aborted
         ? "tool aborted: agent turn was shut down before the handler finished"
         : `tool timed out after ${timeoutMs}ms`;
       return { content: message, error: message };
@@ -178,10 +202,12 @@ async function invokeTool(
  * Emits this call's `tool.call` telemetry event and turns the outcome into
  * the `role: "tool"` message fed back to the model. `approved` defaults to
  * `true` for the ungated path (`resolveToolCall`, below) — `runGatedToolCalls`
- * passes `false` explicitly for a denied/timed-out/aborted gated call.
- * `approvalWaitMs` is `undefined` for an ungated call and present (possibly
- * `0`) for any call that went through the approval gate, approved or not —
- * threaded through from `runGatedToolCalls`, never measured here.
+ * passes `false` explicitly for a denied/refused/timed-out/aborted gated
+ * call. `approvalWaitMs` is `undefined` for an ungated call and for a gated
+ * call that never reached `requestApproval` (refused during `prepare`);
+ * present (possibly `0`) for any call that actually waited on the gate,
+ * approved or not — threaded through from `runGatedToolCalls`, never
+ * measured here.
  */
 function finishToolCall(
   toolCall: ToolCall,
@@ -210,11 +236,6 @@ function finishToolCall(
  * Resolves one `ToolCall` into a tool-result `Message`: an unknown tool name
  * or a `safeParse` failure both feed back a message and never invoke a
  * handler (settled decision 15's error-recovery shape, applied uniformly).
- * The per-tool-call retry counter (`retryCounts`, keyed by tool name, scoped
- * to this turn) gives a validation failure exactly one corrective
- * round-trip: the first failure's result is the raw zod error, the second
- * (and every one after) is the terminal "invalid arguments, giving up"
- * message — the count is never decremented by an intervening success.
  *
  * `startedAt` for `durationMs` is captured right before the handler actually
  * runs, not at the top of this function: an unknown tool or a validation
@@ -223,11 +244,12 @@ function finishToolCall(
  * execution time only (settled decision 12a). `approvalWaitMs`, when passed
  * in by `runGatedToolCalls` for a gated-and-approved batch, is threaded
  * through unchanged to every call's `tool.call` event — this function never
- * measures it itself.
+ * measures it itself. A prepare-less tool always invokes its handler with
+ * `ctx.plan: undefined` — see `ToolSpec<P = void>`'s own doc.
  */
 async function resolveToolCall(
   toolCall: ToolCall,
-  toolsByName: Map<string, ToolSpec>,
+  toolsByName: Map<string, AnyToolSpec>,
   retryCounts: Map<string, number>,
   deps: RunTurnDeps,
   threadId: string | null,
@@ -252,19 +274,15 @@ async function resolveToolCall(
     );
   }
 
-  const parsed = spec.schema.safeParse(toolCall.arguments);
+  const parsed = parseToolCallArgs(toolCall, spec, retryCounts);
   if (!parsed.success) {
-    const attempt = (retryCounts.get(spec.name) ?? 0) + 1;
-    retryCounts.set(spec.name, attempt);
-    const zodMessage = parsed.error.message;
-    const content = attempt >= 2 ? `invalid arguments, giving up: ${zodMessage}` : zodMessage;
     return finishToolCall(
       toolCall,
       deps,
       threadId,
       turnId,
       Date.now(),
-      { content, error: content },
+      { content: parsed.content, error: parsed.content },
       true,
       approvalWaitMs,
     );
@@ -277,7 +295,8 @@ async function resolveToolCall(
   assertToolInvocationAllowed(deps.signal);
 
   const startedAt = Date.now();
-  const outcome = await invokeTool(spec, parsed.data, deps.signal, channel, channelUserId, turnId);
+  const ctx: ToolContext = { signal: deps.signal, channel, channelUserId, turnId };
+  const outcome = await invokeToolHandler(spec, parsed.data, ctx, undefined);
   return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome, true, approvalWaitMs);
 }
 
@@ -289,7 +308,7 @@ async function resolveToolCall(
  */
 function runToolCalls(
   toolCalls: ToolCall[],
-  toolsByName: Map<string, ToolSpec>,
+  toolsByName: Map<string, AnyToolSpec>,
   retryCounts: Map<string, number>,
   deps: RunTurnDeps,
   threadId: string | null,
@@ -316,30 +335,182 @@ function runToolCalls(
 }
 
 /**
- * Resolves a batch of gated tool calls behind one combined approval prompt
- * (settled decision 5 — one prompt for the whole batch, not one per call).
- * Denied, timed out, or aborted mid-wait are the same code path (settled
- * decision 7): every call in the batch becomes an `APPROVAL_DENIED_MESSAGE`
- * tool result, no handler ever runs, and the turn's retry counter is never
- * touched. An approved batch falls through to the exact same
- * validate-then-invoke path an ungated call takes (`runToolCalls`) —
- * approval only gates *whether* a call runs, never how its args are
- * validated or retried.
- *
- * Measures `approvalWaitMs` as the time spent inside `requestApproval`
- * itself, separate from `durationMs` (settled decision 12a — folded into
- * this phase since nothing in this plan ships a gated Google tool to
- * exercise it live): a denied/timed-out/aborted batch resolves its calls
- * with `startedAt` taken *after* the gate settles, so `durationMs` reflects
- * only the near-zero time to build the tool-result message, while
- * `approvalWaitMs` carries the real wait that `durationMs` used to
- * misattribute. An approved batch threads the same measured `approvalWaitMs`
- * into `runToolCalls`, whose own `resolveToolCall` starts its `durationMs`
- * clock only once the handler itself begins (post-resolution).
+ * `prepareGatedCall`'s outcome for one gated call. "refused" means the call
+ * never reaches the batch and never runs a handler — a validation failure, a
+ * `prepare` that throws/times out/aborts, or one that resolves `{ok:false}`
+ * are all folded into this one shape. "ready" means the call survived and
+ * contributes `batchEntry` to the prompt; `plan`/`parsedArgs` are threaded
+ * through, unparsed-`args`-for-display already peeled off, so the eventual
+ * approved-handler call never re-parses or re-runs `prepare`.
+ */
+type GatedCallPreparation =
+  | { status: "refused"; toolCall: ToolCall; result: unknown }
+  | {
+      status: "ready";
+      toolCall: ToolCall;
+      plan: unknown;
+      parsedArgs: unknown;
+      batchEntry: ApprovalRequest;
+    };
+
+/**
+ * Resolves one gated call up to (but not including) the approval prompt:
+ * `safeParse`+retry (`parseToolCallArgs`, shared with the ungated path),
+ * then `spec.prepare` when declared, raced against the same
+ * `spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS` bound `invokeToolHandler` uses.
+ * `batchEntry` always carries `toolCall.arguments` — the model's raw,
+ * unparsed args — never `parsedArgs`, even though `prepare`/the eventual
+ * handler receive the parsed form: this is the one detail most likely to
+ * regress silently (see `plans/06-legible-approvals-bounded-reads.md`'s
+ * Dependencies & Risks) — a zod-applied default or coercion must never
+ * silently change what the human is shown or what `tool.call` logs.
+ */
+async function prepareGatedCall(
+  spec: AnyToolSpec,
+  toolCall: ToolCall,
+  retryCounts: Map<string, number>,
+  ctx: ToolContext,
+): Promise<GatedCallPreparation> {
+  const parsed = parseToolCallArgs(toolCall, spec, retryCounts);
+  if (!parsed.success) {
+    return { status: "refused", toolCall, result: parsed.content };
+  }
+  if (!spec.prepare) {
+    return {
+      status: "ready",
+      toolCall,
+      plan: undefined,
+      parsedArgs: parsed.data,
+      batchEntry: { tool: toolCall.name, args: toolCall.arguments },
+    };
+  }
+
+  const prepare = spec.prepare;
+  const timeoutMs = spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS;
+  const handlerWon = new AbortController();
+  const raceSignal = AbortSignal.any([ctx.signal, handlerWon.signal]);
+  try {
+    // Explicitly typed locals, not inlined directly into `Promise.race([...])`
+    // — with `spec: AnyToolSpec` (`ToolSpec<any>`), TS's inference otherwise
+    // widens the race's resolved type in a way that defeats the
+    // `outcome === TOOL_TIMEOUT` narrowing just below (confirmed in
+    // isolation: a `P = any` discriminated union raced against a plain
+    // symbol needs the arms spelled out, or the equality check no longer
+    // excludes the symbol arm).
+    // biome-ignore lint/suspicious/noExplicitAny: matches `AnyToolSpec`'s own accepted `any` at this same registry boundary — see its doc in `types.ts`.
+    const preparePromise: Promise<ToolPreparation<any>> = prepare(parsed.data, ctx);
+    const timeoutPromise: Promise<typeof TOOL_TIMEOUT> = delay(timeoutMs, raceSignal).then(
+      () => TOOL_TIMEOUT,
+    );
+    const outcome = await Promise.race([preparePromise, timeoutPromise]);
+    if (outcome === TOOL_TIMEOUT) {
+      return { status: "refused", toolCall, result: { ok: false, reason: "prepare_failed" } };
+    }
+    if (!outcome.ok) {
+      return { status: "refused", toolCall, result: outcome.result };
+    }
+    return {
+      status: "ready",
+      toolCall,
+      plan: outcome.plan,
+      parsedArgs: parsed.data,
+      batchEntry: {
+        tool: toolCall.name,
+        args: toolCall.arguments,
+        plan: outcome.plan,
+        ...(outcome.summary && { summary: outcome.summary }),
+      },
+    };
+  } catch {
+    return { status: "refused", toolCall, result: { ok: false, reason: "prepare_failed" } };
+  } finally {
+    handlerWon.abort();
+  }
+}
+
+/**
+ * Splits `prepareGatedCall`'s per-call outcomes into refusals (no prompt, no
+ * handler) and calls that survived `prepare` and are ready to ask about —
+ * `batch` is exactly the `ApprovalRequest[]` the survivors contribute, empty
+ * when every call in the response was refused (settled decision 11: the
+ * caller must skip `requestApproval` entirely in that case, since an
+ * empty-batch prompt has nothing left to ask about).
+ */
+function buildApprovalBatch(preparations: GatedCallPreparation[]): {
+  refused: Extract<GatedCallPreparation, { status: "refused" }>[];
+  ready: Extract<GatedCallPreparation, { status: "ready" }>[];
+  batch: ApprovalRequest[];
+} {
+  const refused = preparations.filter(
+    (p): p is Extract<GatedCallPreparation, { status: "refused" }> => p.status === "refused",
+  );
+  const ready = preparations.filter(
+    (p): p is Extract<GatedCallPreparation, { status: "ready" }> => p.status === "ready",
+  );
+  return { refused, ready, batch: ready.map((p) => p.batchEntry) };
+}
+
+/**
+ * Runs every approved call's handler with the `parsedArgs`/`plan`
+ * `prepareGatedCall` already resolved — never re-parses and never re-runs
+ * `prepare`, since the batch already committed to those exact values when it
+ * asked the human. The "declares `prepare` but reached the handler with no
+ * `plan`" backstop is defense in depth only: unreachable by construction,
+ * since `prepareGatedCall` never returns "ready" for a `prepare`-declaring
+ * tool without a resolved `plan`.
+ */
+function runReadyGatedCalls(
+  ready: Extract<GatedCallPreparation, { status: "ready" }>[],
+  toolsByName: Map<string, AnyToolSpec>,
+  deps: RunTurnDeps,
+  threadId: string,
+  turnId: string,
+  ctx: ToolContext,
+  approvalWaitMs: number,
+): Promise<Message[]> {
+  return Promise.all(
+    ready.map(async (prepared) => {
+      const spec = toolsByName.get(prepared.toolCall.name);
+      if (!spec) {
+        throw new Error(`no ToolSpec found for ready gated call "${prepared.toolCall.name}"`);
+      }
+      if (spec.prepare && prepared.plan === undefined) {
+        throw new Error(
+          `tool "${spec.name}" declares prepare but reached its handler with no plan`,
+        );
+      }
+      assertToolInvocationAllowed(deps.signal);
+      const startedAt = Date.now();
+      const outcome = await invokeToolHandler(spec, prepared.parsedArgs, ctx, prepared.plan);
+      return finishToolCall(
+        prepared.toolCall,
+        deps,
+        threadId,
+        turnId,
+        startedAt,
+        outcome,
+        true,
+        approvalWaitMs,
+      );
+    }),
+  );
+}
+
+/**
+ * Resolves a batch of gated tool calls: `prepareGatedCall` runs every call's
+ * validation+`prepare` step first, `buildApprovalBatch` splits the result
+ * into refusals (resolved immediately, `approved:false`, no wait measured)
+ * and survivors, then one combined prompt is sent for the survivors only —
+ * skipped entirely when none survive (settled decision 11). Denied, timed
+ * out, or aborted mid-wait are still one outcome (settled decision 7): every
+ * surviving call becomes an `APPROVAL_DENIED_MESSAGE` tool result. An
+ * approved batch runs each survivor's handler with its already-resolved
+ * `parsedArgs`/`plan` (`runReadyGatedCalls`) — approval only gates *whether*
+ * a call runs, never how its arguments were validated or prepared.
  */
 async function runGatedToolCalls(
   gatedCalls: ToolCall[],
-  toolsByName: Map<string, ToolSpec>,
+  toolsByName: Map<string, AnyToolSpec>,
   retryCounts: Map<string, number>,
   deps: RunTurnDeps,
   threadId: string,
@@ -357,32 +528,57 @@ async function runGatedToolCalls(
   // Mirrors the ungated path's per-call check in `resolveToolCall`: an
   // already-aborted turn must not send an approval prompt during shutdown.
   assertToolInvocationAllowed(deps.signal);
+
+  const ctx: ToolContext = { signal: deps.signal, channel, channelUserId, turnId };
+  const preparations = await Promise.all(
+    gatedCalls.map((call) => {
+      const spec = toolsByName.get(call.name);
+      if (!spec) {
+        throw new Error(
+          `no ToolSpec found for gated call "${call.name}" — executeToolCalls only ever gates a call with a known, requiresApproval spec`,
+        );
+      }
+      return prepareGatedCall(spec, call, retryCounts, ctx);
+    }),
+  );
+  const { refused, ready, batch } = buildApprovalBatch(preparations);
+  const refusedResults = refused.map((p) =>
+    finishToolCall(
+      p.toolCall,
+      deps,
+      threadId,
+      turnId,
+      Date.now(),
+      { content: typeof p.result === "string" ? p.result : JSON.stringify(p.result) },
+      false,
+    ),
+  );
+
+  if (ready.length === 0) {
+    return refusedResults;
+  }
+
   const waitStartedAt = Date.now();
-  const batch: ApprovalRequest[] = gatedCalls.map((call) => ({
-    tool: call.name,
-    args: call.arguments,
-  }));
   const decision = await approvalGate.requestApproval(batch, { threadId, turnId }, deps.signal);
   const approvalWaitMs = Date.now() - waitStartedAt;
 
   if (decision === "approved") {
-    return runToolCalls(
-      gatedCalls,
+    const approvedResults = await runReadyGatedCalls(
+      ready,
       toolsByName,
-      retryCounts,
       deps,
       threadId,
       turnId,
-      channel,
-      channelUserId,
+      ctx,
       approvalWaitMs,
     );
+    return [...refusedResults, ...approvedResults];
   }
 
   const resolvedAt = Date.now();
-  return gatedCalls.map((toolCall) =>
+  const deniedResults = ready.map((p) =>
     finishToolCall(
-      toolCall,
+      p.toolCall,
       deps,
       threadId,
       turnId,
@@ -392,6 +588,7 @@ async function runGatedToolCalls(
       approvalWaitMs,
     ),
   );
+  return [...refusedResults, ...deniedResults];
 }
 
 /**
@@ -405,7 +602,7 @@ async function runGatedToolCalls(
  */
 async function executeToolCalls(
   toolCalls: ToolCall[],
-  toolsByName: Map<string, ToolSpec>,
+  toolsByName: Map<string, AnyToolSpec>,
   retryCounts: Map<string, number>,
   deps: RunTurnDeps,
   threadId: string,

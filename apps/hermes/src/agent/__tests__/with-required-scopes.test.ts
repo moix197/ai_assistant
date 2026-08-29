@@ -9,6 +9,7 @@ const CTX = {
   channel: "telegram",
   channelUserId: "111",
   turnId: "turn-1",
+  plan: undefined,
 };
 const IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"];
 const SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
@@ -45,6 +46,26 @@ function fakeSpec(
     schema: z.object({}),
     handler,
     requiresApproval: false,
+  };
+}
+
+function fakeSpecWithPrepare(
+  prepare: NonNullable<ScopedToolSpec["prepare"]> = vi.fn().mockResolvedValue({
+    ok: true,
+    plan: undefined,
+    summary: { action: "¿Hacer algo?", effects: [] },
+  }),
+  handler: ScopedToolSpec["handler"] = vi
+    .fn()
+    .mockResolvedValue({ ok: true, value: "real result" }),
+): ScopedToolSpec {
+  return {
+    name: "some-tool",
+    description: "a fake tool with prepare",
+    schema: z.object({}),
+    handler,
+    requiresApproval: true,
+    prepare,
   };
 }
 
@@ -185,5 +206,108 @@ describe("withRequiredScopes", () => {
         requiredScopes: IDENTITY_SCOPES,
       })(spec),
     ).toThrow(/a-different-tool-name/);
+  });
+
+  describe("prepare (06-legible-approvals-bounded-reads Phase 3)", () => {
+    it("does not add a prepare to the gated ToolSpec when the wrapped spec declares none — the whitelist must never invent one", () => {
+      const spec = fakeSpec();
+      const repo = fakeRepo(fakeAccount());
+      const gated = withRequiredScopes("some-tool", {
+        googleAccountRepo: repo,
+        requiredScopes: IDENTITY_SCOPES,
+      })(spec);
+
+      expect(gated.prepare).toBeUndefined();
+    });
+
+    it("connected and scoped: forwards a declared prepare through the decorator, and its result passes through unchanged — the named regression test (the whitelist previously dropped prepare by omission)", async () => {
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        plan: { resolvedId: "abc" },
+        summary: { action: "¿Hacer algo?", effects: [] },
+      });
+      const spec = fakeSpecWithPrepare(prepare);
+      const repo = fakeRepo(fakeAccount());
+      const gated = withRequiredScopes("some-tool", {
+        googleAccountRepo: repo,
+        requiredScopes: IDENTITY_SCOPES,
+      })(spec);
+
+      const result = await gated.prepare?.({}, CTX);
+
+      expect(result).toEqual({
+        ok: true,
+        plan: { resolvedId: "abc" },
+        summary: { action: "¿Hacer algo?", effects: [] },
+      });
+      expect(prepare).toHaveBeenCalledTimes(1);
+    });
+
+    it("fetches the account exactly once and threads it through ctx.googleAccount to the wrapped prepare, same as handler", async () => {
+      const account = fakeAccount();
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        plan: undefined,
+        summary: { action: "¿Hacer algo?", effects: [] },
+      });
+      const spec = fakeSpecWithPrepare(prepare);
+      const repo = fakeRepo(account);
+      const gated = withRequiredScopes("some-tool", {
+        googleAccountRepo: repo,
+        requiredScopes: IDENTITY_SCOPES,
+      })(spec);
+
+      await gated.prepare?.({}, CTX);
+
+      expect(repo.getAccount).toHaveBeenCalledTimes(1);
+      const [, ctxSeenByPrepare] = prepare.mock.calls[0] as [unknown, ScopedToolContext];
+      expect(ctxSeenByPrepare.googleAccount).toEqual(account);
+    });
+
+    it("not connected: prepare itself refuses with structured not_connected, the wrapped prepare is never invoked", async () => {
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        plan: undefined,
+        summary: { action: "should never run", effects: [] },
+      });
+      const spec = fakeSpecWithPrepare(prepare);
+      const repo = fakeRepo(undefined);
+      const gated = withRequiredScopes("some-tool", {
+        googleAccountRepo: repo,
+        requiredScopes: IDENTITY_SCOPES,
+      })(spec);
+
+      const result = await gated.prepare?.({}, CTX);
+
+      expect(result).toEqual({ ok: false, result: { ok: false, reason: "not_connected" } });
+      expect(prepare).not.toHaveBeenCalled();
+    });
+
+    it("missing scope: prepare itself refuses with structured missing_scope, the wrapped prepare is never invoked — no approval prompt is ever built for a call already destined to fail", async () => {
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        plan: undefined,
+        summary: { action: "should never run", effects: [] },
+      });
+      const spec = fakeSpecWithPrepare(prepare);
+      const repo = fakeRepo(fakeAccount({ scopes: ["some-other-scope"] }));
+      const gated = withRequiredScopes("some-tool", {
+        googleAccountRepo: repo,
+        requiredScopes: IDENTITY_SCOPES,
+      })(spec);
+
+      const result = await gated.prepare?.({}, CTX);
+
+      expect(result).toEqual({
+        ok: false,
+        result: {
+          ok: false,
+          reason: "missing_scope",
+          scope: IDENTITY_SCOPES.join(" "),
+          fix: "run /connect google",
+        },
+      });
+      expect(prepare).not.toHaveBeenCalled();
+    });
   });
 });

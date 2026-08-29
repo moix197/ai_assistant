@@ -105,6 +105,27 @@ const APPEND_ARGS = {
   values: [["Jane", "555-0100"]],
 };
 
+/**
+ * Runs the full gated pipeline a real turn would: `prepare` (peeling off the
+ * resolved plan) then `handler` fed that plan — never `handler` in
+ * isolation, since (`06-legible-approvals-bounded-reads` Phase 3) it no
+ * longer resolves the sheet itself. Throws if `prepare` refuses, since every
+ * caller below only reaches for this helper against a known, resolvable
+ * sheet — an unknown-slug/read-only-access refusal is tested against
+ * `prepare`/`handler` directly instead.
+ */
+async function prepareAndRun(
+  tool: ReturnType<typeof createSheetsWriteTool>,
+  args: unknown,
+  ctx: typeof CTX = CTX,
+): Promise<unknown> {
+  const prepared = await tool.prepare(args, ctx);
+  if (!prepared.ok) {
+    throw new Error("fixture bug: expected prepare to succeed for a known sheet");
+  }
+  return tool.handler(args, { ...ctx, plan: prepared.plan });
+}
+
 describe("sheets_write", () => {
   it("carries the right identity, schema (mode-discriminated), timeout, and requiresApproval", () => {
     const tool = createSheetsWriteTool({
@@ -124,6 +145,94 @@ describe("sheets_write", () => {
     expect(tool.schema.safeParse({ sheet: "clients" }).success).toBe(false);
   });
 
+  describe("prepare", () => {
+    it("resolves a known sheet's plan and a minimal ApprovalSummary naming it", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ valueInputOption: "RAW" })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(APPEND_ARGS, CTX);
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          sheetSlug: "clients",
+          spreadsheetId: "sheet-123",
+          access: "readwrite",
+          effectiveValueInputOption: "RAW",
+        },
+        summary: {
+          action: "¿Escribir en clients?",
+          target: "Clients",
+          effects: [],
+        },
+      });
+    });
+
+    it("falls back to no target when the registered sheet's description is empty", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ description: "" })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(APPEND_ARGS, CTX);
+
+      expect(result).toMatchObject({ ok: true, summary: { action: "¿Escribir en clients?" } });
+      expect((result as { summary: { target?: string } }).summary.target).toBeUndefined();
+    });
+
+    it("still resolves ok:true for a read-access sheet — the access refusal is the handler's job this phase, unmoved", async () => {
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ access: "read" })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient: fakeSheetsClient(),
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare(APPEND_ARGS, CTX);
+
+      expect(result).toMatchObject({ ok: true, plan: { access: "read" } });
+    });
+
+    it("returns the unchanged unknown_sheet refusal shape for an unknown slug, without calling the client", async () => {
+      const sheetsClient = fakeSheetsClient();
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry({ slug: "appointments" })]),
+        accessTokenPort: fakeAccessTokenPort(),
+        sheetsClient,
+        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+      });
+
+      const result = await tool.prepare({ ...APPEND_ARGS, sheet: "mystery" }, CTX);
+
+      expect(result).toEqual({
+        ok: false,
+        result: { ok: false, reason: "unknown_sheet", available: ["appointments"] },
+      });
+      expect(sheetsClient.appendValues).not.toHaveBeenCalled();
+      expect(sheetsClient.updateValues).not.toHaveBeenCalled();
+    });
+  });
+
+  it("handler reads ctx.plan instead of re-resolving the sheet — the registry is queried exactly once per call, not twice", async () => {
+    const sheetRegistry = fakeRegistry([fakeEntry()]);
+    const tool = createSheetsWriteTool({
+      sheetRegistry,
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient: fakeSheetsClient(),
+      sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+    });
+
+    await prepareAndRun(tool, APPEND_ARGS);
+
+    expect(sheetRegistry.getBySlug).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a read-access sheet before any dedupe claim or API call", async () => {
     const sheetsClient = fakeSheetsClient();
     const accessTokenPort = fakeAccessTokenPort();
@@ -135,30 +244,13 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const result = await tool.handler(APPEND_ARGS, CTX);
+    const result = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(result).toEqual({ ok: false, reason: "read_only_sheet" });
     expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
     expect(accessTokenPort.getAccessToken).not.toHaveBeenCalled();
     expect(sheetsClient.appendValues).not.toHaveBeenCalled();
     expect(sheetsClient.updateValues).not.toHaveBeenCalled();
-  });
-
-  it("refuses an unknown slug before any dedupe claim or API call", async () => {
-    const sheetsClient = fakeSheetsClient();
-    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
-    const tool = createSheetsWriteTool({
-      sheetRegistry: fakeRegistry([fakeEntry({ slug: "appointments" })]),
-      accessTokenPort: fakeAccessTokenPort(),
-      sheetsClient,
-      sheetWriteLogRepo,
-    });
-
-    const result = await tool.handler({ ...APPEND_ARGS, sheet: "mystery" }, CTX);
-
-    expect(result).toEqual({ ok: false, reason: "unknown_sheet", available: ["appointments"] });
-    expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
-    expect(sheetsClient.appendValues).not.toHaveBeenCalled();
   });
 
   it("happy path append: resolves the slug, calls appendValues once, records completion, and returns success", async () => {
@@ -178,7 +270,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const result = await tool.handler(APPEND_ARGS, CTX);
+    const result = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(accessTokenPort.getAccessToken).toHaveBeenCalledWith("telegram", "111");
     expect(sheetsClient.appendValues).toHaveBeenCalledWith(
@@ -205,7 +297,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo: fakeSheetWriteLogRepo(),
     });
 
-    const result = await tool.handler({ ...APPEND_ARGS, mode: "update" }, CTX);
+    const result = await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
 
     expect(sheetsClient.updateValues).toHaveBeenCalledWith(
       "token-abc",
@@ -228,8 +320,8 @@ describe("sheets_write", () => {
       sheetWriteLogRepo: fakeSheetWriteLogRepo(),
     });
 
-    const first = await tool.handler(APPEND_ARGS, CTX);
-    const second = await tool.handler(APPEND_ARGS, CTX);
+    const first = await prepareAndRun(tool, APPEND_ARGS);
+    const second = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(sheetsClient.appendValues).toHaveBeenCalledTimes(1);
     expect(second).toEqual(first);
@@ -245,8 +337,8 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    await tool.handler(APPEND_ARGS, CTX);
-    await tool.handler(APPEND_ARGS, CTX_OTHER_TURN);
+    await prepareAndRun(tool, APPEND_ARGS, CTX);
+    await prepareAndRun(tool, APPEND_ARGS, CTX_OTHER_TURN);
 
     expect(sheetsClient.appendValues).toHaveBeenCalledTimes(2);
     // Proves ctx.turnId actually reaches the dedupe-key computation, not
@@ -268,7 +360,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const result = await tool.handler(APPEND_ARGS, CTX);
+    const result = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(result).toEqual({
       ok: false,
@@ -292,8 +384,8 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const first = await tool.handler(APPEND_ARGS, CTX);
-    const second = await tool.handler(APPEND_ARGS, CTX);
+    const first = await prepareAndRun(tool, APPEND_ARGS);
+    const second = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(second).toEqual(first);
     expect(sheetsClient.appendValues).toHaveBeenCalledTimes(1);
@@ -312,7 +404,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    await expect(tool.handler(APPEND_ARGS, CTX)).rejects.toBe(apiError);
+    await expect(prepareAndRun(tool, APPEND_ARGS)).rejects.toBe(apiError);
 
     expect(sheetWriteLogRepo.release).toHaveBeenCalledTimes(1);
     expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
@@ -320,7 +412,7 @@ describe("sheets_write", () => {
     // The claim was released, not left pending — a same-turn retry (same
     // channel/channelUserId/turnId/args) is allowed to call the client
     // again rather than being told the write is ambiguous.
-    const result = await tool.handler(APPEND_ARGS, CTX);
+    const result = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(sheetsClient.appendValues).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
@@ -354,7 +446,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const result = await tool.handler({ ...APPEND_ARGS, mode: "update" }, CTX);
+    const result = await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
 
     expect(result).toEqual({ ok: true, sheet: "clients", mode: "update", ...writeResult });
     expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
@@ -374,7 +466,7 @@ describe("sheets_write", () => {
     });
     const updateArgs = { ...APPEND_ARGS, mode: "update" as const };
 
-    await expect(tool.handler(updateArgs, CTX)).rejects.toBe(apiError);
+    await expect(prepareAndRun(tool, updateArgs)).rejects.toBe(apiError);
 
     expect(sheetWriteLogRepo.release).toHaveBeenCalledTimes(1);
     expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
@@ -382,7 +474,7 @@ describe("sheets_write", () => {
     // The claim was released, not left pending — a same-turn retry (same
     // channel/channelUserId/turnId/args) is allowed to call the client
     // again rather than being told the write is ambiguous.
-    const result = await tool.handler(updateArgs, CTX);
+    const result = await prepareAndRun(tool, updateArgs);
 
     expect(sheetsClient.updateValues).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
@@ -407,7 +499,7 @@ describe("sheets_write", () => {
     });
     const updateArgs = { ...APPEND_ARGS, mode: "update" as const };
 
-    await expect(tool.handler(updateArgs, CTX)).rejects.toBe(networkError);
+    await expect(prepareAndRun(tool, updateArgs)).rejects.toBe(networkError);
 
     expect(sheetWriteLogRepo.release).not.toHaveBeenCalled();
     expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
@@ -415,7 +507,7 @@ describe("sheets_write", () => {
     // Not released: a same-turn retry finds the row still pending and gets
     // the same ambiguous hedge a fresh alreadyPending claim always gets,
     // without ever calling the client a second time.
-    const result = await tool.handler(updateArgs, CTX);
+    const result = await prepareAndRun(tool, updateArgs);
 
     expect(result).toEqual({
       ok: false,
@@ -436,7 +528,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo,
     });
 
-    const result = await tool.handler(APPEND_ARGS, CTX);
+    const result = await prepareAndRun(tool, APPEND_ARGS);
 
     expect(result).toEqual({
       ok: false,
@@ -460,7 +552,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo: fakeSheetWriteLogRepo(),
     });
 
-    await tool.handler(APPEND_ARGS, CTX);
+    await prepareAndRun(tool, APPEND_ARGS);
 
     expect(sheetsClient.appendValues).toHaveBeenCalledWith(
       "token-abc",
@@ -482,7 +574,7 @@ describe("sheets_write", () => {
       sheetWriteLogRepo: fakeSheetWriteLogRepo(),
     });
 
-    await tool.handler({ ...APPEND_ARGS, valueInputOption: "RAW" }, CTX);
+    await prepareAndRun(tool, { ...APPEND_ARGS, valueInputOption: "RAW" });
 
     expect(sheetsClient.appendValues).toHaveBeenCalledWith(
       "token-abc",

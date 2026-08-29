@@ -24,6 +24,7 @@ const CTX = {
   channel: "telegram",
   channelUserId: "111",
   turnId: "turn-1",
+  plan: undefined,
 };
 
 function fakeAccount(overrides: Partial<GoogleAccount> = {}): GoogleAccount {

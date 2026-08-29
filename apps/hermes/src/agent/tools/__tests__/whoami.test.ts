@@ -8,6 +8,7 @@ const CTX = {
   channel: "telegram",
   channelUserId: "111",
   turnId: "turn-1",
+  plan: undefined,
 };
 
 function fakeAccount(overrides: Partial<GoogleAccount> = {}): GoogleAccount {
@@ -104,6 +105,7 @@ describe("whoami tool", () => {
         channel: "other-channel",
         channelUserId: "999",
         turnId: "turn-1",
+        plan: undefined,
       },
     );
 
