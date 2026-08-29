@@ -18,14 +18,17 @@ export interface DisconnectHandlerDeps {
    */
   decryptRefreshToken: ((account: GoogleAccount) => string) | undefined;
   logger: Logger;
+  /** Boot-lifetime shutdown signal, forwarded to `revokeToken` so a shutdown aborts an in-flight revoke instead of leaving it to run out its retry budget unstoppable. `undefined` in tests that don't care. */
+  signal?: AbortSignal;
 }
 
 /**
  * Best-effort revoke-before-delete: any reason not to revoke (Google
- * unconfigured, no connected account, a decrypt failure) is swallowed here,
- * and `revokeToken` itself never throws either — so `createDisconnectHandler`
- * always reaches `deleteAccount`/the same success reply regardless of
- * whether the grant was actually revoked at Google.
+ * unconfigured, no connected account, a `getAccount` read failure, a decrypt
+ * failure) is swallowed here, and `revokeToken` itself never throws either —
+ * so `createDisconnectHandler` always reaches `deleteAccount`/the same
+ * success reply regardless of whether the grant was actually revoked at
+ * Google.
  */
 async function revokeGrantIfConnected(
   googleAccountRepo: GoogleAccountRepo,
@@ -34,19 +37,19 @@ async function revokeGrantIfConnected(
 ): Promise<void> {
   if (!deps.decryptRefreshToken) return;
 
-  const account = await googleAccountRepo.getAccount(CHANNEL_TELEGRAM, message.channelUserId);
-  if (!account) return;
-
   let refreshToken: string;
   try {
+    const account = await googleAccountRepo.getAccount(CHANNEL_TELEGRAM, message.channelUserId);
+    if (!account) return;
     refreshToken = deps.decryptRefreshToken(account);
   } catch (error) {
-    deps.logger.warn("failed to decrypt refresh token for revoke; deleting local account anyway", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    deps.logger.warn(
+      "failed to look up account or decrypt refresh token for revoke; deleting local account anyway",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
     return;
   }
-  await revokeToken(refreshToken, { logger: deps.logger });
+  await revokeToken(refreshToken, { logger: deps.logger, externalSignal: deps.signal });
 }
 
 /**

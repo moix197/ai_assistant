@@ -26,6 +26,7 @@ export {
 export { revokeToken, type RevokeTokenOptions } from "./revoke";
 export {
   createRefreshCoordinator,
+  decryptTokenEnvelope,
   type GetValidAccessTokenResult,
   REFRESH_SKEW_MS,
   type RefreshErrorDetail,
@@ -33,6 +34,7 @@ export {
   type RefreshCoordinator,
   type RefreshCoordinatorDeps,
   type RefreshFailureReason,
+  type StoredTokens,
 } from "./refresh";
 export {
   hasRequiredScopes,

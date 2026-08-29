@@ -101,9 +101,22 @@ export interface RefreshCoordinator {
   getValidAccessToken(account: GoogleAccount): Promise<GetValidAccessTokenResult>;
 }
 
-interface StoredTokens {
+export interface StoredTokens {
   accessToken: string;
   refreshToken: string;
+}
+
+/**
+ * Decrypts `account.tokenEnvelope` and parses the resulting JSON into its
+ * `{ accessToken, refreshToken }` shape — the one place that pairing lives,
+ * shared by this module's own `decryptStoredTokens` below and
+ * `apps/hermes/src/boot.ts`'s `buildDecryptRefreshToken` (the narrow decrypt
+ * capability `/disconnect`'s handler needs). Throws whatever `openToken`
+ * throws (`TokenDecryptError`) on a corrupt envelope or wrong key, uncaught
+ * here — each caller decides how to react.
+ */
+export function decryptTokenEnvelope(account: GoogleAccount, cryptoKey: Buffer): StoredTokens {
+  return JSON.parse(openToken(account.tokenEnvelope, cryptoKey)) as StoredTokens;
 }
 
 function accountKey(account: GoogleAccount): string {
@@ -137,7 +150,7 @@ function toErrorDetail(error: unknown): RefreshErrorDetail {
 
 function decryptStoredTokens(account: GoogleAccount, cryptoKey: Buffer): StoredTokens {
   try {
-    return JSON.parse(openToken(account.tokenEnvelope, cryptoKey)) as StoredTokens;
+    return decryptTokenEnvelope(account, cryptoKey);
   } catch (error) {
     const reason = error instanceof TokenDecryptError ? "invalid_grant" : "transient";
     throw new RefreshFailedError(reason, "failed to decrypt stored token envelope", {

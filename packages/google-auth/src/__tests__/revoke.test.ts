@@ -64,6 +64,33 @@ describe("revokeToken", () => {
     );
   });
 
+  it("redacts both the raw and percent-encoded form of a token containing URI-unsafe characters", async () => {
+    // Characters that actually change under encodeURIComponent (`/`, `+`,
+    // `=`) — a token like this only stays fully redacted if both the raw
+    // and encoded forms are stripped.
+    const trickyToken = "abc/def+ghi=jkl";
+    const encodedToken = encodeURIComponent(trickyToken);
+    expect(encodedToken).not.toBe(trickyToken);
+    // Simulates a `fetch` implementation that echoes the outgoing request
+    // URL (carrying the encoded token) back into its failure message.
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          `network died fetching https://oauth2.googleapis.com/revoke?token=${encodedToken}`,
+        ),
+      );
+    const logger = fakeLogger();
+
+    await revokeToken(trickyToken, { logger, fetchImpl });
+
+    const loggedMessage = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      error: string;
+    };
+    expect(loggedMessage.error).not.toContain(trickyToken);
+    expect(loggedMessage.error).not.toContain(encodedToken);
+  });
+
   it("never leaks the refresh token into a thrown error's message", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error(`network died: ${REFRESH_TOKEN}`));
     const logger = fakeLogger();

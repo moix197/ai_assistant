@@ -160,8 +160,12 @@ regardless of whether the grant actually left Google.
 `refreshToken` itself never appears in a log line or a thrown error's
 message — the same discipline `04-google-auth` Phase 2 applies to the
 authorization code in `oauth-client.ts`/`connect-flow.ts`. `disconnect.ts`
-decrypts the stored envelope (via `openToken`, same as `refresh.ts`) only in
-memory for this one call; `packages/store` never sees the plaintext.
+never touches key material itself: `apps/hermes/src/boot.ts`'s
+`buildDecryptRefreshToken` holds the `cryptoKey` and decrypts the stored
+envelope (via the shared `decryptTokenEnvelope`, also used by `refresh.ts`)
+on `disconnect.ts`'s behalf, handing the handler only the narrow
+`decryptRefreshToken` capability. Either way the plaintext exists only in
+memory for this one call; `packages/store` never sees it.
 
 The refresh-sweep's `invalid_grant` disconnect path (`markDisconnected`,
 "Token refresh" above) does not call `revokeToken`: by the time that path

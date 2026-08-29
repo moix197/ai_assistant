@@ -19,7 +19,7 @@ import {
   createGoogleRefreshAccessToken,
   createPendingConnectionStore,
   createRefreshCoordinator,
-  openToken,
+  decryptTokenEnvelope,
 } from "@hermes/google-auth";
 import { type SheetWriteLogPort, createSheetsClient } from "@hermes/google-sheets";
 import { UnpricedModelError, assertModelsPriced, resolveBudgetCapUsd } from "@hermes/llm";
@@ -553,6 +553,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
       disconnectHandler: createDisconnectHandler(channel, buildGoogleAccountRepo(pool), {
         decryptRefreshToken,
         logger,
+        signal,
       }),
       completionHandler: createCompletionHandler({
         channel,
@@ -688,10 +689,7 @@ function buildDecryptRefreshToken(config: Env): ((account: GoogleAccount) => str
   if (!googleOAuth) return undefined;
 
   return function decryptRefreshToken(account: GoogleAccount): string {
-    const stored = JSON.parse(openToken(account.tokenEnvelope, googleOAuth.cryptoKey)) as {
-      refreshToken: string;
-    };
-    return stored.refreshToken;
+    return decryptTokenEnvelope(account, googleOAuth.cryptoKey).refreshToken;
   };
 }
 

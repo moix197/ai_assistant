@@ -17,9 +17,21 @@ class RevokeApiError extends Error {
   }
 }
 
-/** Strips `secret` out of `value` wherever it appears — the same belt-and-braces the token never appears in a thrown error's message, even if some `fetch` implementation ever echoed the request URL back into a failure message. */
+/**
+ * Strips `secret` out of `value` wherever it appears — both its raw form and
+ * its `encodeURIComponent`-encoded form (the shape the revoke URL actually
+ * carries it in), since a token containing `/`, `+`, or `=` changes under
+ * encoding and would otherwise survive redaction in its percent-encoded
+ * form. The same belt-and-braces: the token never appears in a thrown
+ * error's message, even if some `fetch` implementation ever echoed the
+ * request URL back into a failure message.
+ */
 function redact(value: string, secret: string): string {
-  return value.split(secret).join("<REDACTED>");
+  return value
+    .split(secret)
+    .join("<REDACTED>")
+    .split(encodeURIComponent(secret))
+    .join("<REDACTED>");
 }
 
 type RevokeRetryClass = "transient";
@@ -54,13 +66,26 @@ async function attemptRevoke(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(redact(`Google revoke request failed: ${message}`, refreshToken));
   }
-  if (!response.ok) throw new RevokeApiError(response.status);
+  if (!response.ok) {
+    // Discard the body so undici releases the socket back to its pool —
+    // the same discipline packages/google-sheets' client follows for a
+    // non-2xx response it also isn't going to use.
+    await response.text().catch(() => "");
+    throw new RevokeApiError(response.status);
+  }
 }
 
 export interface RevokeTokenOptions {
   logger: Logger;
   /** Overridable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Boot-lifetime shutdown signal, same shape every other `withHttpRetry`
+   * caller (`packages/google-sheets`' client, `packages/llm`'s adapter)
+   * threads through, so a shutdown aborts an in-flight revoke instead of
+   * leaving it to run out its ~10.6s retry budget unstoppable.
+   */
+  externalSignal?: AbortSignal;
 }
 
 /**
@@ -84,6 +109,7 @@ export async function revokeToken(refreshToken: string, opts: RevokeTokenOptions
     await withHttpRetry<void, RevokeRetryClass>({
       attempt: (signal) => attemptRevoke(fetchImpl, refreshToken, signal),
       timeoutMs: REQUEST_TIMEOUT_MS,
+      externalSignal: opts.externalSignal,
       classes: { transient: { maxAttempts: MAX_TRANSIENT_RETRIES } },
       classify,
     });

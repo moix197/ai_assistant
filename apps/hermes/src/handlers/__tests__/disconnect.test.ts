@@ -149,6 +149,24 @@ describe("createDisconnectHandler", () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
+  it("still deletes the local row and replies the same way when getAccount rejects", async () => {
+    const channel = createMockChannel();
+    const repo = fakeRepo();
+    (repo.getAccount as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("connection reset"));
+    const logger = fakeLogger();
+    const deps: DisconnectHandlerDeps = {
+      decryptRefreshToken: vi.fn(),
+      logger,
+    };
+    const handler = createDisconnectHandler(channel, repo, deps);
+
+    await handler(inboundMessage());
+
+    expect(repo.deleteAccount).toHaveBeenCalledWith("telegram", "111");
+    expect(channel.send).toHaveBeenCalledWith("555", expect.stringContaining("Disconnected"));
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
   it("never calls the Google account repo's getAccount/decrypt when Google is unconfigured", async () => {
     const channel = createMockChannel();
     const repo = fakeRepo();
