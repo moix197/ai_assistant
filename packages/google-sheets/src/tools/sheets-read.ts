@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 import { resolveSheet } from "../resolve-sheet";
 import type { ValueRenderOption } from "../sheets-client";
-import { truncateBySize } from "../truncate";
+import { measureRow, truncateBySize } from "../truncate";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const schema = z.object({
@@ -50,10 +50,7 @@ export function createSheetsReadTool(deps: CreateSheetsReadToolDeps) {
       // computed from what Google actually returned for this range, never
       // from the requested range's nominal size.
       const values = result.values ?? [];
-      const capped = truncateBySize(values, (row) => ({
-        cells: row.length,
-        chars: JSON.stringify(row).length,
-      }));
+      const capped = truncateBySize(values, measureRow);
 
       return {
         ok: true,

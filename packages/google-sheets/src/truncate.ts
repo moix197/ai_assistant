@@ -63,6 +63,17 @@ export function truncateBySize<T>(
 }
 
 /**
+ * The `truncateBySize` `measure` callback shared by every row-shaped caller
+ * — `sheets_read`, `sheets_inspect`, and the update-mode `replaced` snapshot
+ * (`06-legible-approvals-bounded-reads` Phase 7) all cap on the same
+ * per-row `{ cells, chars }` shape, so this is extracted once here rather
+ * than duplicated at each call site (CLAUDE.md: extract on second use).
+ */
+export function measureRow(row: unknown[]): { cells: number; chars: number } {
+  return { cells: row.length, chars: JSON.stringify(row).length };
+}
+
+/**
  * Collapses whitespace runs (including newlines/tabs) to a single space,
  * then truncates to `limit` chars with a trailing "…" if it still exceeds —
  * shared by every approval-prompt preview that needs to cap an arbitrary

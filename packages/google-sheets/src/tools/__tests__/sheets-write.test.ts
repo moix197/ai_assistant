@@ -909,6 +909,25 @@ describe("sheets_write", () => {
       });
     });
 
+    it("the snapshot read adds no second getAccessToken call and no second dedupe claim — it reuses the same token and claim the write itself already made", async () => {
+      const sheetsClient = fakeSheetsClient();
+      const accessTokenPort = fakeAccessTokenPort("token-abc");
+      const sheetWriteLogRepo = fakeSheetWriteLogRepo();
+      const tool = createSheetsWriteTool({
+        sheetRegistry: fakeRegistry([fakeEntry()]),
+        accessTokenPort,
+        sheetsClient,
+        sheetWriteLogRepo,
+      });
+
+      await prepareAndRun(tool, { ...APPEND_ARGS, mode: "update" });
+
+      expect(accessTokenPort.getAccessToken).toHaveBeenCalledTimes(1);
+      expect(sheetWriteLogRepo.claim).toHaveBeenCalledTimes(1);
+      expect(sheetsClient.getValues).toHaveBeenCalledTimes(1);
+      expect(sheetsClient.updateValues).toHaveBeenCalledTimes(1);
+    });
+
     it("truncates `replaced` via the shared truncateBySize helper when the prior range is large", async () => {
       const sheetsClient = fakeSheetsClient({ updatedRange: "Sheet1!A1:B600", updatedRows: 600 });
       const hugeValues = Array.from({ length: 600 }, (_, i) => [`Name${i}`, `555-${i}`]);

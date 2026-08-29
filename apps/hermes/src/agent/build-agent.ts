@@ -165,7 +165,7 @@ export function buildAgent(
   const sheetsWriteTool = withRequiredScopes<SheetsWritePlan>("sheets_write", {
     googleAccountRepo,
     requiredScopes: requiredScopesFor("sheets_write"),
-  })(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo }));
+  })(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo, logger }));
 
   const definition: AgentDefinition = {
     name: "hermes",

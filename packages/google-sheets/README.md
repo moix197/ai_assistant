@@ -267,9 +267,11 @@ out.
 **Update-mode `replaced` snapshot (Phase 7) — before→after values, narrated
 by the LLM, not the approval prompt:** immediately before `mode: "update"`
 calls `updateValues`, the handler (`performUpdateWrite` →
-`captureReplacedSnapshot`) takes a single, non-retried `getValues` snapshot
-of the target range's *current* values, using the same `ctx.signal` the rest
-of the call carries so an aborted turn doesn't leave it hanging. On success,
+`captureReplacedSnapshot`) makes a single `getValues` call (no retry loop of
+its own) to snapshot the target range's *current* values, using the same
+`ctx.signal` the rest of the call carries so an aborted turn doesn't leave it
+hanging — see below for how that single call still interacts with the
+client's own retry behavior. On success,
 the snapshot is run through the same `truncateBySize` helper `sheets_read`/
 `sheets_inspect` use (`06-legible-approvals-bounded-reads` Phase 1/2) — same
 per-row `{ cells, chars }` measure — and the result's `replaced: unknown[][]`
@@ -286,9 +288,14 @@ token fetch), and a failure is non-fatal — caught, logged via
 defaulting to a no-op the same way `packages/llm`'s `openai-compatible.ts`
 adapter defaults an unsupplied `logger` — this package had no logging
 mechanism of its own to reuse), and swallowed; the write proceeds unaffected
-and `replaced` is simply omitted from the result. It is never retried: a
-retry loop here would add latency for a purely cosmetic read, not a safety
-benefit.
+and `replaced` is simply omitted from the result. The tool itself makes a
+single call — no retry loop of its own — but that call goes through
+`sheetsClient.getValues`, which (like every other read in this package)
+retries transparently via `sheets-client.ts`'s shared `getWithRetry` on a
+429 or transient 5xx. So a rate-limited or flaky snapshot read can still add
+that client's normal retry latency before this cosmetic read gives up and
+falls back to omitting `replaced` — it is bounded by the client's existing
+retry caps, not skipped entirely.
 
 Audit side-benefit, not a new mechanism: `replaced` (and its truncation
 fields) lands in `sheet_write_log` for free, because `performWrite`'s

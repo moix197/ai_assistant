@@ -9,7 +9,7 @@ import {
   type SheetsWriteResult,
   type ValueInputOption,
 } from "../sheets-client";
-import { truncateBySize, truncateForPrompt } from "../truncate";
+import { measureRow, truncateBySize, truncateForPrompt } from "../truncate";
 import { detectValueInputConsequence } from "../value-input-consequence";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
@@ -312,13 +312,17 @@ async function claimDedupeKey(
 /**
  * `mode: "update"` only: snapshots the target range's current values
  * immediately before the write overwrites them (`06-legible-approvals-
- * bounded-reads` Phase 7) — a single, non-retried `getValues` call (a retry
- * loop here would be new latency for a purely cosmetic read). Wrapped so a
- * failure never blocks the write itself: caught, logged via `warn`, and
- * swallowed — the caller gets `undefined` and proceeds unaffected. On
- * success, runs the result through the same `truncateBySize` helper
- * `sheets_read`/`sheets_inspect` use, measuring each row identically, so a
- * huge existing range doesn't balloon the tool result.
+ * bounded-reads` Phase 7) — a single call to `sheetsClient.getValues`, with
+ * no retry loop of its own here. That call still routes through
+ * `sheets-client.ts`'s `getWithRetry` like every other read, so a 429/5xx on
+ * this specific request can still incur that shared client's normal
+ * rate-limit/transient retry delay before this function ever sees the
+ * failure — this function itself just doesn't add a second layer of retries
+ * on top. Wrapped so a failure never blocks the write itself: caught, logged
+ * via `warn`, and swallowed — the caller gets `undefined` and proceeds
+ * unaffected. On success, runs the result through the same `truncateBySize`
+ * helper `sheets_read`/`sheets_inspect` use, measuring each row identically,
+ * so a huge existing range doesn't balloon the tool result.
  */
 async function captureReplacedSnapshot(
   deps: CreateSheetsWriteToolDeps,
@@ -347,10 +351,7 @@ async function captureReplacedSnapshot(
   }
 
   const rows = snapshot.values ?? [];
-  const capped = truncateBySize(rows, (row) => ({
-    cells: row.length,
-    chars: JSON.stringify(row).length,
-  }));
+  const capped = truncateBySize(rows, measureRow);
 
   return {
     replaced: capped.items,
