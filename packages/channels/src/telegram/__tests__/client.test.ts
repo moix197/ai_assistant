@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTelegramClient } from "../client";
+import { TelegramApiError, createTelegramClient } from "../client";
 
 const TOKEN = "123456:FAKE-TOKEN-abcDEF";
 
@@ -337,6 +337,89 @@ describe("createTelegramClient — external abort signal (shutdown)", () => {
     // With the listener gone, firing the signal after settlement has no
     // further effect on this already-resolved call.
     expect(() => shutdownController.abort()).not.toThrow();
+  });
+
+  /** Resolves the first call with a 409 response, then behaves like `abortAwareFetch` (mimicking real `fetch`) for every call after. */
+  function abortAwareFetchAfterFirstAttempt409(): ReturnType<typeof vi.fn> {
+    let callCount = 0;
+    return vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              ok: false,
+              error_code: 409,
+              description: "Conflict: terminated by other getUpdates request",
+            },
+            false,
+            409,
+          ),
+        );
+      }
+      if (init.signal?.aborted) {
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        return Promise.reject(error);
+      }
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+  }
+
+  it("propagates a plain Error (not TelegramApiError) when the shutdown signal aborts mid-409-backoff, matching pre-shared-helper behavior", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = abortAwareFetchAfterFirstAttempt409();
+      const shutdownController = new AbortController();
+      const client = createTelegramClient({
+        token: TOKEN,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      const resultPromise = client
+        .getUpdates({
+          timeout: 30,
+          limit: 100,
+          allowedUpdates: ["message"],
+          signal: shutdownController.signal,
+        })
+        .then(
+          () => {
+            throw new Error("expected getUpdates to reject");
+          },
+          (error: unknown) => error,
+        );
+
+      // Flush microtasks so the first 409 response is classified and the
+      // retry loop reaches its backoff `setTimeout`, without advancing fake
+      // time (the delay's timer must not have fired yet).
+      await vi.advanceTimersByTimeAsync(0);
+      shutdownController.abort();
+      const error = await resultPromise;
+
+      // This client supplies no `buildAbortedError` to `@hermes/core`'s
+      // `withHttpRetry` (it has no distinct abort-vs-failure error type), so
+      // an abort landing mid-backoff still spends one more real, doomed
+      // attempt before giving up — exactly the pre-shared-helper behavior —
+      // rather than short-circuiting to a synthesized abort error. That
+      // doomed attempt's own generic, redacted network-failure `Error` is
+      // what must propagate here: a `TelegramApiError` would wrongly read as
+      // a fatal 409 to `poller.ts`'s classification (checked ahead of its
+      // own `signal?.aborted` check), firing `onFatalError` on what should
+      // be a clean shutdown.
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(TelegramApiError);
+      expect((error as Error).message).not.toContain("409");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -63,15 +63,19 @@ messages in and out of Telegram."
   optional `options.replyMarkup` (an inline keyboard) is attached only to
   that last part, so a keyboard never appears mid-message on a long send.
   `getUpdates`, `sendMessage`, `answerCallbackQuery`, and `editMessageText`
-  all route errors through the retry policy built on `@hermes/core`'s
-  `nextDelay`: a
-  `429` waits for Telegram's `retry_after` (falling back to computed backoff
-  if absent); a
-  `409` (another `getUpdates` consumer already running) gets a few bounded
-  retries then rethrows, since that's a real conflict, not a blip; `5xx` and
-  network/timeout errors back off exponentially, bounded, then rethrow to the
-  poller's own retry loop. Retries reuse the exact same request body, so a
-  retried `getUpdates` call keeps the same offset automatically.
+  all route errors through `@hermes/core`'s shared `withHttpRetry` helper
+  (also used by `packages/llm`'s adapter) via three named retry classes this
+  package alone defines: `rateLimit` (HTTP 429, `maxAttempts: 5`) waits for
+  Telegram's `retry_after` (falling back to computed backoff if absent);
+  `conflict` (HTTP 409 — another `getUpdates` consumer already running,
+  `maxAttempts: 3`) gets a few bounded retries then rethrows with its own
+  readable exhausted-retries message, since that's a real conflict, not a
+  blip; `transient` (5xx and network/timeout errors, `maxAttempts: 5`) backs
+  off exponentially, bounded, then rethrows to the poller's own retry loop.
+  Retries reuse the exact same request body, so a retried `getUpdates` call
+  keeps the same offset automatically. `@hermes/core`'s helper owns the
+  timeout/signal composition and per-class attempt bookkeeping; this
+  package's own `classify`/token-redaction stay exactly as before.
 - `telegram/chunk.ts` — `chunkText(text, maxLen = 4096): string[]`, a pure
   boundary chunker: splits at the last whitespace before `maxLen`, hard-cuts
   only when no whitespace exists in range. Concatenating the returned parts
@@ -85,7 +89,10 @@ messages in and out of Telegram."
   retries; `retryAfterHeader` always overrides the computed value when
   present. Promoted out of this package (formerly `telegram/backoff.ts`) so
   `packages/llm`'s adapter can share the same implementation instead of
-  duplicating it.
+  duplicating it. `@hermes/core`'s `withHttpRetry` (see that package's
+  README) now wraps `nextDelay`/`delay` with the full retry-loop, timeout,
+  and signal-composition mechanics on top — this client supplies only its
+  own `classify` and the three named classes above.
 - `telegram/poller.ts` — the long-poll loop (`timeout=30s`, `limit=100`,
   `allowed_updates=["message","edited_message","callback_query"]`, the last
   added Phase 3) plus `normalizeTelegramUpdate`, which converts a raw update

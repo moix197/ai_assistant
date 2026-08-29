@@ -1,4 +1,4 @@
-import { delay, nextDelay } from "@hermes/core";
+import { withHttpRetry } from "@hermes/core";
 import { chunkText } from "./chunk";
 
 /**
@@ -169,114 +169,130 @@ function parseErrorBody(rawText: string): {
 }
 
 /**
- * Single attempt at one Telegram API call. Throws `TelegramApiError` for any
- * API-level failure (HTTP not ok, or `ok: false` in the payload) carrying
- * enough structure for `callWithRetry` to decide whether to retry, or a
- * plain redacted `Error` for a network/timeout failure. Every message is
- * redacted before it leaves this function on every path.
+ * Single attempt at one Telegram API call, against `signal` — already
+ * composed by `@hermes/core`'s `withHttpRetry` from this call's per-request
+ * timeout and the poller's external shutdown signal, see `callWithRetry`.
+ * Throws `TelegramApiError` for any API-level failure (HTTP not ok, or
+ * `ok: false` in the payload) carrying enough structure for `classify` to
+ * decide whether to retry, or a plain redacted `Error` for a network/timeout
+ * failure. Every message is redacted before it leaves this function on
+ * every path.
  *
  * `getUpdates` is a long-poll: Telegram holds the connection open for up to
  * `params.timeout` seconds waiting for a message. The client-side abort
  * timeout must exceed that, or this client aborts (and the caller retries)
- * while Telegram is still legitimately waiting.
- *
- * `externalSignal`, when supplied, is not composed via `AbortSignal.any` —
- * Node 22 never releases a dependent signal from a composite `AbortSignal`
- * it created, so a new composite retained per ~30s long-poll call leaks
- * (measured ~2.5KB each, ~210MB/month for a long-running bot). Instead,
- * `externalSignal` gets an `abort` listener that aborts this call's own
- * `timeoutController` — the single signal actually passed to `fetch` — and
- * that listener is removed in the `finally` block below so nothing survives
- * past this call. Either `externalSignal` firing or the per-request timeout
- * elapsing still aborts the underlying `fetch`.
+ * while Telegram is still legitimately waiting — see `callWithRetry`'s
+ * `timeoutMs`.
  */
 async function callTelegramMethod<T>(
   fetchImpl: typeof fetch,
   token: string,
   method: string,
   body: Record<string, unknown>,
-  timeoutMs: number,
-  externalSignal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<T> {
   const url = buildUrl(token, method);
   const redactedUrl = redact(url, token);
-  const timeoutController = new AbortController();
-  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
-  const onExternalAbort = () => timeoutController.abort();
-  // `addEventListener` never fires for a signal already aborted before the
-  // listener was attached, so that case is handled explicitly here instead.
-  if (externalSignal?.aborted) {
-    timeoutController.abort();
-  } else {
-    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
-  }
 
+  let response: Response;
   try {
-    let response: Response;
-    try {
-      response = await fetchImpl(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: timeoutController.signal,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Telegram request to ${redactedUrl} failed: ${redact(message, token)}`);
-    }
-
-    if (!response.ok) {
-      const rawText = await response.text().catch(() => "");
-      const parsed = parseErrorBody(rawText);
-      throw new TelegramApiError(
-        `Telegram API returned HTTP ${response.status} calling ${redactedUrl}: ${redact(rawText, token)}`,
-        {
-          status: response.status,
-          errorCode: parsed.error_code,
-          retryAfter: parsed.parameters?.retry_after,
-        },
-      );
-    }
-
-    const payload = (await response.json()) as TelegramApiResponse<T>;
-    if (!payload.ok) {
-      const description = redact(payload.description ?? "unknown error", token);
-      throw new TelegramApiError(
-        `Telegram API rejected the call to ${redactedUrl}: ${description}`,
-        {
-          status: response.status,
-          errorCode: payload.error_code,
-          retryAfter: payload.parameters?.retry_after,
-        },
-      );
-    }
-    return payload.result;
-  } finally {
-    clearTimeout(timer);
-    externalSignal?.removeEventListener("abort", onExternalAbort);
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Telegram request to ${redactedUrl} failed: ${redact(message, token)}`);
   }
+
+  if (!response.ok) {
+    const rawText = await response.text().catch(() => "");
+    const parsed = parseErrorBody(rawText);
+    throw new TelegramApiError(
+      `Telegram API returned HTTP ${response.status} calling ${redactedUrl}: ${redact(rawText, token)}`,
+      {
+        status: response.status,
+        errorCode: parsed.error_code,
+        retryAfter: parsed.parameters?.retry_after,
+      },
+    );
+  }
+
+  const payload = (await response.json()) as TelegramApiResponse<T>;
+  if (!payload.ok) {
+    const description = redact(payload.description ?? "unknown error", token);
+    throw new TelegramApiError(`Telegram API rejected the call to ${redactedUrl}: ${description}`, {
+      status: response.status,
+      errorCode: payload.error_code,
+      retryAfter: payload.parameters?.retry_after,
+    });
+  }
+  return payload.result;
+}
+
+type TelegramRetryClass = "rateLimit" | "conflict" | "transient";
+
+/**
+ * Maps a `callTelegramMethod` failure to one of `withHttpRetry`'s named
+ * classes: 429 waits for `retry_after` (falling back to computed backoff if
+ * absent); 409 (another `getUpdates` consumer) is its own class so it gets
+ * its own bounded retry count and exhausted-retries message, distinct from
+ * an ordinary transient blip; 5xx and network/timeout errors are
+ * "transient". Any other status (e.g. 400/401) is not retryable and is
+ * thrown directly, never returned. `@hermes/core`'s `withHttpRetry` never
+ * hardcodes any of this — it's entirely this function's call.
+ */
+function classify(error: unknown): { class: TelegramRetryClass; retryAfterMs?: number } {
+  if (error instanceof TelegramApiError) {
+    if (error.status === 429) {
+      return {
+        class: "rateLimit",
+        retryAfterMs: error.retryAfter !== undefined ? error.retryAfter * 1000 : undefined,
+      };
+    }
+    if (error.status === 409) return { class: "conflict" };
+    if (error.status >= 500) return { class: "transient" };
+    throw error;
+  }
+  return { class: "transient" };
 }
 
 /**
- * Wraps `callTelegramMethod` with the retry policy: 429 waits for
- * `retry_after` (falling back to computed backoff if absent); 409 (another
- * `getUpdates` consumer) gets a few bounded retries then rethrows, since
- * that's a real conflict, not a transient blip; 5xx and network/timeout
- * errors back off exponentially, bounded, then rethrow to the caller's own
- * retry loop (the poller logs and retries on a fixed delay). Any other
- * status (e.g. 400/401) is not retryable and rethrows immediately. Retrying
- * the exact same `body` means a retried `getUpdates` call reuses the same
- * offset automatically — it was never mutated here.
+ * A 409 that survives bounded retries means another process is holding this
+ * bot token's getUpdates stream long-term, not a transient blip — a
+ * readable, actionable message beats leaving the caller to decode an HTTP
+ * status. `classify` above only ever assigns the `conflict` class to a
+ * `TelegramApiError` with `status === 409`, so `error` is always one here —
+ * guarded rather than cast, so a future change to `classify` that breaks
+ * that invariant fails loudly (the original error, unchanged) instead of
+ * fabricating a `TelegramApiError` out of unrelated fields.
+ */
+function buildConflictExhaustedError(error: unknown): Error {
+  if (!(error instanceof TelegramApiError))
+    return error instanceof Error ? error : new Error(String(error));
+  return new TelegramApiError(
+    `Telegram getUpdates conflict (409) persisted after ${MAX_CONFLICT_RETRIES} retries: ` +
+      `another instance is already polling with this bot token. ${error.message}`,
+    { status: error.status, errorCode: error.errorCode, retryAfter: error.retryAfter },
+  );
+}
+
+/**
+ * Wraps `callTelegramMethod` with the retry/backoff/timeout policy, via
+ * `@hermes/core`'s shared `withHttpRetry`: per-request timeout composed
+ * with `externalSignal` (the poller's boot-lifetime shutdown signal), and
+ * three named retry classes (`rateLimit`, `conflict`, `transient`) each
+ * with their own bound. Retrying the exact same `body` means a retried
+ * `getUpdates` call reuses the same offset automatically — it was never
+ * mutated here.
  *
- * `externalSignal?.aborted` is checked first, ahead of any error-type
- * classification (mirrors `packages/llm`'s `completeWithRetry`): a shutdown
- * pre-empts every retry policy below, since retrying would defeat the point
- * of a prompt shutdown. That check alone only covers a signal already
- * aborted by the time an attempt fails; the backoff sleep itself is the
- * abort-aware `delay(ms, signal)` from `@hermes/core` (shared with
- * `packages/llm`), so a shutdown landing mid-sleep resolves it immediately
- * instead of burning a full `retry_after`/computed backoff before the check
- * above ever runs again.
+ * Deliberately omits `buildAbortedError`: a shutdown landing mid-backoff must
+ * surface the plain abort `Error`, not the last classified one. Supplying the
+ * hook would let a 409 escape as a `TelegramApiError`, which `poller.ts`
+ * matches before its aborted check — turning a clean shutdown into a fatal
+ * conflict exit.
  */
 async function callWithRetry<T>(
   fetchImpl: typeof fetch,
@@ -286,52 +302,20 @@ async function callWithRetry<T>(
   timeoutMs: number,
   externalSignal?: AbortSignal,
 ): Promise<T> {
-  let rateLimitAttempt = 0;
-  let conflictAttempt = 0;
-  let transientAttempt = 0;
-
-  while (true) {
-    try {
-      return await callTelegramMethod<T>(fetchImpl, token, method, body, timeoutMs, externalSignal);
-    } catch (error) {
-      if (externalSignal?.aborted) throw error;
-      if (error instanceof TelegramApiError) {
-        if (error.status === 429) {
-          rateLimitAttempt++;
-          if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
-          await delay(nextDelay(rateLimitAttempt, error.retryAfter), externalSignal);
-          continue;
-        }
-        if (error.status === 409) {
-          conflictAttempt++;
-          if (conflictAttempt > MAX_CONFLICT_RETRIES) {
-            // A 409 that survives bounded retries means another process is
-            // holding this bot token's getUpdates stream long-term, not a
-            // transient blip — rethrow with a readable, actionable message
-            // instead of leaving the caller to decode an HTTP status.
-            throw new TelegramApiError(
-              `Telegram getUpdates conflict (409) persisted after ${MAX_CONFLICT_RETRIES} retries: ` +
-                `another instance is already polling with this bot token. ${error.message}`,
-              { status: error.status, errorCode: error.errorCode, retryAfter: error.retryAfter },
-            );
-          }
-          await delay(nextDelay(conflictAttempt), externalSignal);
-          continue;
-        }
-        if (error.status >= 500) {
-          transientAttempt++;
-          if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-          await delay(nextDelay(transientAttempt), externalSignal);
-          continue;
-        }
-        throw error;
-      }
-
-      transientAttempt++;
-      if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-      await delay(nextDelay(transientAttempt), externalSignal);
-    }
-  }
+  return withHttpRetry<T, TelegramRetryClass>({
+    attempt: (signal) => callTelegramMethod<T>(fetchImpl, token, method, body, signal),
+    timeoutMs,
+    externalSignal,
+    classes: {
+      rateLimit: { maxAttempts: MAX_RATE_LIMIT_RETRIES },
+      conflict: {
+        maxAttempts: MAX_CONFLICT_RETRIES,
+        buildExhaustedError: buildConflictExhaustedError,
+      },
+      transient: { maxAttempts: MAX_TRANSIENT_RETRIES },
+    },
+    classify,
+  });
 }
 
 export function createTelegramClient(options: TelegramClientOptions): TelegramClient {

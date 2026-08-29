@@ -5,9 +5,8 @@ import {
   type TelemetryEvent,
   type TelemetryRecorder,
   type ToolCall,
-  delay,
-  nextDelay,
   systemClock,
+  withHttpRetry,
 } from "@hermes/core";
 import { type BudgetUsageRepo, assertBudgetNotExceeded } from "../budget/check-budget";
 import {
@@ -346,8 +345,10 @@ function parseCompletionResponse(raw: unknown): ParsedCompletion {
  * shutdown `signal` firing is checked first — it's the more specific,
  * deliberate cause ("shutdown asked us to stop") — falling back to the
  * adapter's own per-request timeout otherwise. Composition (not
- * replacement, see `composeSignal`) is what makes both causes distinguishable
- * from the same combined `AbortSignal` at this single point.
+ * replacement) is what makes both causes distinguishable from the same
+ * combined `AbortSignal` at this single point — `@hermes/core`'s
+ * `withHttpRetry` owns that composition (a manual `abort` listener driving
+ * a per-attempt `AbortController`, not `AbortSignal.any`) for every attempt.
  */
 function classifyAbort(externalSignal: AbortSignal | undefined, timeoutMs: number): Error {
   if (externalSignal?.aborted) {
@@ -357,75 +358,57 @@ function classifyAbort(externalSignal: AbortSignal | undefined, timeoutMs: numbe
 }
 
 /**
- * Combines this call's own per-request timeout signal with the adapter's
- * optional externally-supplied shutdown `signal`, so either can abort the
- * underlying `fetch` — composition, not replacement, of the timeout
- * mechanism.
- */
-function composeSignal(
-  timeoutSignal: AbortSignal,
-  externalSignal: AbortSignal | undefined,
-): AbortSignal {
-  return externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
-}
-
-/**
- * Single attempt at one completion call. Throws `LlmAbortedError` when the
- * externally-supplied shutdown `signal` fires, `LlmTimeoutError` when this
- * function's own per-request timeout fires instead, `LlmHttpError` (carrying
- * `status`) for a non-ok HTTP response, or `LlmMalformedResponseError` for
- * a non-JSON or structurally incomplete HTTP-200 body. Every thrown message
- * is redacted before it leaves this function on every path.
+ * Single attempt at one completion call, against `signal` — already
+ * composed by `@hermes/core`'s `withHttpRetry` from this call's per-request
+ * timeout and the adapter's optional externally-supplied shutdown signal,
+ * see `completeWithRetry`. Throws `LlmHttpError` (carrying `status`) for a
+ * non-ok HTTP response, or `LlmMalformedResponseError` for a non-JSON or
+ * structurally incomplete HTTP-200 body — both by way of `requestOnce`,
+ * `LlmAbortedError`/`LlmTimeoutError` for the abort/timeout case. Every
+ * thrown message is redacted before it leaves this function on every path.
  */
 async function callOnce(
   fetchImpl: typeof fetch,
   url: string,
   apiKey: string,
   body: Record<string, unknown>,
-  timeoutMs: number,
+  signal: AbortSignal,
   externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
 ): Promise<ParsedCompletion> {
-  const timeoutController = new AbortController();
-  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
-  const signal = composeSignal(timeoutController.signal, externalSignal);
-
-  try {
-    const response = await requestOnce(
-      fetchImpl,
-      url,
-      apiKey,
-      body,
-      signal,
-      timeoutMs,
-      externalSignal,
-    );
-    if (!response.ok) {
-      const rawText = await response.text().catch(() => {
-        if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
-        return "";
-      });
-      const retryAfter =
-        parseRetryAfterSeconds(response.headers.get("retry-after")) ??
-        parseRetryInfoDelaySeconds(rawText);
-      throw new LlmHttpError(
-        redact(`LLM provider returned HTTP ${response.status}: ${rawText}`, apiKey),
-        response.status,
-        retryAfter,
-      );
-    }
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
+  const response = await requestOnce(
+    fetchImpl,
+    url,
+    apiKey,
+    body,
+    signal,
+    externalSignal,
+    timeoutMs,
+  );
+  if (!response.ok) {
+    const rawText = await response.text().catch(() => {
       if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
-      throw new LlmMalformedResponseError("LLM response body is not valid JSON");
-    }
-
-    return parseCompletionResponse(payload);
-  } finally {
-    clearTimeout(timer);
+      return "";
+    });
+    const retryAfter =
+      parseRetryAfterSeconds(response.headers.get("retry-after")) ??
+      parseRetryInfoDelaySeconds(rawText);
+    throw new LlmHttpError(
+      redact(`LLM provider returned HTTP ${response.status}: ${rawText}`, apiKey),
+      response.status,
+      retryAfter,
+    );
   }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    if (signal.aborted) throw classifyAbort(externalSignal, timeoutMs);
+    throw new LlmMalformedResponseError("LLM response body is not valid JSON");
+  }
+
+  return parseCompletionResponse(payload);
 }
 
 async function requestOnce(
@@ -434,8 +417,8 @@ async function requestOnce(
   apiKey: string,
   body: Record<string, unknown>,
   signal: AbortSignal,
-  timeoutMs: number,
   externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
 ): Promise<Response> {
   try {
     return await fetchImpl(url, {
@@ -456,35 +439,45 @@ async function requestOnce(
   }
 }
 
+type LlmRetryClass = "rateLimit" | "transient";
+
 /**
- * Sleeps for the retry backoff, then re-checks `externalSignal` — an abort
- * that lands mid-sleep must surface as `LlmAbortedError` immediately rather
- * than let the loop spend another attempt (which would itself just abort).
- * Reuses `classifyAbort`, the same classification `callOnce`'s `fetch` path
- * uses, so a shutdown mid-backoff and a shutdown mid-request are
- * indistinguishable to the caller.
+ * Maps a `callOnce` failure to one of `@hermes/core`'s `withHttpRetry` named
+ * classes. `LlmAbortedError`/`LlmMalformedResponseError` are never retried —
+ * thrown directly rather than returned. `LlmHttpError`'s 429 waits for the
+ * server-supplied `retryAfter` (seconds, header-or-`RetryInfo`-body
+ * fallback already resolved by `callOnce`) converted to ms; 5xx is
+ * "transient"; any other status is fatal. A bare `LlmTimeoutError` or
+ * redacted network-failure `Error` is also "transient" — mirrors
+ * `channels/src/telegram/client.ts`'s own `classify`.
  */
-async function sleepUnlessAborted(
-  ms: number,
-  externalSignal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<void> {
-  await delay(ms, externalSignal);
-  if (externalSignal?.aborted) throw classifyAbort(externalSignal, timeoutMs);
+function classify(error: unknown): { class: LlmRetryClass; retryAfterMs?: number } {
+  if (error instanceof LlmAbortedError) throw error;
+  if (error instanceof LlmMalformedResponseError) throw error;
+  if (error instanceof LlmHttpError) {
+    if (error.status === 429) {
+      return {
+        class: "rateLimit",
+        retryAfterMs: error.retryAfter !== undefined ? error.retryAfter * 1000 : undefined,
+      };
+    }
+    if (error.status >= 500) return { class: "transient" };
+    throw error;
+  }
+  // LlmTimeoutError or a redacted network-failure Error: both transient.
+  return { class: "transient" };
 }
 
 /**
- * Retries `callOnce` per the bounded policy mirroring
- * `channels/src/telegram/client.ts`'s `callWithRetry`: 429 waits for the
- * shared `nextDelay` (falling back to computed backoff), 5xx and
- * network/timeout errors back off exponentially and bounded, any other
- * non-ok status or a malformed body is not retried. Retries resend the
- * identical request body. A shutdown-triggered `LlmAbortedError` is never
- * retried either — retrying would defeat the point of a prompt shutdown.
- * `externalSignal?.aborted` is checked first, ahead of the error's own type:
- * shutdown is the more specific, deliberate cause (mirroring `classifyAbort`'s
- * own precedence) and pre-empts any retry classification a same-tick network
- * failure would otherwise get, so a shutdown never burns another attempt.
+ * Retries `callOnce` via `@hermes/core`'s shared `withHttpRetry`: two named
+ * classes (`rateLimit`, `transient`) mirroring
+ * `channels/src/telegram/client.ts`'s `callWithRetry`. Retries resend the
+ * identical request body. `buildAbortedError` reproduces `classifyAbort`'s
+ * own shutdown-vs-timeout precedence for the case where the external signal
+ * is found aborted at a retry-loop checkpoint (mid-backoff, or right after a
+ * failed attempt) rather than mid-`fetch` — a shutdown-triggered
+ * `LlmAbortedError` is never retried either way, since retrying would defeat
+ * the point of a prompt shutdown.
  */
 async function completeWithRetry(
   fetchImpl: typeof fetch,
@@ -494,43 +487,17 @@ async function completeWithRetry(
   timeoutMs: number,
   externalSignal: AbortSignal | undefined,
 ): Promise<ParsedCompletion> {
-  let rateLimitAttempt = 0;
-  let transientAttempt = 0;
-
-  while (true) {
-    try {
-      return await callOnce(fetchImpl, url, apiKey, body, timeoutMs, externalSignal);
-    } catch (error) {
-      if (externalSignal?.aborted) throw classifyAbort(externalSignal, timeoutMs);
-      if (error instanceof LlmAbortedError) throw error;
-      if (error instanceof LlmMalformedResponseError) throw error;
-
-      if (error instanceof LlmHttpError) {
-        if (error.status === 429) {
-          rateLimitAttempt++;
-          if (rateLimitAttempt > MAX_RATE_LIMIT_RETRIES) throw error;
-          await sleepUnlessAborted(
-            nextDelay(rateLimitAttempt, error.retryAfter),
-            externalSignal,
-            timeoutMs,
-          );
-          continue;
-        }
-        if (error.status >= 500) {
-          transientAttempt++;
-          if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-          await sleepUnlessAborted(nextDelay(transientAttempt), externalSignal, timeoutMs);
-          continue;
-        }
-        throw error;
-      }
-
-      // LlmTimeoutError or a redacted network-failure Error: both transient.
-      transientAttempt++;
-      if (transientAttempt > MAX_TRANSIENT_RETRIES) throw error;
-      await sleepUnlessAborted(nextDelay(transientAttempt), externalSignal, timeoutMs);
-    }
-  }
+  return withHttpRetry<ParsedCompletion, LlmRetryClass>({
+    attempt: (signal) => callOnce(fetchImpl, url, apiKey, body, signal, externalSignal, timeoutMs),
+    timeoutMs,
+    externalSignal,
+    classes: {
+      rateLimit: { maxAttempts: MAX_RATE_LIMIT_RETRIES },
+      transient: { maxAttempts: MAX_TRANSIENT_RETRIES },
+    },
+    classify,
+    buildAbortedError: () => classifyAbort(externalSignal, timeoutMs),
+  });
 }
 
 /**

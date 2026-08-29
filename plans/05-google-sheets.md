@@ -374,20 +374,20 @@ Google's own console UI changes over time — treat every specific label and
 menu path below as **verify at execution time**; the underlying requirement
 is fixed.
 
-- [ ] Add `https://www.googleapis.com/auth/spreadsheets` to the OAuth
+- [x] Add `https://www.googleapis.com/auth/spreadsheets` to the OAuth
       consent screen's scope list in Google Cloud Console (the project from
       `04-google-auth`'s Prerequisites, not a new one).
-- [ ] Create the test spreadsheets this plan's manual verification needs
+- [x] Create the test spreadsheets this plan's manual verification needs
       (at minimum one to register as `readwrite` and one as `read`), and
       collect their spreadsheet IDs for `hermes-sheets add`.
-- [ ] **Flag as a risk, not solved here:** an app in **Testing** publishing
+- [x] **Flag as a risk, not solved here:** an app in **Testing** publishing
       status with **External** user type issues refresh tokens that expire
       after **7 days**, which breaks `RefreshCoordinator` on a weekly
       cadence regardless of which scopes are granted. Options: add test
       users and accept weekly reconnects, or move the consent screen toward
       verification. That decision belongs to whoever operates this
       deployment, not this plan.
-- [ ] Note for that decision: `spreadsheets` is a **sensitive** scope —
+- [x] Note for that decision: `spreadsheets` is a **sensitive** scope —
       Google verification review is required only if the app leaves Testing
       publishing status, not merely for requesting this scope while still in
       Testing.
@@ -433,17 +433,17 @@ all behave exactly as they did before this phase, for both callers.
 **File changes:**
 | Action | File | What changes |
 |---|---|---|
-| create | `packages/core/src/http-retry.ts` | a low-level retrying-fetch primitive: injectable `fetchImpl`; per-request timeout composed with an externally-supplied shutdown `AbortSignal` via a manual `abort`-listener (added on the external signal, removed in a `finally`) driving the request's own `AbortController` — **not** `AbortSignal.any`, adopting `channels`' proven-leak-safe mechanism for both callers (see Dependencies & Risks); a caller-supplied, **named** set of retry classes (e.g. `{ rateLimit: { maxAttempts, classify }, transient: {...} }` — arbitrary keys, not a hardcoded pair), each with its own bounded attempt count and its own `nextDelay`-driven backoff; a caller-supplied `classify(response, error): { class: string; retryAfterMs?: number } \| "fatal"` callback so the helper never hardcodes what "rate limited" means for a given protocol, and lets a caller (like `llm`'s `RetryInfo` body fallback) supply a computed `retryAfterMs` from anywhere, not just a header; a caller-supplied `redact(message)` hook applied before any error is constructed — the helper itself throws nothing typed; callers construct and throw their own existing error classes from `classify`'s fatal branch, so each caller's exact thrown-error type is preserved by construction, not by convention |
+| create | `packages/core/src/http-retry.ts` | a low-level retrying-fetch primitive: a caller-supplied `attempt(signal): Promise<T>` performs the actual `fetch` (so `fetchImpl` injection stays entirely caller-owned, unchanged from before this phase — the helper itself never touches `fetch`); per-request timeout composed with an externally-supplied shutdown `AbortSignal` via a manual `abort`-listener (added on the external signal, removed in a `finally`) driving the request's own `AbortController` — **not** `AbortSignal.any`, adopting `channels`' proven-leak-safe mechanism for both callers (see Dependencies & Risks); a caller-supplied, **named** set of retry classes (e.g. `{ rateLimit: { maxAttempts }, transient: {...} }` — arbitrary keys, not a hardcoded pair), each with its own bounded attempt count and its own `nextDelay`-driven backoff; a caller-supplied `classify(error): { class: string; retryAfterMs?: number }` callback so the helper never hardcodes what "rate limited" means for a given protocol, and lets a caller (like `llm`'s `RetryInfo` body fallback) supply a computed `retryAfterMs` from anywhere, not just a header — **built without the `\| "fatal"` sentinel this row originally proposed**: a non-retryable error is thrown directly from `classify` instead, which the helper never catches, so "fatal" is expressed by an ordinary throw rather than a return value the helper would have to interpret; **no separate `redact(message)` hook was built either** — redaction stays entirely inside each caller's own `attempt`/`classify` (exactly as it was pre-phase), since the helper never constructs or even reads message content, so there is nothing for it to redact. The helper throws nothing typed of its own either way: callers construct and throw their own existing error classes, so each caller's exact thrown-error type is preserved by construction, not by convention |
 | modify | `packages/core/src/index.ts` | export the new helper's public surface |
 | modify | `packages/core/README.md` | document the helper: what it owns (timeout, listener-based signal composition, named-retry-class bookkeeping, backoff, `Retry-After`/`retryAfterMs` precedence), what it deliberately does not own (classification, error construction, redaction content, retry-class count or names) |
 | modify | `packages/llm/src/adapter/openai-compatible.ts` | its hand-rolled retry loop (`completeWithRetry`) is replaced by a call into the new helper, supplying two named classes (`rateLimit` ← 429, `transient` ← 5xx/network/timeout) each with `maxAttempts: 5`, a `classify` that reproduces `parseRetryAfterSeconds`/`parseRetryInfoDelaySeconds`'s header-then-body fallback as the returned `retryAfterMs`, and its own error construction in the fatal branch — **no change to `packages/llm/src/errors.ts`'s thrown types**. `composeSignal`'s `AbortSignal.any` usage is removed; the helper's listener-based composition replaces it — this is the one implementation-level (not just call-site) change in this phase, justified by the leak evidence in Dependencies & Risks |
-| modify | `packages/channels/src/telegram/client.ts` | same replacement, supplying **three** named classes (`rateLimit` ← 429 maxAttempts 5, `conflict` ← 409 maxAttempts 3 with its own exhausted-retries message per `client.ts:305-317`, `transient` ← 5xx/network/timeout maxAttempts 5) and existing token-redaction logic as the `redact` hook; its existing listener-based composition becomes the shared helper's, not a bespoke copy |
+| modify | `packages/channels/src/telegram/client.ts` | same replacement, supplying **three** named classes (`rateLimit` ← 429 maxAttempts 5, `conflict` ← 409 maxAttempts 3 with its own exhausted-retries message per `client.ts:305-317`, `transient` ← 5xx/network/timeout maxAttempts 5); existing token-redaction logic is untouched, staying inline in this file's own `attempt`/error-construction code rather than a `redact` hook passed to the helper (see the `http-retry.ts` row above); its existing listener-based composition becomes the shared helper's, not a bespoke copy |
 | modify | `packages/llm/package.json` | add `@hermes/core` version bump if needed (likely already a dep — verify at execution time) |
 | modify | `packages/llm/README.md`, `packages/channels/README.md` | note the retry/backoff/timeout mechanics now come from `@hermes/core`'s shared helper; each package's own error types, classification, and retry-class counts (2 vs. 3) are unchanged and package-owned |
 
 **Steps:**
 
-- [ ] Read both existing implementations in full before writing the helper —
+- [x] Read both existing implementations in full before writing the helper —
       `packages/llm/src/adapter/openai-compatible.ts` and
       `packages/channels/src/telegram/client.ts` — and enumerate every
       behavior each one has: retry counts **and class names** (2 for `llm`,
@@ -452,36 +452,36 @@ all behave exactly as they did before this phase, for both callers.
       (`llm`'s body-fallback included), exact signal-composition mechanism
       (`AbortSignal.any` for `llm` today vs. the listener pattern for
       `channels`), exact redaction — before touching either
-- [ ] Design `classify`'s contract so both callers' exact existing behavior,
+- [x] Design `classify`'s contract so both callers' exact existing behavior,
       **including the class-count and `Retry-After`-fallback divergence just
       enumerated**, is expressible without a caller-specific branch inside
       the shared helper — if a behavior can't be expressed through
       `classify`/`redact`/the named-class map, that's a signal the helper is
       trying to own too much, not that a caller needs a special case
-- [ ] Build the helper's signal composition on the listener pattern from the
+- [x] Build the helper's signal composition on the listener pattern from the
       start (not `AbortSignal.any`) — write a test proving the listener is
       removed once the request settles (no dangling listener survives a
       completed call), the concrete regression the leak comment in
       `client.ts:183-192` names
-- [ ] Migrate `packages/channels` first, in isolation, since its retry
+- [x] Migrate `packages/channels` first, in isolation, since its retry
       shape (3 classes, listener-based signal) is the more general of the
       two — run its full existing test suite (`client.test.ts`,
       `client-send-chunking.test.ts`) with **zero assertion edits** and
       confirm green before touching `packages/llm`
-- [ ] Migrate `packages/llm` the same way: `openai-compatible.test.ts`,
+- [x] Migrate `packages/llm` the same way: `openai-compatible.test.ts`,
       `openai-compatible-abort.test.ts`, `openai-compatible-budget.test.ts`,
       `openai-compatible-telemetry.test.ts`, `openai-compatible-usage.test.ts`
       all green with zero assertion edits — pay particular attention to
       `openai-compatible-abort.test.ts`, since that's where the
       `AbortSignal.any` → listener-pattern implementation change is most
       likely to surface a behavioral difference if one exists
-- [ ] Write new tests in `packages/core` directly exercising the helper's
+- [x] Write new tests in `packages/core` directly exercising the helper's
       own contract (named-class retry-count enforcement including a
       3-class case, `retryAfterMs` precedence over computed backoff, signal
       composition and listener cleanup, retry count exhaustion per class)
       independent of either caller, so the mechanism has coverage that
       isn't borrowed from `llm`'s/`channels`' fakes
-- [ ] Confirm neither `llm` nor `channels` needed a new dependency — both
+- [x] Confirm neither `llm` nor `channels` needed a new dependency — both
       already had `@hermes/core` as a dependency prior to this phase
       (verify at execution time)
 
@@ -495,14 +495,14 @@ all behave exactly as they did before this phase, for both callers.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/core test` green (new helper tests)
-- [ ] `pnpm --filter @hermes/channels test` green with **no assertion diff** to
+- [x] `pnpm --filter @hermes/core test` green (new helper tests)
+- [x] `pnpm --filter @hermes/channels test` green with **no assertion diff** to
       `client.test.ts`/`client-send-chunking.test.ts`
-- [ ] `pnpm --filter @hermes/llm test` green with **no assertion diff** to
+- [x] `pnpm --filter @hermes/llm test` green with **no assertion diff** to
       the five adapter test files named above
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [ ] Manual: run the bot briefly, send one message that exercises the LLM
       call path and confirm a normal reply still arrives (smoke test that
       the swap didn't silently break the hot path)
@@ -516,12 +516,12 @@ all behave exactly as they did before this phase, for both callers.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `refactor: extract shared HTTP retry/backoff/timeout helper into core`
+- [x] Changes committed: `refactor: extract shared HTTP retry/backoff/timeout helper into core`
 - [ ] Phase marked complete
 
 ---

@@ -72,31 +72,39 @@ all — every OpenAI-compatible provider 400s that shape ("tool message must
 be a response to a preceding message with tool_calls" / missing
 `tool_call_id`).
 
-Retry/timeout policy mirrors `packages/channels/src/telegram/client.ts`'s
-`callWithRetry`, reusing `@hermes/core`'s `nextDelay`:
+Retry/backoff/timeout mechanics come from `@hermes/core`'s shared
+`withHttpRetry` helper (mirrored by `packages/channels/src/telegram/
+client.ts`'s own use of it) — this package supplies only the two things
+that are genuinely its own: `classify` and error construction. Two named
+retry classes, both `maxAttempts: 5`:
 
-- `429` — bounded retries, backoff via `nextDelay`; the provider's
-  `Retry-After` header (seconds) wins over the computed backoff when
-  present, same as the Telegram client's `retry_after` handling. Google's
-  Generative Language API sends no `Retry-After` header on a 429 at all — the
-  adapter falls back to the body's `google.rpc.RetryInfo.retryDelay` detail
-  (e.g. `"26.6s"`) instead. Either source is still capped by `nextDelay`'s
-  usual ceiling.
-- `5xx` or a network/timeout failure — bounded retries, exponential backoff.
-- Any other non-ok status — thrown immediately as `LlmHttpError` (carries
-  `status`), not retried.
-- Per-request timeout via an internally-owned `AbortController` +
-  `setTimeout`; firing throws `LlmTimeoutError`. Retries resend the
-  identical request body.
+- `rateLimit` (HTTP 429) — the provider's `Retry-After` header (seconds)
+  wins over computed backoff when present. Google's Generative Language API
+  sends no `Retry-After` header on a 429 at all — `classify` falls back to
+  the body's `google.rpc.RetryInfo.retryDelay` detail (e.g. `"26.6s"`)
+  instead. Either source is still capped at the same ceiling as computed
+  backoff.
+- `transient` (HTTP 5xx, or a network/timeout failure) — bounded retries,
+  exponential backoff.
+- Any other non-ok status is thrown immediately as `LlmHttpError` (carries
+  `status`) from `classify`'s fatal branch — never retried.
+- Per-request timeout via `withHttpRetry`'s own per-attempt
+  `AbortController`, composed with this adapter's optional externally-
+  supplied shutdown `signal` (a listener-based composition, not
+  `AbortSignal.any` — see `@hermes/core`'s README); firing throws
+  `LlmTimeoutError`, while the external signal firing throws
+  `LlmAbortedError` instead (`classifyAbort` tells the two apart). Retries
+  resend the identical request body.
 - An HTTP-200 body that isn't valid JSON, or is valid JSON carrying neither
   `content` nor `tool_calls`, or missing a well-formed `usage` block, throws
-  `LlmMalformedResponseError` — never a silent partial success. A tool-call
-  reply with `content: null` is not that case; it is valid, and yields `text:
-  ""`. A missing `usage` in particular is never defaulted
-  to zero: that would let a later phase record zero cost for a real, billed
-  call.
+  `LlmMalformedResponseError` — never a silent partial success, and never
+  retried (`classify` rethrows it directly). A tool-call reply with
+  `content: null` is not that case; it is valid, and yields `text: ""`. A
+  missing `usage` in particular is never defaulted to zero: that would let a
+  later phase record zero cost for a real, billed call.
 - Every thrown error's message is redacted so the API key never appears in
-  it, including on the network-failure path.
+  it, including on the network-failure path — entirely this package's own
+  concern; `withHttpRetry` never sees or touches message content.
 
 ## Errors
 

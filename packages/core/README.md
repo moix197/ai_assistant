@@ -35,6 +35,26 @@ implementations"), which a leaf library already load-bearing in
 - `nextDelay()` / `delay()` — the shared exponential-backoff step and its
   sleep. Both the Telegram client and the LLM adapter retry off these rather
   than each rolling their own curve.
+- `withHttpRetry()` — a low-level retrying-fetch primitive built on top of
+  `nextDelay`/`delay`, shared by `packages/llm` (2 named retry classes) and
+  `packages/channels` (3). Owns: per-request timeout composed with an
+  externally-supplied shutdown `AbortSignal` (a manual `abort` listener,
+  added on that signal and removed in a `finally`, driving the attempt's own
+  `AbortController` — never `AbortSignal.any`, which Node 22 never releases
+  a dependent signal from; see `packages/channels/src/telegram/client.ts`'s
+  original leak comment for the measured cost this avoids), named-retry-class
+  bookkeeping (arbitrary caller-defined keys, each independently bounded),
+  and `retryAfterMs`-over-computed-backoff precedence (capped at the same
+  ceiling either way). Deliberately does **not** own: classification (a
+  caller-supplied `classify(error)` decides what's retryable and as which
+  class — the helper never hardcodes what "rate limited" or "fatal" means
+  for a given protocol), error construction or redaction content (every
+  thrown error is the caller's own, from `attempt`, `classify`, or the
+  optional `buildExhaustedError`/`buildAbortedError` hooks — `withHttpRetry`
+  itself throws nothing typed and never inspects a message string), or the
+  retry-class count/names. See `packages/llm/README.md` and
+  `packages/channels/README.md` for each caller's own classes and error
+  types.
 - The provider-neutral LLM types — `Message`, `ToolCall`, `ToolResult`,
   `Usage`, `LlmUsageEntry`. They live here, not in `@hermes/llm`, precisely
   because `store` and (later) `agent` need to name them without depending on

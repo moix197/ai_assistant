@@ -18,6 +18,12 @@ export type {
 } from "./telemetry";
 export { nextDelay } from "./backoff";
 export { delay } from "./delay";
+export { withHttpRetry } from "./http-retry";
+export type {
+  HttpRetryOptions,
+  RetryClassConfig,
+  RetryClassification,
+} from "./http-retry";
 export { googleAccountSchema, tokenEnvelopeSchema } from "./google-types";
 export type { GoogleAccount, TokenEnvelope } from "./google-types";
 export { messageSchema, messagesArraySchema } from "./llm-types";

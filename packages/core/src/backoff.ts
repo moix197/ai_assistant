@@ -1,5 +1,6 @@
 const BASE_DELAY_MS = 500;
-const MAX_DELAY_MS = 30_000;
+/** The ceiling both a computed backoff and a server-supplied retry hint are capped at. Exported so `http-retry.ts` can apply the same cap to its ms-denominated `retryAfterMs` without duplicating the number. */
+export const MAX_DELAY_MS = 30_000;
 /** Uniform jitter of +/-20% around the computed exponential delay, to avoid synchronized retries. */
 const JITTER_RATIO = 0.2;
 
