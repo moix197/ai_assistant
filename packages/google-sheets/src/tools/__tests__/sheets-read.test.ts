@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AccessTokenPort } from "../../access-token-port";
 import type { SheetRegistryPort } from "../../sheet-registry-port";
 import type { SheetsClient, SheetsValuesResult } from "../../sheets-client";
+import { MAX_CELLS } from "../../truncate";
 import { createSheetsReadTool } from "../sheets-read";
 
 const CTX = {
@@ -145,5 +146,97 @@ describe("sheets_read", () => {
     expect(result).toEqual({ ok: false, reason: "unknown_sheet", available: ["clients"] });
     expect(accessTokenPort.getAccessToken).not.toHaveBeenCalled();
     expect(sheetsClient.getValues).not.toHaveBeenCalled();
+  });
+
+  it("truncates a range whose values exceed the caps, returning whole rows plus the truncation fields", async () => {
+    // MAX_CELLS + 5 single-cell rows — well past the cap, guaranteed to
+    // truncate on cell count (minimal cell content so the char cap never
+    // trips first).
+    const rows = Array.from({ length: MAX_CELLS + 5 }, () => ["x"]);
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:A505", values: rows });
+    const tool = createSheetsReadTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+    });
+
+    const result = await tool.handler(
+      { sheet: "appointments", range: "Sheet1!A1:A505", valueRenderOption: "FORMATTED_VALUE" },
+      CTX,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      sheet: "appointments",
+      range: "Sheet1!A1:A505",
+      truncated: true,
+      returnedRows: MAX_CELLS,
+      totalRows: MAX_CELLS + 5,
+      totalColumns: 1,
+      note: "El rango es muy grande — pide un rango más chico para ver el resto.",
+    });
+    expect((result as { values: unknown[] }).values).toHaveLength(MAX_CELLS);
+  });
+
+  it("stays untruncated exactly at the cap boundary — no new keys at all", async () => {
+    const rows = Array.from({ length: MAX_CELLS }, () => ["x"]);
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:A500", values: rows });
+    const tool = createSheetsReadTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+    });
+
+    const result = await tool.handler(
+      { sheet: "appointments", range: "Sheet1!A1:A500", valueRenderOption: "FORMATTED_VALUE" },
+      CTX,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      sheet: "appointments",
+      range: "Sheet1!A1:A500",
+      values: rows,
+    });
+  });
+
+  it("returns today's unmodified shape for an empty-result range (no truncated key)", async () => {
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:A1", values: [] });
+    const tool = createSheetsReadTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+    });
+
+    const result = await tool.handler(
+      { sheet: "appointments", range: "Sheet1!A1:A1", valueRenderOption: "FORMATTED_VALUE" },
+      CTX,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      sheet: "appointments",
+      range: "Sheet1!A1:A1",
+      values: [],
+    });
+  });
+
+  it("computes totalRows from the actual returned rows, not the requested range's nominal size", async () => {
+    // Requested A1:Z1000 but Google only returns 40 rows of real data.
+    const rows = Array.from({ length: 40 }, (_, i) => [`row-${i}`, "value"]);
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:Z1000", values: rows });
+    const tool = createSheetsReadTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+    });
+
+    const result = await tool.handler(
+      { sheet: "appointments", range: "Sheet1!A1:Z1000", valueRenderOption: "FORMATTED_VALUE" },
+      CTX,
+    );
+
+    expect(result).toMatchObject({ ok: true, values: rows });
+    expect(result).not.toHaveProperty("truncated");
   });
 });

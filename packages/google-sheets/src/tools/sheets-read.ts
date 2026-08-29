@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { resolveSheet } from "../resolve-sheet";
 import type { ValueRenderOption } from "../sheets-client";
+import { truncateBySize } from "../truncate";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const schema = z.object({
@@ -43,11 +44,29 @@ export function createSheetsReadTool(deps: CreateSheetsReadToolDeps) {
         valueRenderOption as ValueRenderOption,
         ctx.signal,
       );
+      // `values.get` only returns rows that actually have data — a request
+      // for `A1:Z1000` against a 40-row sheet returns 40 rows, not 1000
+      // padded with empties — so `totalRows`/`totalColumns` below must be
+      // computed from what Google actually returned for this range, never
+      // from the requested range's nominal size.
+      const values = result.values ?? [];
+      const capped = truncateBySize(values, (row) => ({
+        cells: row.length,
+        chars: JSON.stringify(row).length,
+      }));
+
       return {
         ok: true,
         sheet: resolved.entry.slug,
         range: result.range,
-        values: result.values ?? [],
+        values: capped.items,
+        ...(capped.truncated && {
+          truncated: true,
+          returnedRows: capped.returnedCount,
+          totalRows: capped.totalCount,
+          totalColumns: Math.max(0, ...values.map((row) => row.length)),
+          note: "El rango es muy grande — pide un rango más chico para ver el resto.",
+        }),
       };
     },
   };

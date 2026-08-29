@@ -114,7 +114,8 @@ it bounds one HTTP attempt, not the whole handler call.
   (any `access` value permits a read; only `sheets_write`, Phase 5, checks
   `access`), fetches values. `valueRenderOption` defaults to
   `FORMATTED_VALUE` — the agent relays results to a human, so values as a
-  human would see them (settled decision 16).
+  human would see them (settled decision 16). Results are bounded by
+  `truncate.ts`'s shared `truncateBySize` — see "Bounded results" below.
 - `sheets_write { mode: "append" | "update", sheet, range, values,
   valueInputOption? }` (Phase 5) — the one write tool; see its own section
   below for the full design (access enforcement, dedupe/audit, the per-mode
@@ -130,6 +131,32 @@ site, so a tool's scope requirement is declared once. None of the three
 tools checks scopes itself, and none calls the Sheets API (or even fetches
 an access token) for an unconnected or under-scoped account — the gate runs
 first and short-circuits before this package's handler is ever invoked.
+
+## Bounded results — `truncate.ts`
+
+`truncate.ts`'s `truncateBySize<T>(items, measure, caps?)` is a pure,
+Sheets-agnostic helper shared by `sheets_read` (this phase), `sheets_inspect`
+(Phase 2), and the update-mode `replaced` snapshot (Phase 7) — a huge range,
+a many-tab spreadsheet, or a huge overwritten range can no longer dominate
+model context. Two package-internal, non-env-configurable caps:
+`MAX_CELLS = 500`, `MAX_VALUE_CHARS = 4_000`. It walks `items` in order,
+accumulating both running totals via the caller's `measure`, and stops
+*before* a would-be-added item would push either total over its cap —
+**except the first item is always kept**, so a single oversized row/tab is
+still returned whole, never split.
+
+`sheets_read` calls it over `result.values` (measuring each row's cell count
+and its `JSON.stringify` length) and returns results **additively**: an
+untruncated read is byte-identical to today (no new keys at all). A
+truncated read adds `truncated: true, returnedRows, totalRows, totalColumns,
+note` alongside the (now-shorter) `values`. `totalRows` is `(result.values ??
+[]).length` — the count Google's `values.get` actually returned for this
+range, **not** the requested range's nominal size (`values.get` only returns
+rows with data — `A1:Z1000` against a 40-row sheet returns 40 rows, not 1000
+padded with empties). `totalColumns` is computed from the original,
+pre-truncation `values`, not the truncated slice. `note` is Spanish, since
+it's model-facing text the model typically relays to the same
+Spanish-speaking user, consistent with this plan's other language decisions.
 
 ## `sheets_write` (Phase 5)
 
