@@ -928,20 +928,20 @@ this mutation path.
 
 **Steps:**
 
-- [ ] Access enforcement happens **before** the dedupe claim and before any
+- [x] Access enforcement happens **before** the dedupe claim and before any
       API call — write the test proving a `read`-access sheet refusal never
       inserts a `sheet_write_log` row and never calls the Sheets client
-- [ ] Dedupe correctness, proven not assumed: two calls with identical
+- [x] Dedupe correctness, proven not assumed: two calls with identical
       `(channel, channelUserId, turnId, tool, canonicalArgs)` result in
       exactly one `appendValues`/`updateValues` call to the (faked) Sheets
       client — assert the spy's call count, not just "both calls returned
       the same thing"
-- [ ] Dedupe is a retry guard, not a permanent block: the same logical write
+- [x] Dedupe is a retry guard, not a permanent block: the same logical write
       with a **different** `turnId` (a later, genuinely repeated user
       request) is allowed to proceed and calls the client again — write this
       as an explicit test so the `turnId` inclusion isn't silently reverted
       later under the mistaken belief it should dedupe forever
-- [ ] Ambiguous-outcome handling is **per mode**, proven as two distinct
+- [x] Ambiguous-outcome handling is **per mode**, proven as two distinct
       tests, not one: (1) `mode: "append"` — simulate a post-send timeout
       from the fake client and assert `sheets_write` returns the explicit
       "may or may not have landed" result **without** a second call to the
@@ -953,17 +953,27 @@ this mutation path.
       a normal success with no "may or may not have landed" hedge — the two
       tests must assert opposite outcomes for the same fault, proving the
       split isn't accidental
-- [ ] `ctx.turnId` (widened in Phase 4) is read directly by the dedupe-key
+- [x] `ctx.turnId` (widened in Phase 4) is read directly by the dedupe-key
       computation here — confirm no further `loop.ts` change is needed in
       this phase; a test asserting the dedupe key differs when only
       `ctx.turnId` differs (holding args/channel/channelUserId fixed) proves
       the field actually reaches the handler, not just that it typechecks
-- [ ] `requiresApproval: true` — confirm the existing `ApprovalGate` prompt
+- [~] `requiresApproval: true` — confirm the existing `ApprovalGate` prompt
       shows the resolved sheet, mode, and values clearly enough that a human
       can actually judge what they're approving, not just "confirm write?"
-- [ ] `valueInputOption` resolution order: registry default unless the tool
+      — **partially deferred**: the prompt shows mode, range and values (the
+      model's raw args), but NOT the resolved spreadsheet nor the *effective*
+      `valueInputOption` when it comes from the registry default, so settled
+      decision 17's RAW-vs-USER_ENTERED stake is invisible to the approver.
+      Deferred deliberately: `ApprovalRequest.args` is by design the model's
+      raw args, built pre-handler in `loop.ts`'s generic `runGatedToolCalls`;
+      surfacing resolved values needs either sheets-write internals in the
+      generic loop or a cross-package `ApprovalGate` contract change
+      (settled decisions 5-7/16). Re-resolving for display could also
+      misrepresent what was actually approved. Follow-up, not a Phase 5 fix.
+- [x] `valueInputOption` resolution order: registry default unless the tool
       arg overrides it — write a test for both cases
-- [ ] Confirm `canonical-args.ts`'s JSON canonicalization is genuinely
+- [x] Confirm `canonical-args.ts`'s JSON canonicalization is genuinely
       deterministic (key order doesn't affect the hash) — the dedupe key's
       whole point breaks if two logically-identical calls hash differently
       due to object key ordering
@@ -980,10 +990,10 @@ this mutation path.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm test:db` green — migration `009` applies cleanly
-- [ ] `pnpm lint` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm test:db` green — migration `009` applies cleanly
+- [x] `pnpm lint` green
 - [ ] Manual: "add a client named X with phone Y" against the `clients`
       sheet (registered `readwrite`) → approval prompt shows the exact row →
       approve → row appears in the real spreadsheet
@@ -996,14 +1006,14 @@ this mutation path.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: sheets_write tool with approval, access enforcement, write dedupe/audit`
+- [x] Changes committed: `feat: sheets_write tool with approval, access enforcement, write dedupe/audit` (6db201c, fixes ed3344f, a130ec2)
 - [ ] Phase marked complete
 
 ---
@@ -1024,6 +1034,7 @@ just from the local `google_accounts` table.
 | create | `packages/google-auth/src/revoke.ts` | `revokeToken(refreshToken: string, opts): Promise<void>` — `POST https://oauth2.googleapis.com/revoke?token=<refreshToken>` via the shared core HTTP helper; treats any non-2xx as a logged failure, not a thrown error — the caller's contract is "attempt revoke, then delete locally regardless" |
 | modify | `packages/google-auth/src/index.ts` | export `revokeToken` |
 | modify | `packages/google-auth/README.md` | document the revoke-then-delete ordering and that a revoke failure never blocks the local disconnect |
+| modify | `apps/hermes/src/boot.ts` | **added to scope during execution** (not in the original table): `cryptoKey` is constructed only here via `buildGoogleOAuthClient(config)`, and `GoogleAccountRepo` deliberately never decrypts, so boot is the only correct seam for getting a decrypted refresh token to the handler — same wiring pattern Phases 4 and 5 used. Adds `buildDecryptRefreshToken(config)`, which closes over the key and hands `disconnect.ts` a narrow `decryptRefreshToken(account)` capability rather than raw key material |
 | modify | `apps/hermes/src/handlers/disconnect.ts` | before `googleAccountRepo.deleteAccount`, decrypt the stored refresh token and call `revokeToken`; log (not throw) on failure; delete the local row unconditionally afterward — same reply shape as today either way, since the user-facing contract ("you're disconnected from Hermes") doesn't change on a revoke failure |
 | modify | `apps/hermes/src/handlers/__tests__/disconnect.test.ts` | revoke is called with the decrypted refresh token before delete; a revoke failure (faked non-2xx) still results in the row being deleted and the same success reply |
 | modify | `.ai/decisions/google-token-encryption.md` (from `04-google-auth`) | append a note: the AAD-binding deferral is re-confirmed now that the token's blast radius covers Sheets read/write, not just identity; reasoning unchanged |
@@ -1032,15 +1043,15 @@ just from the local `google_accounts` table.
 
 **Steps:**
 
-- [ ] Confirm `revokeToken` never throws on a non-2xx — the caller's
+- [x] Confirm `revokeToken` never throws on a non-2xx — the caller's
       always-delete-locally contract depends on this; write the test as
       "the handler still calls `deleteAccount` even when the fake revoke
       response is a 400"
-- [ ] Confirm the refresh token is decrypted only in memory for the revoke
+- [x] Confirm the refresh token is decrypted only in memory for the revoke
       call and never logged — grep the implementation for the plaintext
       token appearing in any `logger.*` call, same discipline
       `04-google-auth` Phase 2 applied to the authorization code
-- [ ] Manual verification note: revoking via Google's real endpoint and then
+- [x] Manual verification note: revoking via Google's real endpoint and then
       checking the permissions page is the only way to prove this
       end-to-end — state this explicitly in Verification
 
@@ -1053,9 +1064,9 @@ just from the local `google_accounts` table.
 
 **Verification:**
 
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm lint` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm lint` green
 - [ ] Manual: `/connect google sheets` → `/disconnect` → check
       `myaccount.google.com/permissions` for the connected Google account →
       Hermes's grant is no longer listed
@@ -1063,14 +1074,14 @@ just from the local `google_accounts` table.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [~] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [~] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session — n/a: superseded by /execute-prd dispatching the code-reviewer subagent directly
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: /disconnect revokes the OAuth grant at Google`
+- [x] Changes committed: `feat: /disconnect revokes the OAuth grant at Google` (7d812f5, fixes e77afa7)
 - [ ] Phase marked complete
 
 ---
