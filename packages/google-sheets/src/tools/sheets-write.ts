@@ -73,18 +73,14 @@ export interface ReadOnlySheetResult {
 /**
  * What `prepare` resolves and threads onto `ctx.plan` for the handler
  * (`06-legible-approvals-bounded-reads` Phase 3) — everything the handler
- * needs to finish the write without ever re-resolving the slug itself.
- * `access` rides along even though the handler's `access !== "readwrite"`
- * check itself stays put (unmoved to `prepare` until Phase 4, see that
- * plan's Dependencies & Risks): without it, the handler would have to call
- * `resolveSheet` a second time to learn what `prepare` already knows, which
- * `sheets-write.test.ts` explicitly forbids (`resolveSheet`/the registry
- * queried exactly once per call).
+ * needs to finish the write without ever re-resolving the slug itself. No
+ * `access` field: `prepare` itself refuses a `read`-access sheet (Phase 4,
+ * below) before a plan is ever built, so by the time a plan exists its
+ * sheet is provably `readwrite` — nothing downstream needs to re-check it.
  */
 export interface SheetsWritePlan {
   sheetSlug: string;
   spreadsheetId: string;
-  access: "read" | "readwrite";
   effectiveValueInputOption: ValueInputOption;
 }
 
@@ -224,20 +220,20 @@ async function claimDedupeKey(
  * prompt needs — the only step of the write pipeline that runs before a
  * human ever sees anything (`06-legible-approvals-bounded-reads` Phase 3).
  * `args` is already parsed by the loop (`packages/agent/src/loop.ts`'s
- * `prepareGatedCall`). Deliberately does **not** check `access` — a
- * `read`-access sheet still resolves `ok: true` this phase, so the approval
- * prompt is still shown for it (the "asked to approve something already
- * destined to fail" defect this leaves for read-only sheets is closed in
- * Phase 4, not here — see that plan's Dependencies & Risks); the handler's
- * own `access !== "readwrite"` check (unmoved) is what actually refuses it,
- * post-approval, reading `plan.access` rather than re-resolving.
+ * `prepareGatedCall`). Checks `access` right after resolving the slug
+ * (`06-legible-approvals-bounded-reads` Phase 4): a `read`-access sheet is
+ * refused here, with the unchanged `read_only_sheet` shape, *before* any
+ * approval prompt is sent — closing the "asked to approve something already
+ * destined to fail" defect Phase 3 deliberately left open (see that plan's
+ * Dependencies & Risks). This mirrors how an unknown slug already refuses
+ * before a prompt; now both `resolveSheet` failure modes do.
  */
 async function prepareWrite(
   deps: CreateSheetsWriteToolDeps,
   args: unknown,
   ctx: SheetsToolContext,
 ): Promise<
-  | { ok: false; result: ResolveSheetResult }
+  | { ok: false; result: ResolveSheetResult | ReadOnlySheetResult }
   | {
       ok: true;
       plan: SheetsWritePlan;
@@ -251,6 +247,13 @@ async function prepareWrite(
   }
 
   const { entry } = resolved;
+  if (entry.access !== "readwrite") {
+    return {
+      ok: false,
+      result: { ok: false, reason: "read_only_sheet" } satisfies ReadOnlySheetResult,
+    };
+  }
+
   const effectiveValueInputOption: ValueInputOption =
     parsed.valueInputOption ?? entry.valueInputOption;
 
@@ -259,7 +262,6 @@ async function prepareWrite(
     plan: {
       sheetSlug: entry.slug,
       spreadsheetId: entry.spreadsheetId,
-      access: entry.access,
       effectiveValueInputOption,
     },
     summary: {
@@ -273,15 +275,15 @@ async function prepareWrite(
 /**
  * `sheets_write`: appends or overwrites rows in a registered spreadsheet.
  * `requiresApproval: true` routes every call through the approval gate
- * before this handler ever runs; `prepare` (above) resolves the slug ahead
- * of the prompt, so this handler reads `ctx.plan` instead of re-resolving.
- * Order inside the handler is load-bearing (see the Steps in
- * `plans/05-google-sheets.md` Phase 5, unchanged by Phase 3's split): enforce
- * `access === "readwrite"`, *then* claim the dedupe key, *then* call the
- * Sheets API — a `read`-access refusal never reaches the claim or the API,
- * and a same-turn retry (identical `(channel, channelUserId, turnId, tool,
- * canonical args)`) short-circuits on the claim before ever calling the
- * client a second time.
+ * before this handler ever runs; `prepare` (above) resolves the slug and
+ * enforces `access === "readwrite"` ahead of the prompt
+ * (`06-legible-approvals-bounded-reads` Phase 4), so this handler reads
+ * `ctx.plan` instead of re-resolving or re-checking access — by the time
+ * this handler runs, the sheet is provably `readwrite`. Order inside the
+ * handler is still load-bearing: claim the dedupe key, *then* call the
+ * Sheets API — a same-turn retry (identical `(channel, channelUserId,
+ * turnId, tool, canonical args)`) short-circuits on the claim before ever
+ * calling the client a second time.
  *
  * Both modes share `performWrite`'s definitive-vs-ambiguous release logic: a
  * `SheetsApiError` — the request reached Google and was rejected outright,
@@ -317,10 +319,6 @@ export function createSheetsWriteTool(deps: CreateSheetsWriteToolDeps) {
       const parsed = args as z.infer<typeof schema>;
       const { mode, range, values } = parsed;
       const { plan } = ctx;
-
-      if (plan.access !== "readwrite") {
-        return { ok: false, reason: "read_only_sheet" } satisfies ReadOnlySheetResult;
-      }
 
       const claim = await claimDedupeKey(deps, parsed, ctx);
       if ("shortCircuit" in claim) return claim.shortCircuit;

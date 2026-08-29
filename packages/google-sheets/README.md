@@ -177,30 +177,30 @@ valueInputOption? }` — `requiresApproval: true`, so every call routes
 through `apps/hermes`'s `ApprovalGate` before this package's handler ever
 runs.
 
-**`prepare`/`plan` split (`06-legible-approvals-bounded-reads` Phase 3):**
+**`prepare`/`plan` split (`06-legible-approvals-bounded-reads` Phases 3-4):**
 `createSheetsWriteTool`'s `prepare` (`prepareWrite`) is the only step of the
 write pipeline that runs *before* a human ever sees the approval prompt: it
-resolves the slug (`resolveSheet`, moved out of the handler) and, for a known
-slug, returns `{ok: true, plan: SheetsWritePlan, summary}` — `SheetsWritePlan
-{ sheetSlug, spreadsheetId, access, effectiveValueInputOption }` threads onto
-`ctx.plan` for the handler, and `summary` (`{action: "¿Escribir en
-<slug>?", target: entry.description || undefined, effects: []}`) is what the
-approval prompt actually renders (`apps/hermes`'s generic, tool-agnostic
-`ApprovalSummary` renderer — see `packages/agent/README.md`'s "The `prepare`
-hook"). An unknown slug returns `{ok: false, result: resolved}` — the
-existing `unknown_sheet` shape, unchanged — which refuses the call *before*
-any prompt is sent, rather than showing "¿Escribir en \<unknown\>?" and
-failing only after the human approves. The handler then reads `ctx.plan`
-instead of re-resolving: it never calls `resolveSheet` a second time and
-never recomputes `overrideOption ?? entry.valueInputOption` itself
+resolves the slug (`resolveSheet`, moved out of the handler) and, for a known,
+`readwrite`-access slug, returns `{ok: true, plan: SheetsWritePlan, summary}`
+— `SheetsWritePlan { sheetSlug, spreadsheetId, effectiveValueInputOption }`
+threads onto `ctx.plan` for the handler (no `access` field — by the time a
+plan exists, the sheet is provably `readwrite`), and `summary` (`{action:
+"¿Escribir en <slug>?", target: entry.description || undefined, effects:
+[]}`) is what the approval prompt actually renders (`apps/hermes`'s generic,
+tool-agnostic `ApprovalSummary` renderer — see `packages/agent/README.md`'s
+"The `prepare` hook"). Both of `resolveSheet`'s failure modes refuse the call
+*before* any prompt is sent, with their shapes unchanged: an unknown slug
+returns `{ok: false, result: resolved}` (`unknown_sheet`), and — as of Phase
+4 — a `read`-access sheet returns `{ok: false, result: {ok: false, reason:
+"read_only_sheet"}}` right after slug resolution, closing the "asked to
+approve a write already destined to fail" gap Phase 3 deliberately left open
+for read-only sheets. The handler then reads `ctx.plan` instead of
+re-resolving or re-checking access: it never calls `resolveSheet` a second
+time and never recomputes `overrideOption ?? entry.valueInputOption` itself
 (`sheets-write.test.ts` asserts the registry is queried exactly once per
-call, not twice). `prepare` deliberately does **not** check `access` itself
-this phase — a `read`-access sheet still resolves `ok: true` and is still
-shown a prompt; the handler's own `access !== "readwrite"` check (unmoved
-this phase, reading `plan.access` instead of re-resolving it) is what
-actually refuses it, post-approval. Moving that check into `prepare` too
-(so a read-only sheet is refused *before* the prompt, the same way an
-unknown slug already is) is Phase 4, not this one.
+call, not twice), and its own inline `access !== "readwrite"` check (Phase 3)
+has been deleted as dead code — `prepare` is the only path that can reach the
+handler, and it never does so with a disallowed sheet.
 
 **Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
 names the sheet by its registry description (or the slug, when the
@@ -217,13 +217,15 @@ schema broke *every* turn, reads included. Regressed for all registered tools
 by `apps/hermes/src/agent/__tests__/tool-schemas.test.ts`; see
 `.ai/decisions/tool-arg-schema-top-level-object.md`.
 
-**Handler order is load-bearing**, in this sequence: resolve the slug
-(unknown ⇒ the same `resolveSheet` short-circuit `sheets_inspect`/
-`sheets_read` use) → **enforce `access === "readwrite"`** (`{ok: false,
-reason: "read_only_sheet"}` otherwise) → **claim the dedupe key** → resolve
-`valueInputOption` → fetch an access token → call the Sheets API. Both gates
-run before any API call or dedupe claim — a `read`-access refusal never
-touches `sheet_write_log` or the Sheets client.
+**Order is load-bearing**, split across `prepare` and the handler: `prepare`
+resolves the slug (unknown ⇒ the same `resolveSheet` short-circuit
+`sheets_inspect`/`sheets_read` use) then **enforces `access === "readwrite"`**
+(`{ok: false, reason: "read_only_sheet"}` otherwise) — both refusals happen
+*before* the approval prompt is ever sent (Phase 4). Only once `prepare`
+has produced a plan does the handler run: **claim the dedupe key** → resolve
+`valueInputOption` → fetch an access token → call the Sheets API. Neither
+gate ever touches `sheet_write_log` or the Sheets client, and a `read`-access
+refusal never reaches a human at all.
 
 **Dedupe/audit**: `canonical-args.ts`'s `computeDedupeKey` hashes `(channel,
 channelUserId, turnId, tool, canonicalized args)` — `sha256`, mirroring

@@ -161,7 +161,6 @@ describe("sheets_write", () => {
         plan: {
           sheetSlug: "clients",
           spreadsheetId: "sheet-123",
-          access: "readwrite",
           effectiveValueInputOption: "RAW",
         },
         summary: {
@@ -186,17 +185,27 @@ describe("sheets_write", () => {
       expect((result as { summary: { target?: string } }).summary.target).toBeUndefined();
     });
 
-    it("still resolves ok:true for a read-access sheet — the access refusal is the handler's job this phase, unmoved", async () => {
+    it("refuses a read-access sheet with the unchanged read_only_sheet shape, before any dedupe claim or API call (06-legible-approvals-bounded-reads Phase 4: moved from the handler so no approval prompt is ever sent for it)", async () => {
+      const sheetsClient = fakeSheetsClient();
+      const accessTokenPort = fakeAccessTokenPort();
+      const sheetWriteLogRepo = fakeSheetWriteLogRepo();
       const tool = createSheetsWriteTool({
         sheetRegistry: fakeRegistry([fakeEntry({ access: "read" })]),
-        accessTokenPort: fakeAccessTokenPort(),
-        sheetsClient: fakeSheetsClient(),
-        sheetWriteLogRepo: fakeSheetWriteLogRepo(),
+        accessTokenPort,
+        sheetsClient,
+        sheetWriteLogRepo,
       });
 
       const result = await tool.prepare(APPEND_ARGS, CTX);
 
-      expect(result).toMatchObject({ ok: true, plan: { access: "read" } });
+      expect(result).toEqual({
+        ok: false,
+        result: { ok: false, reason: "read_only_sheet" },
+      });
+      expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
+      expect(accessTokenPort.getAccessToken).not.toHaveBeenCalled();
+      expect(sheetsClient.appendValues).not.toHaveBeenCalled();
+      expect(sheetsClient.updateValues).not.toHaveBeenCalled();
     });
 
     it("returns the unchanged unknown_sheet refusal shape for an unknown slug, without calling the client", async () => {
@@ -231,26 +240,6 @@ describe("sheets_write", () => {
     await prepareAndRun(tool, APPEND_ARGS);
 
     expect(sheetRegistry.getBySlug).toHaveBeenCalledTimes(1);
-  });
-
-  it("refuses a read-access sheet before any dedupe claim or API call", async () => {
-    const sheetsClient = fakeSheetsClient();
-    const accessTokenPort = fakeAccessTokenPort();
-    const sheetWriteLogRepo = fakeSheetWriteLogRepo();
-    const tool = createSheetsWriteTool({
-      sheetRegistry: fakeRegistry([fakeEntry({ access: "read" })]),
-      accessTokenPort,
-      sheetsClient,
-      sheetWriteLogRepo,
-    });
-
-    const result = await prepareAndRun(tool, APPEND_ARGS);
-
-    expect(result).toEqual({ ok: false, reason: "read_only_sheet" });
-    expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
-    expect(accessTokenPort.getAccessToken).not.toHaveBeenCalled();
-    expect(sheetsClient.appendValues).not.toHaveBeenCalled();
-    expect(sheetsClient.updateValues).not.toHaveBeenCalled();
   });
 
   it("happy path append: resolves the slug, calls appendValues once, records completion, and returns success", async () => {
