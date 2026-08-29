@@ -64,7 +64,7 @@ export function createSheetsReadTool(deps: CreateSheetsReadToolDeps) {
           truncated: true,
           returnedRows: capped.returnedCount,
           totalRows: capped.totalCount,
-          totalColumns: Math.max(0, ...values.map((row) => row.length)),
+          totalColumns: values.reduce((max, row) => Math.max(max, row.length), 0),
           note: "El rango es muy grande — pide un rango más chico para ver el resto.",
         }),
       };

@@ -222,9 +222,11 @@ describe("sheets_read", () => {
   });
 
   it("computes totalRows from the actual returned rows, not the requested range's nominal size", async () => {
-    // Requested A1:Z1000 but Google only returns 40 rows of real data.
-    const rows = Array.from({ length: 40 }, (_, i) => [`row-${i}`, "value"]);
-    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:Z1000", values: rows });
+    // Requested A1:Z10000 but Google actually returns 600 rows of real data
+    // — well past MAX_CELLS, so this trips the cap and totalRows must equal
+    // the returned count (600), not the requested range's nominal size.
+    const rows = Array.from({ length: 600 }, (_, i) => [`row-${i}`, "value"]);
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:Z10000", values: rows });
     const tool = createSheetsReadTool({
       sheetRegistry: fakeRegistry([fakeEntry()]),
       accessTokenPort: fakeAccessTokenPort(),
@@ -232,11 +234,42 @@ describe("sheets_read", () => {
     });
 
     const result = await tool.handler(
-      { sheet: "appointments", range: "Sheet1!A1:Z1000", valueRenderOption: "FORMATTED_VALUE" },
+      { sheet: "appointments", range: "Sheet1!A1:Z10000", valueRenderOption: "FORMATTED_VALUE" },
       CTX,
     );
 
-    expect(result).toMatchObject({ ok: true, values: rows });
-    expect(result).not.toHaveProperty("truncated");
+    expect(result).toMatchObject({
+      ok: true,
+      truncated: true,
+      totalRows: 600,
+    });
+  });
+
+  it("computes totalColumns from the original values, not the truncated slice, when the widest row falls after the cut point", async () => {
+    // First MAX_CELLS rows are 1 cell each — exactly filling the cap — then
+    // one more, wider row pushes past it and gets excluded from the
+    // returned slice. totalColumns must reflect that wider, excluded row.
+    const narrowRows = Array.from({ length: MAX_CELLS }, () => ["x"]);
+    const wideRow = Array.from({ length: 10 }, (_, i) => `col-${i}`);
+    const rows = [...narrowRows, wideRow];
+    const sheetsClient = fakeSheetsClient({ range: "Sheet1!A1:J501", values: rows });
+    const tool = createSheetsReadTool({
+      sheetRegistry: fakeRegistry([fakeEntry()]),
+      accessTokenPort: fakeAccessTokenPort(),
+      sheetsClient,
+    });
+
+    const result = await tool.handler(
+      { sheet: "appointments", range: "Sheet1!A1:J501", valueRenderOption: "FORMATTED_VALUE" },
+      CTX,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      truncated: true,
+      returnedRows: MAX_CELLS,
+      totalRows: MAX_CELLS + 1,
+      totalColumns: 10,
+    });
   });
 });
