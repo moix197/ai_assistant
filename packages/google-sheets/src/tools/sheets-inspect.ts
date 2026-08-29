@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { resolveSheet } from "../resolve-sheet";
 import type { SheetMeta } from "../sheets-client";
+import { truncateBySize } from "../truncate";
 import type { SheetsToolContext, SheetsToolDeps } from "./tool-deps";
 
 const schema = z.object({ sheet: z.string() });
@@ -36,7 +37,9 @@ function summarizeTabs(meta: SheetMeta): SheetTabSummary[] {
  * `whoami` uses (the capability lives here, the gate lives in
  * `apps/hermes`). An unknown slug (including an empty registry) short-circuits
  * before any Sheets API call — `resolveSheet`'s shared shape is returned
- * directly.
+ * directly. Tabs are bounded by `truncate.ts`'s shared `truncateBySize`, at
+ * tab granularity rather than `sheets_read`'s row granularity — see
+ * README.md's "Bounded results" section.
  */
 export function createSheetsInspectTool(deps: CreateSheetsInspectToolDeps) {
   return {
@@ -57,7 +60,23 @@ export function createSheetsInspectTool(deps: CreateSheetsInspectToolDeps) {
         resolved.entry.spreadsheetId,
         ctx.signal,
       );
-      return { ok: true, sheet: resolved.entry.slug, tabs: summarizeTabs(meta) };
+      const allTabs = summarizeTabs(meta);
+      const capped = truncateBySize(allTabs, (tab) => ({
+        cells: tab.headerRow.length,
+        chars: JSON.stringify(tab).length,
+      }));
+
+      return {
+        ok: true,
+        sheet: resolved.entry.slug,
+        tabs: capped.items,
+        ...(capped.truncated && {
+          truncated: true,
+          returnedTabs: capped.returnedCount,
+          totalTabs: capped.totalCount,
+          note: "Hay más pestañas de las que se muestran — pedí sheets_inspect otra vez si necesitás ver el resto.",
+        }),
+      };
     },
   };
 }

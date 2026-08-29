@@ -158,6 +158,18 @@ pre-truncation `values`, not the truncated slice. `note` is Spanish, since
 it's model-facing text the model typically relays to the same
 Spanish-speaking user, consistent with this plan's other language decisions.
 
+`sheets_inspect` calls the same helper over its tab summaries (measuring
+each tab's `headerRow.length` and its `JSON.stringify` length) — **tab
+granularity**, not `sheets_read`'s row granularity, so a many-tab (or
+wide-header) spreadsheet can't dominate model context either. Results are
+additive the same way: an untruncated inspect is byte-identical to today. A
+truncated inspect adds `truncated: true, returnedTabs, totalTabs, note`
+alongside the (now-shorter) `tabs`, with wording distinct from `sheets_read`'s
+note (tabs vs. rows) so the model doesn't conflate the two in its reply. As
+with `sheets_read`, a single oversized tab (e.g. a very wide header row) is
+still returned whole rather than dropped, since `truncateBySize` always keeps
+the first item.
+
 ## `sheets_write` (Phase 5)
 
 `sheets_write { mode: "append" | "update", sheet, range, values,
