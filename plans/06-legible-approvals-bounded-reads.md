@@ -752,22 +752,22 @@ not a gate-side rendering one).
 
 **Steps:**
 
-- [ ] Write exact-string tests *before* refining `prepare`'s summary
+- [x] Write exact-string tests *before* refining `prepare`'s summary
       construction: 1-row append, 40-row append (`…y 37 más`), update-mode
       copy (settled decision 26's named cases) — get the exact Spanish copy
       right against these tests, not the other way around
-- [ ] Confirm the row-truncation-to-~100-chars is applied per row after
+- [x] Confirm the row-truncation-to-~100-chars is applied per row after
       joining cells, not per cell (a row of many short cells should still
       truncate as one unit)
-- [ ] Confirm `update`'s summary genuinely contains no A1-notation substring
+- [x] Confirm `update`'s summary genuinely contains no A1-notation substring
       anywhere (grep the constructed `action`/`items`/`effects` in the test,
       don't just eyeball it)
-- [ ] **Edge case — zero rows** (`values: []`, a degenerate but
+- [x] **Edge case — zero rows** (`values: []`, a degenerate but
       schema-permitted `append`/`update` call): `items` is `[]`,
       `itemsTotal` is omitted (or `0` — pick one and test it), and the
       renderer shows no preview block and no "…y N más" line, only the
       question and the mode-description effect
-- [ ] Confirm the renderer itself needs **no code change** this phase —
+- [x] Confirm the renderer itself needs **no code change** this phase —
       re-run Phase 3's `approval-prompt-renderer.test.ts` unmodified and
       confirm it still passes, then only *add* new cases for the richer
       `items`/`itemsTotal`/`effects` content
@@ -781,10 +781,10 @@ not a gate-side rendering one).
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm lint` green
 - [ ] Manual: trigger an append and an update via natural language in
       Telegram and visually confirm both match the settled copy
 - [ ] Manual: using the HIL Prerequisites' 40+-row sheet, trigger a bulk
@@ -792,16 +792,16 @@ not a gate-side rendering one).
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: row preview cap and mode-specific copy in sheets_write's approval summary`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: row preview cap and mode-specific copy in sheets_write's approval summary`
+- [x] Phase marked complete
 
 ---
 
