@@ -540,6 +540,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     channel,
     sheetsDeps,
     buildSheetWriteLogRepo(pool),
+    logger,
   );
 
   return {

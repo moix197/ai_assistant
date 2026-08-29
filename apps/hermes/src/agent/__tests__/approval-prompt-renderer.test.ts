@@ -31,21 +31,23 @@ describe("formatBatchPrompt", () => {
     expect(formatBatchPrompt(batch)).toBe("¿Escribir en clients?");
   });
 
-  it("falls back to the raw-JSON line, byte-identical to today, for a prepare-less call (no summary) — the echo fallback", () => {
+  it("falls back to the pre-Phase-3 header-plus-raw-JSON format, byte-identical to today minus the trailing question line, for a prepare-less call (no summary) — the echo fallback", () => {
     const batch: ApprovalRequest[] = [{ tool: "echo", args: { text: "hi" } }];
 
-    expect(formatBatchPrompt(batch)).toBe('- echo({"text":"hi"})');
+    expect(formatBatchPrompt(batch)).toBe('The model wants to run:\n- echo({"text":"hi"})');
   });
 
-  it("falls back to the raw-JSON line when a summary is present but its action is empty (malformed/defensive)", () => {
+  it("falls back to the header-plus-raw-JSON format when a summary is present but its action is empty (malformed/defensive)", () => {
     const batch: ApprovalRequest[] = [
       { tool: "sheets_write", args: { mode: "append" }, summary: { action: "", effects: [] } },
     ];
 
-    expect(formatBatchPrompt(batch)).toBe('- sheets_write({"mode":"append"})');
+    expect(formatBatchPrompt(batch)).toBe(
+      'The model wants to run:\n- sheets_write({"mode":"append"})',
+    );
   });
 
-  it("joins multiple calls' blocks with a blank line, mixing a legible summary and a raw-JSON fallback, with no shared trailing question line", () => {
+  it("renders the WHOLE batch in fallback format (header, one raw-JSON line per call) when any call lacks a usable summary, rather than mixing styles", () => {
     const batch: ApprovalRequest[] = [
       {
         tool: "sheets_write",
@@ -55,7 +57,9 @@ describe("formatBatchPrompt", () => {
       { tool: "echo", args: { text: "hi" } },
     ];
 
-    expect(formatBatchPrompt(batch)).toBe('¿Escribir en clients?\n\n- echo({"text":"hi"})');
+    expect(formatBatchPrompt(batch)).toBe(
+      'The model wants to run:\n- sheets_write({"sheet":"clients"})\n- echo({"text":"hi"})',
+    );
   });
 
   it("renders indented items with an itemsTotal-driven count line, followed by effects (Phase 5/6 shapes, exercised early since the renderer is final this phase)", () => {
@@ -109,6 +113,8 @@ describe("formatResolvedText", () => {
   it("appends the resolution label after the same block formatBatchPrompt produces", () => {
     const batch: ApprovalRequest[] = [{ tool: "echo", args: { text: "hi" } }];
 
-    expect(formatResolvedText(batch, "Approved.")).toBe('- echo({"text":"hi"})\n\nApproved.');
+    expect(formatResolvedText(batch, "Approved.")).toBe(
+      'The model wants to run:\n- echo({"text":"hi"})\n\nApproved.',
+    );
   });
 });

@@ -1612,6 +1612,125 @@ describe("runTurn — prepare hook (06-legible-approvals-bounded-reads Phase 3)"
     );
     expect(refusedHandler).not.toHaveBeenCalled();
   });
+
+  it('preserves the diagnostic detail on a gated validation-failure refusal — the tool-result content is the zod message, never the literal string "undefined", and the tool.call telemetry event\'s error field matches it (finding 3 regression)', async () => {
+    const schema = z.object({ value: z.string() });
+    const handler = vi.fn();
+    const needsArgGatedTool: ToolSpec = {
+      name: "needs_arg_gated",
+      description: "gated tool with a required field, no prepare",
+      schema,
+      requiresApproval: true,
+      handler,
+    };
+    const badArgs = { value: 123 };
+    const parseFailure = schema.safeParse(badArgs);
+    if (parseFailure.success) throw new Error("fixture bug: badArgs must fail validation");
+    const expectedZodMessage = parseFailure.error.message;
+
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completionResult({
+          toolCalls: [{ id: "c1", name: "needs_arg_gated", arguments: badArgs }],
+          text: "",
+        }),
+      )
+      .mockResolvedValueOnce(completionResult({ text: "done" }));
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const recorder = fakeRecorder();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn() };
+
+    await runTurn(
+      definition({ tools: [needsArgGatedTool] }),
+      {
+        llmProvider,
+        threadRepo,
+        telemetryRecorder: recorder,
+        signal: new AbortController().signal,
+        approvalGate,
+      },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+
+    const secondRequest = complete.mock.calls[1]?.[0] as CompletionRequest;
+    const content = findToolMessage(secondRequest, "c1")?.content;
+    expect(content).toBe(expectedZodMessage);
+    expect(content).not.toBe("undefined");
+
+    const toolCallEvents = recorder.record.mock.calls
+      .map(([event]) => event as TelemetryEvent)
+      .filter(
+        (event): event is TelemetryEvent & { name: "tool.call" } => event.name === "tool.call",
+      );
+    expect(toolCallEvents).toHaveLength(1);
+    expect(toolCallEvents[0]).toMatchObject({ tool: "needs_arg_gated", approved: false });
+    expect(toolCallEvents[0]?.error).toBe(expectedZodMessage);
+  });
+
+  it("never sends an approval prompt for a mixed batch when the turn aborts after every call's prepare has settled but before the survivors' prompt is built (finding 4 regression)", async () => {
+    let resolvePrepareStarted!: () => void;
+    const prepareStarted = new Promise<void>((resolve) => {
+      resolvePrepareStarted = resolve;
+    });
+    const controller = new AbortController();
+
+    const readyHandler = vi.fn();
+    const readyTool: ToolSpec = {
+      name: "ready_no_prepare",
+      description: "no prepare — settles ready before the sibling call's prepare does",
+      schema: z.object({}),
+      requiresApproval: true,
+      handler: readyHandler,
+    };
+    const hangingTool: ToolSpec = {
+      name: "hangs_in_prepare",
+      description: "prepare hangs until aborted",
+      schema: z.object({}),
+      requiresApproval: true,
+      prepare: vi.fn(async () => {
+        resolvePrepareStarted();
+        return new Promise<never>(() => {});
+      }),
+      handler: vi.fn(),
+    };
+    const complete = vi.fn().mockResolvedValueOnce(
+      completionResult({
+        toolCalls: [
+          { id: "r1", name: "ready_no_prepare", arguments: {} },
+          { id: "h1", name: "hangs_in_prepare", arguments: {} },
+        ],
+        text: "",
+      }),
+    );
+    const llmProvider: LlmProvider = { complete };
+    const threadRepo = fakeThreadRepo();
+    const approvalGate: ApprovalGate = { requestApproval: vi.fn().mockResolvedValue("approved") };
+
+    const resultPromise = runTurn(
+      definition({ tools: [readyTool, hangingTool] }),
+      { llmProvider, threadRepo, signal: controller.signal, approvalGate },
+      "telegram",
+      "555",
+      "111",
+      "hello",
+    );
+
+    await prepareStarted;
+    controller.abort();
+
+    await expect(resultPromise).rejects.toBeInstanceOf(LlmAbortedError);
+    expect(approvalGate.requestApproval).not.toHaveBeenCalled();
+    expect(readyHandler).not.toHaveBeenCalled();
+    expect(threadRepo.appendMessages).not.toHaveBeenCalled();
+  });
 });
 
 describe("runTurn — max iterations", () => {

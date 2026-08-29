@@ -296,6 +296,12 @@ async function resolveToolCall(
 
   const startedAt = Date.now();
   const ctx: ToolContext = { signal: deps.signal, channel, channelUserId, turnId };
+  // `prepare` is intentionally never invoked on this ungated path, by design
+  // (per `plans/06-legible-approvals-bounded-reads.md`'s Dependencies &
+  // Risks) — only the gated path (`prepareGatedCall`) resolves a `plan`
+  // before the handler runs. `plan: undefined` is passed unconditionally, a
+  // type-lie only for a hypothetical future ungated tool that declares
+  // `prepare`; no such tool exists today, so this is not an oversight.
   const outcome = await invokeToolHandler(spec, parsed.data, ctx, undefined);
   return finishToolCall(toolCall, deps, threadId, turnId, startedAt, outcome, true, approvalWaitMs);
 }
@@ -541,18 +547,33 @@ async function runGatedToolCalls(
       return prepareGatedCall(spec, call, retryCounts, ctx);
     }),
   );
+  // A second check, mirroring the one above: a mixed batch can have one
+  // call's `prepare` resolve near-instantly (or skip it entirely, having no
+  // `prepare` declared) while a sibling call's `prepare` is still racing the
+  // abort signal — the pre-`prepare` check alone does not cover an abort
+  // that lands in that window, after every call's preparation has settled
+  // but before the survivors' prompt is built and sent (finding 4 of the
+  // Phase 3 review).
+  assertToolInvocationAllowed(deps.signal);
   const { refused, ready, batch } = buildApprovalBatch(preparations);
-  const refusedResults = refused.map((p) =>
-    finishToolCall(
+  const refusedResults = refused.map((p) => {
+    // Mirrors `resolveToolCall`'s validation-failure branch and
+    // `invokeToolHandler`'s failure branches: `content` and `error` carry
+    // the identical diagnostic string, never just `content` alone — a
+    // gated validation failure refused during `prepareGatedCall` must keep
+    // the same `tool.call` telemetry detail a pre-`prepare` validation
+    // failure always carried (finding 3 of the Phase 3 review).
+    const content = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+    return finishToolCall(
       p.toolCall,
       deps,
       threadId,
       turnId,
       Date.now(),
-      { content: typeof p.result === "string" ? p.result : JSON.stringify(p.result) },
+      { content, error: content },
       false,
-    ),
-  );
+    );
+  });
 
   if (ready.length === 0) {
     return refusedResults;

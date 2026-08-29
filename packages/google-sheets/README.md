@@ -175,19 +175,39 @@ the first item.
 `sheets_write { mode: "append" | "update", sheet, range, values,
 valueInputOption? }` — `requiresApproval: true`, so every call routes
 through `apps/hermes`'s `ApprovalGate` before this package's handler ever
-runs; the prompt it shows is the tool call's own args (`ApprovalRequest.args`
-via `telegram-approval-gate.ts`'s `formatBatchPrompt`, unchanged by this
-phase) — the slug as the model wrote it, plus `mode`, `range` and `values`.
+runs.
 
-**Known gap, deliberately deferred:** those are the model's *raw* args, so the
-prompt does not show which spreadsheet the slug resolves to, nor the
-**effective** `valueInputOption` when it comes from the registry default rather
-than the tool arg — so the RAW-vs-`USER_ENTERED` stake described below is
-invisible to the person approving the write. `ApprovalRequest.args` is built
-pre-handler in `loop.ts`'s generic `runGatedToolCalls`; surfacing resolved
-values needs an `ApprovalGate` contract change across `packages/agent` and
-`apps/hermes`, and re-resolving at display time could misrepresent what is
-actually about to run. Tracked in `.ai/decisions/approval-gate-design.md`.
+**`prepare`/`plan` split (`06-legible-approvals-bounded-reads` Phase 3):**
+`createSheetsWriteTool`'s `prepare` (`prepareWrite`) is the only step of the
+write pipeline that runs *before* a human ever sees the approval prompt: it
+resolves the slug (`resolveSheet`, moved out of the handler) and, for a known
+slug, returns `{ok: true, plan: SheetsWritePlan, summary}` — `SheetsWritePlan
+{ sheetSlug, spreadsheetId, access, effectiveValueInputOption }` threads onto
+`ctx.plan` for the handler, and `summary` (`{action: "¿Escribir en
+<slug>?", target: entry.description || undefined, effects: []}`) is what the
+approval prompt actually renders (`apps/hermes`'s generic, tool-agnostic
+`ApprovalSummary` renderer — see `packages/agent/README.md`'s "The `prepare`
+hook"). An unknown slug returns `{ok: false, result: resolved}` — the
+existing `unknown_sheet` shape, unchanged — which refuses the call *before*
+any prompt is sent, rather than showing "¿Escribir en \<unknown\>?" and
+failing only after the human approves. The handler then reads `ctx.plan`
+instead of re-resolving: it never calls `resolveSheet` a second time and
+never recomputes `overrideOption ?? entry.valueInputOption` itself
+(`sheets-write.test.ts` asserts the registry is queried exactly once per
+call, not twice). `prepare` deliberately does **not** check `access` itself
+this phase — a `read`-access sheet still resolves `ok: true` and is still
+shown a prompt; the handler's own `access !== "readwrite"` check (unmoved
+this phase, reading `plan.access` instead of re-resolving it) is what
+actually refuses it, post-approval. Moving that check into `prepare` too
+(so a read-only sheet is refused *before* the prompt, the same way an
+unknown slug already is) is Phase 4, not this one.
+
+**Known gap, deliberately deferred (Tier 2):** the prompt's `target` line
+names the sheet by its registry description (or the slug, when the
+description is empty) but does not yet show a before/after diff or column
+headers as row labels — that needs a pre-approval Google API read, deferred
+to later work (see `plans/06-legible-approvals-bounded-reads.md`'s Context).
+Tracked in `.ai/decisions/approval-gate-design.md`.
 
 **The args schema is a flat `z.object`, not a `z.discriminatedUnion("mode",
 …)`.** A root-level union converts to a top-level `anyOf` with no

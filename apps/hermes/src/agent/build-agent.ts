@@ -140,11 +140,12 @@ export function buildAgent(
   /**
    * `06-legible-approvals-bounded-reads` Phase 3 — `createTelegramApprovalGate`
    * logs each ready call's raw args/resolved plan at debug level right
-   * before sending its prompt. Optional, defaulting to a fresh `createLogger()`
-   * (info level, so those debug lines stay silent) so `boot.ts`'s existing
-   * call site keeps compiling unchanged; wiring the real, config-aware
-   * logger through from `boot.ts` is left to a later pass, not this phase's
-   * scope.
+   * before sending its prompt. `boot.ts` wires its own config-aware `logger`
+   * through here. Defaults to a fresh `createLogger()` (info level, so those
+   * debug lines stay silent) only so `build-agent.test.ts`/`tool-schemas
+   * .test.ts` (out of this phase's edit scope) keep compiling without
+   * passing one — every real, non-test call site passes its own logger
+   * explicitly.
    */
   logger: Logger = createLogger(),
 ): BuiltAgent {

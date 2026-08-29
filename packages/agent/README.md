@@ -257,11 +257,64 @@ For each `toolCall` in a response's `toolCalls`, `loop.ts` (`resolveToolCall`):
 env-configurable, same posture as `MAX_ITERATIONS`/`HISTORY_BUDGET_CHARS`),
 independent of the turn-level iteration cap.
 
+## The `prepare` hook (`06-legible-approvals-bounded-reads` Phase 3)
+
+`ToolSpec` is generic — `ToolSpec<P = void>` — over the shape of a `plan` a
+tool's optional `prepare?(args: unknown, ctx: ToolContext): Promise<
+ToolPreparation<P>>` hook resolves. `handler`'s `ctx` always carries `plan:
+P` (never optional — a prepare-less tool's `plan` is typed `void` and always
+`undefined` at runtime, so "no plan" is a value, not an absent property).
+`ToolPreparation<P>` (`src/types.ts`) is a discriminated union: `{ok: false,
+result: unknown}` refuses the call outright — `result` becomes the call's
+tool-result content, the same as if the handler itself had returned it — or
+`{ok: true, plan: P, summary: ApprovalSummary}`, which threads `plan` onto
+`ctx.plan` for the eventual `handler` call and hands the approval gate
+`summary` to render.
+
+`ApprovalSummary` (`src/approval-gate-port.ts`) is the small, concrete,
+tool-agnostic display vocabulary a `prepare` populates in place of raw JSON:
+`{ action: string; target?: string; items?: string[]; itemsTotal?: number;
+effects: string[] }` — `action` is always the first line (a yes/no
+question), `target` an optional second line naming what it acts on,
+`items`/`itemsTotal` an optional preview list with a count line when
+truncated, `effects` trailing sentences describing consequences. Deliberately
+concrete, not `unknown`: the gate can render any tool's summary with zero
+per-tool branching, and TypeScript rejects a `prepare` that omits
+`action`/`effects`.
+
+`prepare` only ever runs on the **gated** path, before the approval prompt is
+built — never on the ungated path, even for a tool that declares one (no
+ungated tool does today; `loop.ts`'s `resolveToolCall` documents this as
+intentional, not an oversight). `loop.ts`'s `prepareGatedCall` runs it after
+`safeParse`, raced against the same `spec.timeoutMs ?? TOOL_HANDLER_TIMEOUT_MS`
+bound the handler itself uses (`delay`, the same pattern `invokeToolHandler`
+uses). A throw, a timeout, an abort mid-flight, and a `{ok: false}` result are
+all "refused" the same way: no prompt is ever sent for that call, and it
+resolves immediately as a denial-shaped tool result — `{ok: false, reason:
+"prepare_failed"}` for a throw/timeout/abort, or the tool's own `result` for
+an explicit `{ok: false}` (e.g. `sheets_write`'s `unknown_sheet`). A batch
+with two or more gated calls is split by `buildApprovalBatch`: refused calls
+resolve immediately (`approved: false` on their `tool.call` event, diagnostic
+detail preserved via `error`, mirroring every other failure path in this
+file), and only the survivors are sent to `requestApproval` — skipped
+entirely when nothing survives. The batch entry a survivor contributes always
+carries `toolCall.arguments` — the model's **raw**, unparsed args, never the
+`safeParse`d/defaulted form `prepare`/`handler` receive — so a zod-applied
+default can never silently change what a human is shown or what `tool.call`
+logs.
+
+`sheets_write` (`@hermes/google-sheets`) is the one tool in this codebase
+that declares `prepare`; see that package's README for how it splits slug
+resolution (in `prepare`) from the write itself (in `handler`, reading
+`ctx.plan`).
+
 ## Approval gate
 
-`src/approval-gate-port.ts` exports `ApprovalRequest { tool, args }` (the
-model's *raw* requested arguments, shown to the human as-is — not the
-`schema.safeParse`d result) and the injected `ApprovalGate` port:
+`src/approval-gate-port.ts` exports `ApprovalRequest { tool, args, plan?,
+summary? }` (`args` is the model's *raw* requested arguments, shown to the
+human as-is — not the `schema.safeParse`d result; `plan`/`summary` are
+additive, populated only for a call whose `prepare` resolved one — see "The
+`prepare` hook" above) and the injected `ApprovalGate` port:
 `requestApproval(batch, { threadId, turnId }, signal): Promise<"approved" |
 "denied">`. Channel-agnostic — `packages/agent` never imports
 `@hermes/channels`; the one real implementation
@@ -302,16 +355,32 @@ splits them into gated (`requiresApproval: true`) and ungated:
 
 `apps/hermes/src/agent/telegram-approval-gate.ts`'s `createTelegramApprovalGate`
 implements the port over Telegram inline keyboards: one message with
-Approve/Deny buttons per batch, held in an in-memory `Map<approvalId, ...>` —
-**not persisted** (settled decision 6 — a restart drops any pending
-approval). Resolution — a tap, the 5-minute timeout, or the turn's
-`AbortSignal` firing — is one code path: whichever fires first synchronously
-deletes the map entry *before* any `await` (including the `editMessage` that
-shows the resolved state), so the other two triggers can never also resolve
-it, and a `callback_query` referencing an id that's unknown, already
-resolved, or gone because the process restarted is the same branch: answer
-with "this approval has expired, please ask again," never a hang or a second
-execution. See `apps/hermes/README.md` for the Telegram-specific mechanics.
+"Aprobar"/"Rechazar" buttons (Spanish — `06-legible-approvals-bounded-reads`
+Phase 3; `callbackData` still encodes lowercase `"approve"`/`"deny"` action
+tokens, unaffected by the label translation) per batch, held in an in-memory
+`Map<approvalId, ...>` — **not persisted** (settled decision 6 — a restart
+drops any pending approval). Resolution — a tap, the 5-minute timeout, or the
+turn's `AbortSignal` firing — is one code path: whichever fires first
+synchronously deletes the map entry *before* any `await` (including the
+`editMessage` that shows the resolved state), so the other two triggers can
+never also resolve it, and a `callback_query` referencing an id that's
+unknown, already resolved, or gone because the process restarted is the same
+branch: answer with "this approval has expired, please ask again," never a
+hang or a second execution. Right before sending a batch's prompt, it logs
+`logger.debug("approval prompt prepared", {tool, args, plan})` for each ready
+call — raw args plus the resolved `plan` (never `summary`, which carries less
+detail) — at debug level only, off by default in production.
+
+The prompt body itself is rendered by `apps/hermes/src/agent/
+approval-prompt-renderer.ts`'s `formatBatchPrompt`/`formatResolvedText`, kept
+deterministic and tool-agnostic on purpose (see that file's own doc and
+`apps/hermes/README.md`): a batch where every call resolved a usable
+`ApprovalSummary` renders the new, headerless, legible-Spanish format; a
+batch with any prepare-less or malformed-summary call renders the *whole*
+batch, instead, in the pre-Phase-3 raw-JSON format ("The model wants to run:"
+plus one `- tool(args)` line per call) rather than mixing styles — never a
+prompt half legible Spanish prose, half raw English JSON. See
+`apps/hermes/README.md` for the Telegram-specific mechanics.
 
 ## Persistence port
 
@@ -334,9 +403,10 @@ provider.
 `src/index.ts` exports `createAgent(definition, deps)` — a thin factory
 wrapping `runTurn` and the injected deps into a `{ handleMessage(channel,
 chatId, text): Promise<string> }` object — plus `AgentDefinition`,
-`ToolSpec`, `ApprovalGate`, `ApprovalRequest`, `ThreadRepo`, `Thread`, and
-`Message`. Nothing else is public; `loop.ts`, `prompt.ts`, and
-`context-trim.ts` are internal.
+`ToolSpec`, `ToolContext`, `ToolPreparation`, `ApprovalGate`,
+`ApprovalRequest`, `ApprovalSummary`, `ThreadRepo`, `Thread`, and `Message`.
+Nothing else is public; `loop.ts`, `prompt.ts`, and `context-trim.ts` are
+internal.
 
 ## Dependencies
 
