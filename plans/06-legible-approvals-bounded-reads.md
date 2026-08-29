@@ -375,23 +375,23 @@ with no code access) can observe purely by chatting with the bot.
 
 **Steps:**
 
-- [ ] Write `truncate.ts`'s `truncateBySize` as a pure function with no
+- [x] Write `truncate.ts`'s `truncateBySize` as a pure function with no
       Sheets-specific knowledge — it must be reusable by `sheets_inspect`
       (Phase 2) and the update-mode `replaced` snapshot (Phase 7) without
       modification
-- [ ] Confirm the "always at least one row" rule doesn't silently mask a
+- [x] Confirm the "always at least one row" rule doesn't silently mask a
       pathological single-row case (a single row of 10,000 cells returns
       `truncated:true` with `returnedRows:1` — correct, not a bug)
-- [ ] Confirm `totalColumns` is computed from the *original* `result.values`,
+- [x] Confirm `totalColumns` is computed from the *original* `result.values`,
       not the truncated slice
-- [ ] Grep `sheets-read.ts`'s existing tests to confirm no test currently
+- [x] Grep `sheets-read.ts`'s existing tests to confirm no test currently
       asserts on the exact key set of a success result in a way that would
       break from the additive fields being *absent* on an untruncated read
-- [ ] **Edge case — empty `values`:** `result.values` is `undefined`/`[]`
+- [x] **Edge case — empty `values`:** `result.values` is `undefined`/`[]`
       when the range has no data at all; `truncateBySize([], ...)` must
       return `{items:[], truncated:false, returnedCount:0, totalCount:0}`,
       not throw and not report a false `truncated:true`
-- [ ] **Edge case — `totalRows` when the API returns fewer rows than the
+- [x] **Edge case — `totalRows` when the API returns fewer rows than the
       requested range.** Google's `values.get` only returns rows that
       actually have data (a request for `A1:Z1000` against a 40-row sheet
       returns 40 rows, not 1000 padded with empties), so `totalRows` must
@@ -400,7 +400,7 @@ with no code access) can observe purely by chatting with the bot.
       nominal size. Document this explicitly in the tool's own comment, not
       just in this plan, since it's a natural place for a future edit to
       get wrong
-- [ ] **Edge case — a single row wider than `MAX_VALUE_CHARS` alone:**
+- [x] **Edge case — a single row wider than `MAX_VALUE_CHARS` alone:**
       confirm it is still returned whole (per the "always keep at least one
       item" rule) with `truncated:true` and `returnedRows:1`, and that a
       *second* row, however small, is dropped rather than partially merged
@@ -415,10 +415,10 @@ with no code access) can observe purely by chatting with the bot.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-sheets test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/google-sheets test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [ ] Manual: register a sheet with 40+ rows, ask the bot (in Telegram) a
       question that makes it call `sheets_read` over the whole range, and
       confirm the reply stays coherent (the model relays "showing the first
@@ -426,16 +426,16 @@ with no code access) can observe purely by chatting with the bot.
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: bound sheets_read results with a shared truncation helper`
-- [ ] Phase marked complete
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: bound sheets_read results with a shared truncation helper`
+- [x] Phase marked complete
 
 ---
 
