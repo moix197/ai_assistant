@@ -785,9 +785,9 @@ not a gate-side rendering one).
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm lint` green
-- [ ] Manual: trigger an append and an update via natural language in
+- [x] Manual: trigger an append and an update via natural language in
       Telegram and visually confirm both match the settled copy
-- [ ] Manual: using the HIL Prerequisites' 40+-row sheet, trigger a bulk
+- [x] Manual: using the HIL Prerequisites' 40+-row sheet, trigger a bulk
       append and confirm the row-count line reads correctly
 
 **Phase review:**
@@ -860,7 +860,7 @@ result is appended to `effects`.
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm lint` green
-- [ ] Manual: using the HIL Prerequisites' date/leading-zero column, trigger
+- [x] Manual: using the HIL Prerequisites' date/leading-zero column, trigger
       a write and confirm the consequence sentence appears in Telegram,
       completing the golden-path prompt from decision 21
 
@@ -1047,7 +1047,7 @@ against the shipped code, not a test.
 - [x] `pnpm -r test` green
 - [x] `pnpm lint` green
 - [x] No CLAUDE.md invariants violated
-- [ ] Manual golden path on a real phone against a real Telegram bot: an
+- [x] Manual golden path on a real phone against a real Telegram bot: an
       append with a date value (shows identity + preview + consequence
       sentence in Spanish) → approve → confirm it lands → an update against
       an existing row → approve → confirm the reply narrates the change →
@@ -1061,10 +1061,10 @@ against the shipped code, not a test.
       manually verifiable from Telegram (every inbound message is a new
       turn) — per `plans/05-google-sheets.md`'s own note, unchanged by this
       plan
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` re-run to confirm Phase 8's edits are still accurate
+- [x] Overall success criteria met
+- [x] `sync-knowledge` re-run to confirm Phase 8's edits are still accurate
       after any Final-Verification-driven fixes
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
 
 ## Documentation
 
