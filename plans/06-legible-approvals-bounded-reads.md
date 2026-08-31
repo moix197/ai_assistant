@@ -448,7 +448,7 @@ with no code access) can observe purely by chatting with the bot.
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm -r test` green
 - [x] `pnpm lint` green
-- [ ] Manual: register a sheet with 40+ rows, ask the bot (in Telegram) a
+- [x] Manual: register a sheet with 40+ rows, ask the bot (in Telegram) a
       question that makes it call `sheets_read` over the whole range, and
       confirm the reply stays coherent (the model relays "showing the first
       N of M rows" rather than silently truncating mid-conversation)
@@ -614,7 +614,7 @@ generic formatter — Phases 5 and 6 add no new renderer logic, only richer
       an **empty** description (single-line, no `target` — settled decision
       26's "empty description fallback" case); the prepare-less `echo`
       fallback (byte-identical to today)
-- [ ] Manual: send a natural-language message that triggers `sheets_write`
+- [x] Manual: send a natural-language message that triggers `sheets_write`
       against a known sheet and confirm the Telegram prompt shows the
       identity block in Spanish with "Aprobar"/"Rechazar" buttons
 
@@ -633,7 +633,7 @@ generic formatter — Phases 5 and 6 add no new renderer logic, only richer
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm -r test` green
 - [x] `pnpm lint` green
-- [ ] Manual golden path above
+- [x] Manual golden path above
 - [~] `[~]` In-turn dedupe unaffected by this phase — not manually
       verifiable from Telegram; covered by existing `sheet-write-log`
       unit tests, unchanged by this phase
@@ -699,7 +699,7 @@ only path that can reach it with a disallowed sheet).
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm lint` green
-- [ ] Manual: attempt a write against the registered `read`-access sheet
+- [x] Manual: attempt a write against the registered `read`-access sheet
       (HIL Prerequisites) via natural language in Telegram and confirm no
       approval prompt appears at all — the model relays a refusal directly
 
@@ -928,7 +928,7 @@ still proceeds, a warning is logged, and `replaced` is simply omitted.
 - [x] `pnpm -r test` green
 - [x] `pnpm -r typecheck` green
 - [x] `pnpm lint` green
-- [ ] Manual: approve an update-mode write against a row with known prior
+- [x] Manual: approve an update-mode write against a row with known prior
       content and confirm the bot's natural-language reply mentions what
       changed (e.g. "cambié el teléfono de X a Y")
 
@@ -992,7 +992,7 @@ against the shipped code, not a test.
 
 - [x] `pnpm -r test` still green (no code changed, but confirms nothing was
       accidentally touched)
-- [ ] Manual: read the corrected `apps/hermes/README.md` Approval gate
+- [x] Manual: read the corrected `apps/hermes/README.md` Approval gate
       section and `packages/google-sheets/README.md`'s Sheets-write section
       end to end and confirm they match the actual shipped prompt
 
@@ -1057,7 +1057,7 @@ against the shipped code, not a test.
       appears and the model relays the available slugs → a `sheets_read`
       over a huge range → confirm the model asks to narrow the range rather
       than dumping everything
-- [ ] `[~]` In-turn write dedupe re-confirmed as unit-test-only, not
+- [~] `[~]` In-turn write dedupe re-confirmed as unit-test-only, not
       manually verifiable from Telegram (every inbound message is a new
       turn) — per `plans/05-google-sheets.md`'s own note, unchanged by this
       plan
