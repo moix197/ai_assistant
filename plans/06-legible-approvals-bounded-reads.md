@@ -347,14 +347,14 @@ error and no test failure unless one is written specifically to catch it
 
 **Mode:** hil
 
-- [ ] Confirm (or create) a registered `readwrite` test sheet with a tab
+- [x] Confirm (or create) a registered `readwrite` test sheet with a tab
       containing 40+ data rows, for the row-preview-cap manual check in
       Phase 5.
-- [ ] Confirm the same or another registered sheet has a column with
+- [x] Confirm the same or another registered sheet has a column with
       date-like values (e.g. `1990-05-12`) and a column with a leading zero
       (e.g. `0123`), for the `valueInputOption` consequence-sentence manual
       check in Phase 6.
-- [ ] Confirm a registered `read`-access sheet already exists (from
+- [x] Confirm a registered `read`-access sheet already exists (from
       `05-google-sheets`' Prerequisites) for the read-only-refusal manual
       check in Phase 4.
 
