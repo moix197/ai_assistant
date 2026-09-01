@@ -38,10 +38,11 @@ const OUT_OF_BUDGET_REPLY =
  * long request. Telegram's `sendMessage` rejects an empty string with a 400,
  * which without this guard falls through to the generic "something went
  * wrong" copy — misleading, since nothing actually failed. Spanish, tuteo,
- * matching the approval-gate copy shipped in plan 06.
+ * matching the approval-gate copy shipped in plan 06. Exported so tests can
+ * assert against it rather than duplicating the literal.
  */
-const EMPTY_REPLY_FALLBACK =
-  "No pude generar una respuesta para eso. Probá de nuevo, o pedímelo en partes más chicas.";
+export const EMPTY_REPLY_FALLBACK =
+  "No pude generar una respuesta para eso. Prueba de nuevo, o pídemelo en partes más chicas.";
 
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
@@ -110,7 +111,7 @@ async function replyWithCompletion(
   let resultText = agentReply;
   if (resultText.trim().length === 0) {
     options.logger.warn("agent turn completed with an empty reply, sending fallback text instead", {
-      chatId: message.chatId,
+      channelUserId: message.channelUserId,
       dedupeKey,
     });
     resultText = EMPTY_REPLY_FALLBACK;

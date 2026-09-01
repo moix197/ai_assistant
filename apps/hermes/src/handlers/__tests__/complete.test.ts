@@ -3,7 +3,7 @@ import type { Logger } from "@hermes/core";
 import { BudgetExceededError, LlmHttpError, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../agent/build-agent";
-import { type LlmDedupeRepo, createCompletionHandler } from "../complete";
+import { EMPTY_REPLY_FALLBACK, type LlmDedupeRepo, createCompletionHandler } from "../complete";
 
 const ALLOWED_ID = 111;
 
@@ -159,46 +159,31 @@ describe("createCompletionHandler", () => {
     );
   });
 
-  it("sends the fallback text and still records dedupe completion when the agent reply is an empty string", async () => {
-    const channel = createMockChannel();
-    const logger = createMockLogger();
-    const agent = createMockAgent();
-    agent.handleMessage.mockResolvedValue("");
-    const dedupeRepo = createPermissiveDedupeRepo();
-    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+  it.each([
+    ["empty string", ""],
+    ["whitespace-only", "   \n\t  "],
+  ] as const)(
+    "sends the exact EMPTY_REPLY_FALLBACK text and still records dedupe completion when the agent reply is %s",
+    async (_name, agentReply) => {
+      const channel = createMockChannel();
+      const logger = createMockLogger();
+      const agent = createMockAgent();
+      agent.handleMessage.mockResolvedValue(agentReply);
+      const dedupeRepo = createPermissiveDedupeRepo();
+      const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
 
-    await handler(inboundMessage());
+      await handler(inboundMessage());
 
-    expect(channel.send).toHaveBeenCalledTimes(1);
-    const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      string,
-    ];
-    expect(replyText).not.toBe("");
-    expect(replyText.length).toBeGreaterThan(0);
-    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", replyText);
-    expect(logger.warn).toHaveBeenCalled();
-  });
-
-  it("sends the fallback text and still records dedupe completion when the agent reply is whitespace-only", async () => {
-    const channel = createMockChannel();
-    const logger = createMockLogger();
-    const agent = createMockAgent();
-    agent.handleMessage.mockResolvedValue("   \n\t  ");
-    const dedupeRepo = createPermissiveDedupeRepo();
-    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
-
-    await handler(inboundMessage());
-
-    expect(channel.send).toHaveBeenCalledTimes(1);
-    const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      string,
-    ];
-    expect(replyText.trim()).not.toBe("");
-    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", replyText);
-    expect(logger.warn).toHaveBeenCalled();
-  });
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
+        string,
+        string,
+      ];
+      expect(replyText).toBe(EMPTY_REPLY_FALLBACK);
+      expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", replyText);
+      expect(logger.warn).toHaveBeenCalled();
+    },
+  );
 
   it("ignores an edited message, no agent call", async () => {
     const channel = createMockChannel();
