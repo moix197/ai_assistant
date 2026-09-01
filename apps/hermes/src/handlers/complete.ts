@@ -31,6 +31,18 @@ const GENERIC_FAILURE_REPLY =
 const OUT_OF_BUDGET_REPLY =
   "Hermes is out of budget for this month. Please try again after the monthly reset.";
 
+/**
+ * Distinct from `GENERIC_FAILURE_REPLY`: this is not a failure — the agent
+ * turn completed normally (no thrown error) but produced no usable text,
+ * almost always because the model exhausted its output token budget on a
+ * long request. Telegram's `sendMessage` rejects an empty string with a 400,
+ * which without this guard falls through to the generic "something went
+ * wrong" copy — misleading, since nothing actually failed. Spanish, tuteo,
+ * matching the approval-gate copy shipped in plan 06.
+ */
+const EMPTY_REPLY_FALLBACK =
+  "No pude generar una respuesta para eso. Probá de nuevo, o pedímelo en partes más chicas.";
+
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
   /** The agent loop (`packages/agent`, 2c) — replaces the single, stateless `llmProvider.complete()` call this phase used to make directly. */
@@ -88,12 +100,22 @@ async function replyWithCompletion(
   message: InboundMessage,
   dedupeKey: string,
 ): Promise<void> {
-  const resultText = await options.agent.handleMessage(
+  const agentReply = await options.agent.handleMessage(
     CHANNEL_TELEGRAM,
     message.chatId,
     message.channelUserId,
     message.text,
   );
+
+  let resultText = agentReply;
+  if (resultText.trim().length === 0) {
+    options.logger.warn("agent turn completed with an empty reply, sending fallback text instead", {
+      chatId: message.chatId,
+      dedupeKey,
+    });
+    resultText = EMPTY_REPLY_FALLBACK;
+  }
+
   await options.channel.send(message.chatId, resultText);
 
   await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, resultText);

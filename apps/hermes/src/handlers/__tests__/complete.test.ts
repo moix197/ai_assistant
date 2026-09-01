@@ -159,6 +159,47 @@ describe("createCompletionHandler", () => {
     );
   });
 
+  it("sends the fallback text and still records dedupe completion when the agent reply is an empty string", async () => {
+    const channel = createMockChannel();
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    agent.handleMessage.mockResolvedValue("");
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await handler(inboundMessage());
+
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+    ];
+    expect(replyText).not.toBe("");
+    expect(replyText.length).toBeGreaterThan(0);
+    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", replyText);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("sends the fallback text and still records dedupe completion when the agent reply is whitespace-only", async () => {
+    const channel = createMockChannel();
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    agent.handleMessage.mockResolvedValue("   \n\t  ");
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await handler(inboundMessage());
+
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    const [, replyText] = (channel.send as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+    ];
+    expect(replyText.trim()).not.toBe("");
+    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", replyText);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   it("ignores an edited message, no agent call", async () => {
     const channel = createMockChannel();
     const logger = createMockLogger();
