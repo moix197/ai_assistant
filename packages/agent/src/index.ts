@@ -42,6 +42,7 @@ export function createAgent(definition: AgentDefinition, deps: RunTurnDeps): Age
 }
 
 export type { ApprovalGate, ApprovalRequest, ApprovalSummary } from "./approval-gate-port";
+export { MaxIterationsReachedError } from "./loop";
 export { assemblePrefix } from "./prompt";
 export type { AssembledPrefix } from "./prompt";
 export type { Thread, ThreadRepo } from "./thread-repo-port";

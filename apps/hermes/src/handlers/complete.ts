@@ -1,3 +1,4 @@
+import { MaxIterationsReachedError } from "@hermes/agent";
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError } from "@hermes/llm";
@@ -43,6 +44,16 @@ const OUT_OF_BUDGET_REPLY =
  */
 export const EMPTY_REPLY_FALLBACK =
   "No pude generar una respuesta para eso. Prueba de nuevo, o pídemelo en partes más chicas.";
+
+/**
+ * Distinct from `GENERIC_FAILURE_REPLY`: this is not an error either — the
+ * turn ran to completion (every iteration billed and reported), it just
+ * never reached a final response within `MAX_ITERATIONS`. The user gets a
+ * real result reported (the turn happened, it just didn't finish), not a
+ * "something went wrong, try again" message.
+ */
+export const MAX_ITERATIONS_REPLY =
+  "Esto se alargó demasiado y no llegué a una respuesta final. Pídemelo de nuevo, quizás en partes más chicas.";
 
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
@@ -92,6 +103,36 @@ async function recordDedupeCompletion(
 }
 
 /**
+ * Sends a notice that isn't the ordinary happy-path reply (e.g. a
+ * cut-off or failure notice) and swallows a delivery failure — the user
+ * may have blocked the bot or be otherwise unreachable, which is not this
+ * handler's error to surface as a crash. Returns whether delivery
+ * succeeded so the caller can decide whether it's safe to record dedupe
+ * completion. Introduced here as the first phase to add a new user-facing
+ * notice send; reused by later phases' notice sends.
+ */
+async function sendUserNotice(
+  options: CreateCompletionHandlerOptions,
+  message: InboundMessage,
+  text: string,
+  context: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    await options.channel.send(message.chatId, text);
+    return true;
+  } catch (sendError) {
+    options.logger.warn(
+      "failed to deliver notice to user — likely blocked the bot or unreachable",
+      {
+        ...context,
+        error: sendError instanceof Error ? sendError.message : String(sendError),
+      },
+    );
+    return false;
+  }
+}
+
+/**
  * The unclaimed path, in the load-bearing order documented on
  * `createCompletionHandler`: one agent turn, then the reply, then the
  * dedupe completion — never the completion first.
@@ -101,12 +142,39 @@ async function replyWithCompletion(
   message: InboundMessage,
   dedupeKey: string,
 ): Promise<void> {
-  const agentReply = await options.agent.handleMessage(
-    CHANNEL_TELEGRAM,
-    message.chatId,
-    message.channelUserId,
-    message.text,
-  );
+  let agentReply: string;
+  try {
+    agentReply = await options.agent.handleMessage(
+      CHANNEL_TELEGRAM,
+      message.chatId,
+      message.channelUserId,
+      message.text,
+    );
+  } catch (error) {
+    if (!(error instanceof MaxIterationsReachedError)) {
+      throw error;
+    }
+
+    const delivered = await sendUserNotice(options, message, MAX_ITERATIONS_REPLY, {
+      channelUserId: message.channelUserId,
+      dedupeKey,
+    });
+    if (delivered) {
+      options.logger.warn("agent turn reached MAX_ITERATIONS without a final response", {
+        channelUserId: message.channelUserId,
+        dedupeKey,
+        iterations: error.iterations,
+        totalCostUsd: error.totalCostUsd,
+      });
+      await recordDedupeCompletion(
+        options.dedupeRepo,
+        options.logger,
+        dedupeKey,
+        MAX_ITERATIONS_REPLY,
+      );
+    }
+    return;
+  }
 
   let resultText = agentReply;
   if (resultText.trim().length === 0) {

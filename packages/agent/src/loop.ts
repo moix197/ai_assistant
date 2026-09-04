@@ -64,7 +64,7 @@ export interface RunTurnDeps {
  * via `TurnProgress`, since a provider throw (e.g. `UnpricedModelError`) can
  * land after several iterations already billed, not just the first.
  */
-class MaxIterationsReachedError extends Error {
+export class MaxIterationsReachedError extends Error {
   constructor(
     public readonly totalCostUsd: number,
     public readonly iterations: number,

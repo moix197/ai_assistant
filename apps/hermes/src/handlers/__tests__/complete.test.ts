@@ -1,9 +1,15 @@
+import { MaxIterationsReachedError } from "@hermes/agent";
 import type { Channel, InboundMessage } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError, LlmHttpError, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../agent/build-agent";
-import { EMPTY_REPLY_FALLBACK, type LlmDedupeRepo, createCompletionHandler } from "../complete";
+import {
+  EMPTY_REPLY_FALLBACK,
+  type LlmDedupeRepo,
+  MAX_ITERATIONS_REPLY,
+  createCompletionHandler,
+} from "../complete";
 
 const ALLOWED_ID = 111;
 
@@ -184,6 +190,40 @@ describe("createCompletionHandler", () => {
       expect(logger.warn).toHaveBeenCalled();
     },
   );
+
+  it("sends the exact MAX_ITERATIONS_REPLY text and still records dedupe completion when the agent turn exhausts MAX_ITERATIONS", async () => {
+    const channel = createMockChannel();
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    agent.handleMessage.mockRejectedValue(new MaxIterationsReachedError(1.23, 12));
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    expect(channel.send).toHaveBeenCalledWith("555", MAX_ITERATIONS_REPLY);
+    expect(channel.send).not.toHaveBeenCalledWith(
+      "555",
+      "Sorry, I couldn't process that message right now. Please try again in a moment.",
+    );
+    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", MAX_ITERATIONS_REPLY);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("never records dedupe completion and logs exactly one warn when the max-iterations notice itself fails to deliver", async () => {
+    const channel = createMockChannel();
+    (channel.send as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("bot blocked"));
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    agent.handleMessage.mockRejectedValue(new MaxIterationsReachedError(1.23, 12));
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    expect(dedupeRepo.complete).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
 
   it("ignores an edited message, no agent call", async () => {
     const channel = createMockChannel();
