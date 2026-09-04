@@ -200,6 +200,15 @@ redelivery: it's logged loudly (`"message handler failed after its offset
 was already advanced, not retried"`) instead, since there is no redelivery
 left to fall back on for that update.
 
+**A `setOffset` failure itself is a narrower, different case.** For a
+message update, `offsetRepo.setOffset` is now called — and awaited —
+*before* `dispatchMessage` even starts, not after. If it rejects, the
+handler is never invoked at all: the update was never acked, so it is
+cleanly redelivered on the next `getUpdates` call and runs exactly once,
+with no double-charge risk. This is narrower than, not identical to, "there
+is no redelivery to fall back on" above — that line describes an ordinary
+handler failure *after* a successful ack, which still stands unchanged.
+
 The echo handler is safe under (callback) replay and under a lost message by
 inspection: send-and-reply has no side effect beyond, at most, a missing or
 duplicate user-visible message, so there is no dedupe key here. **Any future

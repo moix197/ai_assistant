@@ -199,8 +199,8 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
    * function catches itself, instead of escaping to `pollOnce`'s loop as an
    * exception that would (wrongly, under this model) stop the batch.
    *
-   * By the time this settles, `pollOnce` has already advanced the offset
-   * past this update (see the main loop below) — there is no redelivery to
+   * `pollOnce` has already persisted the offset past this update BEFORE
+   * this even starts (see the main loop below) — there is no redelivery to
    * fall back on the way there is for a `callback_query` failure, so a
    * rejection here is terminal for this update: logged loudly rather than
    * silently swallowed. `apps/hermes/src/handlers/complete.ts`'s dedupe
@@ -277,19 +277,26 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
         // A callback_query is still awaited inline — it's fast, and the
         // approval gate's replay-on-crash behavior depends on its offset
         // only advancing once its handler has actually run. A message is
-        // dispatched without waiting (see `dispatchMessage`): the offset
-        // below advances immediately, before its handler even starts,
-        // deliberately trading message crash-replay for never blocking this
-        // loop on a handler that itself waits on a Telegram reply (the
-        // approval gate) — see packages/channels/README.md.
+        // dispatched without the loop waiting on it, but — unlike
+        // callback_query — its offset is now persisted BEFORE dispatch even
+        // starts, not after: ack now strictly precedes dispatch for message
+        // updates specifically, so a `setOffset` failure can never race an
+        // already-started handler. Dispatch itself is still never awaited
+        // here: a completion handler can await a Telegram approval tap for
+        // minutes, and if the loop awaited that inline, `getUpdates` would
+        // never run again to fetch the very `callback_query` that unblocks
+        // it — see packages/channels/README.md.
         if (isCallbackUpdate(update)) {
           await handleCallback(update);
+          const nextOffset = update.update_id + 1;
+          await offsetRepo.setOffset(nextOffset);
+          offset = nextOffset;
         } else {
+          const nextOffset = update.update_id + 1;
+          await offsetRepo.setOffset(nextOffset);
+          offset = nextOffset;
           trackDispatch(dispatchMessage(update));
         }
-        const nextOffset = update.update_id + 1;
-        await offsetRepo.setOffset(nextOffset);
-        offset = nextOffset;
       } catch (error) {
         // Only a callback_query's handleCallback (or offsetRepo.setOffset
         // itself) can land here now — dispatchMessage never rethrows, it

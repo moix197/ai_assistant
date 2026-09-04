@@ -144,11 +144,12 @@ describe("createTelegramPoller — message offset advances without waiting for i
   // handler fully completes") is deliberately NOT true for message updates
   // any more — see the approval-gate deadlock this file's history documents
   // and packages/channels/README.md. A message update's offset now advances
-  // as soon as it's dispatched, whether or not (and regardless of how long
-  // before) its handler ever resolves. This means a crash while a message
-  // handler is in flight is NOT redelivered on restart: an accepted
-  // trade-off, guarded on the redelivery side by
-  // apps/hermes/src/handlers/complete.ts's dedupe machinery instead.
+  // BEFORE it's even dispatched, not merely without waiting on its handler,
+  // whether or not (and regardless of how long before) its handler ever
+  // resolves. This means a crash while a message handler is in flight is
+  // NOT redelivered on restart: an accepted trade-off, guarded on the
+  // redelivery side by apps/hermes/src/handlers/complete.ts's dedupe
+  // machinery instead.
   it("persists a message update's offset even while its handler is still pending", async () => {
     const update = makeUpdate(80);
     const getUpdates = vi
