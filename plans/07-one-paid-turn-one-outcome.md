@@ -612,12 +612,14 @@ This phase has no runtime behavior to test — its correctness is reviewed, not
 executed; it is the plan's one allowed non-vertical phase (pure prose, per
 the format spec's docs exception), and it lands last on purpose so it
 documents shipped behavior rather than intended behavior.
+
+**Resolved during execution (code review, Phase 5):** the first attempt (`700b2b1`) removed the false "a `pending` row retries" claim but replaced it with a second false one — that the `llm_dedupe` fail-open branch is load-bearing for `callback_query` replays. It is not: a `callback_query` never reaches `llm_dedupe` at all (`claim()` has exactly one caller, `complete.ts`, keyed off `InboundMessage.updateId` and reachable only via `dispatchMessage`; a replayed tap hits the approval gate's expiry path instead — zero claims, zero spend). Corrected in `f0cf0bb`: after Phase 1 the fail-open branch is **defensive, not load-bearing** — reaching it now requires an off-code event (a rewound `telegram_offset` row, or a second poller past the boot advisory lock), not any path the poller itself can take. A follow-up (`1210797`) also narrowed the enumeration of what leaves a row `pending`: partial-send and max-iterations do so only when their notice *also* fails to deliver, since Phases 2-4 record completion whenever it lands.
 **Commit message:** `docs: sync knowledge base for 07-one-paid-turn-one-outcome`
 
 **File changes:**
 | Action | File | What changes |
 |---|---|---|
-| modify | `.ai/index.md` | Cross-cutting "Handler idempotency (invariant #4)" row (**L38** — one long table cell). It already **contradicts itself today**: the same cell opens with "**A message update is no longer replayed on crash** — … a crashed turn is simply lost, logged and not retried" and later says "A crash inside that claim→complete window leaves the row `pending`, which **retries** — a named accepted risk". The edit is to delete/replace that second, stale clause so the cell states one thing — a `pending` row from a post-ack handler failure (crash, thrown error, 403, partial send, max-iterations) is **not** retried, because the offset is already acked; the only closed money-relevant risk was a `setOffset` failure racing an in-flight dispatch, fixed in `07-one-paid-turn-one-outcome` by acking before dispatch. Cross-reference the new decision doc |
+| modify | `.ai/index.md` | Cross-cutting "Handler idempotency (invariant #4)" row (**L38** — one long table cell). It already **contradicts itself today**: the same cell opens with "**A message update is no longer replayed on crash** — … a crashed turn is simply lost, logged and not retried" and later says "A crash inside that claim→complete window leaves the row `pending`, which **retries** — a named accepted risk". The edit is to delete/replace that second, stale clause so the cell states one thing — a `pending` row from a post-ack handler failure (crash, thrown error, 403, partial send, max-iterations) is **not** retried, because the offset is already acked; the only closed money-relevant risk was a `setOffset` failure racing an in-flight dispatch, fixed in `07-one-paid-turn-one-outcome` by acking before dispatch. Cross-reference the new decision doc **(resolved during execution: no new decision doc was created in Phases 1-4, so the cross-reference points at the existing `poller-concurrent-message-dispatch.md`, which owns the ordering decision)** |
 | modify | `.ai/decisions/telegram-long-polling-correctness.md` | **Two edits, both verified in place.** (1) The "A crash between claim and complete" bullet (**L103-115**, inside "The at-least-once contract's first paid consumer") disagrees with itself *within the bullet*: it opens "The row is left `pending`, and a `pending` row is claimable again: a redelivery runs the call a second time" and then closes "Since Phase 3 detached message dispatch, a *crash* mid-turn no longer produces that redelivery at all … The dedupe machinery now earns its keep against exact-duplicate **delivery** (a `setOffset` that itself failed, replaying the batch), not against the crash window." Reconcile into one statement, and record that this plan closed the one case that closing sentence still leaves live: after Phase 1, a `setOffset` failure on a message update replays an update whose handler **never ran**, so it cannot double-charge either. (2) The "Constraints it creates" bullet at **L146-151** ("Every handler must tolerate being invoked twice… Still required after Phase 3: a failed `setOffset` replays the batch even though a crash no longer does") must be **narrowed, not deleted**: that sentence stays true for `callback_query` (handled before its ack, so a failed ack really does re-invoke a handler that already ran) and becomes false for message updates (acked before dispatch). Say which kind it now applies to |
 | modify | `.ai/architecture.md` | **Missing from the draft's original table — two places.** (1) **L374-380**: "a `pending` dedupe row **retries** (fail open, because a wedged message is worse than one bounded duplicate charge)" — the same false claim as `index.md`'s, in the paragraph contrasting the budget ceiling's fail-closed shape with dedupe's fail-open one. Correct it the same way, keeping the fail-open *rationale* (it still explains why `claim()` returns `claimed` for a `pending` row) while dropping the claim that a message-originated row actually gets retried. (2) **L390-396**: "For a `callback_query`, the offset write is still the last step … For a message it is the *first* step: the handler runs detached" — this becomes **literally** true after Phase 1 (it was approximately true before, since the ack landed after the fire but before the handler resolved). Tighten the wording to say the ack now strictly precedes dispatch, and keep the "both halves of that asymmetry are load-bearing" point, which this plan reinforces rather than changes |
 | modify | `.ai/decisions/poller-concurrent-message-dispatch.md` | Add a short addendum: `07-one-paid-turn-one-outcome` reordered the message branch so `setOffset` now runs and resolves *before* `dispatchMessage` is invoked (previously: fire dispatch, then ack) — dispatch is still never awaited, for the same deadlock reason this doc describes; only the ack's position relative to the fire moved. **Also fix one sentence that this plan makes true and that was optimistic before it** (in the "Accepted trade-off" section, ~L51-54): "The **double-processing** side is still guarded — … an exact-duplicate delivery still costs zero provider calls." Until Phase 1 that was false in exactly one case — the `setOffset`-failure replay racing an in-flight handler, where `claim()` fail-opens and a second paid turn runs (this plan's whole Context). Note that it holds unconditionally for message updates from this plan onward, and why |
@@ -627,7 +629,7 @@ documents shipped behavior rather than intended behavior.
 
 **Steps:**
 
-- [ ] Re-read every file listed above in full before editing — do not edit
+- [x] Re-read every file listed above in full before editing — do not edit
       from memory of this plan's Context section alone
 - [ ] Re-run the sweep that found `.ai/architecture.md` (`grep -rn "retries\|retried" .ai/`)
       after editing, and confirm every remaining hit is about something else
@@ -666,12 +668,12 @@ behavior it documents was already tested in Phases 1-4.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [ ] Tests for this phase written and passing (n/a — see Tests above)
-- [ ] Documentation updated (this phase *is* the documentation update)
+- [x] Documentation updated (this phase *is* the documentation update)
 - [ ] Orchestrator (user) has verified and approved this phase
 - [ ] Changes committed: `docs: sync knowledge base for 07-one-paid-turn-one-outcome`
 - [ ] Phase marked complete
