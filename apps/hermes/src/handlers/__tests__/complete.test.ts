@@ -207,7 +207,10 @@ describe("createCompletionHandler", () => {
       "Sorry, I couldn't process that message right now. Please try again in a moment.",
     );
     expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", MAX_ITERATIONS_REPLY);
-    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ iterations: 12, totalCostUsd: 1.23 }),
+    );
   });
 
   it("never records dedupe completion and logs exactly one warn when the max-iterations notice itself fails to deliver", async () => {
@@ -223,6 +226,10 @@ describe("createCompletionHandler", () => {
 
     expect(dedupeRepo.complete).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ iterations: 12, totalCostUsd: 1.23 }),
+    );
   });
 
   it("ignores an edited message, no agent call", async () => {

@@ -172,8 +172,12 @@ a given call; the full, untrimmed history is always what gets persisted.
    `Message.toolCalls`/`toolCallId` to the wire's `tool_calls`/`tool_call_id`
    keys — see that package's README).
 5. Reaching `MAX_ITERATIONS` without ever getting an empty `toolCalls`
-   throws an internal `MaxIterationsReachedError` carrying the real
-   accumulated `costUsd` and iteration count from the calls that did happen.
+   throws `MaxIterationsReachedError` — exported from `@hermes/agent`
+   (`07-one-paid-turn-one-outcome` Phase 2, so `apps/hermes`'s completion
+   handler can `instanceof`-check it and reply with distinct Spanish copy
+   instead of the generic failure text) — carrying the real accumulated cost
+   and iteration count from the calls that did happen as
+   `totalCostUsd`/`iterations` constructor fields, in that order.
 6. On success: persist the **real conversation tail** this turn produced in
    **one** `appendMessages` call — the seed user message plus every
    assistant/tool message `converse()`'s internal `conversation` array
@@ -418,9 +422,12 @@ provider.
 wrapping `runTurn` and the injected deps into a `{ handleMessage(channel,
 chatId, text): Promise<string> }` object — plus `AgentDefinition`,
 `ToolSpec`, `ToolContext`, `ToolPreparation`, `ApprovalGate`,
-`ApprovalRequest`, `ApprovalSummary`, `ThreadRepo`, `Thread`, and `Message`.
-Nothing else is public; `loop.ts`, `prompt.ts`, and `context-trim.ts` are
-internal.
+`ApprovalRequest`, `ApprovalSummary`, `ThreadRepo`, `Thread`, `Message`, and
+(`07-one-paid-turn-one-outcome` Phase 2) `MaxIterationsReachedError` — the
+one concrete class export alongside the port types above, so a consumer can
+`instanceof`-check it without `packages/agent` also exposing `loop.ts`'s
+internals. Nothing else is public; `loop.ts`, `prompt.ts`, and
+`context-trim.ts` are internal.
 
 ## Dependencies
 

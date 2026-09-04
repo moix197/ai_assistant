@@ -158,6 +158,8 @@ async function replyWithCompletion(
     const delivered = await sendUserNotice(options, message, MAX_ITERATIONS_REPLY, {
       channelUserId: message.channelUserId,
       dedupeKey,
+      iterations: error.iterations,
+      totalCostUsd: error.totalCostUsd,
     });
     if (delivered) {
       options.logger.warn("agent turn reached MAX_ITERATIONS without a final response", {

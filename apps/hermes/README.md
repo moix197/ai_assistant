@@ -141,6 +141,34 @@ table) and survives a restart. The turn now has six tools (`get_current_time`,
 4 — and `sheets_write` — Phase 5) and an approval gate for the two that are
 gated (`echo`, `sheets_write`) — see "Approval gate" below.
 
+### Max-iterations notice (`07-one-paid-turn-one-outcome` Phase 2)
+
+An agent turn that exhausts `packages/agent`'s `MAX_ITERATIONS` without ever
+producing a final response throws `MaxIterationsReachedError` (now exported
+from `@hermes/agent`), which `complete.ts` catches by `instanceof` and
+replies to with its own distinct Spanish text —
+`MAX_ITERATIONS_REPLY = "Esto se alargó demasiado y no llegué a una
+respuesta final. Pídemelo de nuevo, quizás en partes más chicas."` — never
+`GENERIC_FAILURE_REPLY`: unlike a generic failure, this is a fully-run, paid
+turn with a real (if unfinished) result to report, not an error swallowed
+before it did anything.
+
+Sending that notice goes through `sendUserNotice`, a small helper
+(`complete.ts`) shared by every notice this plan adds beyond the ordinary
+reply: it sends and returns `true`, or catches a delivery failure (e.g. the
+user blocked the bot), logs one `logger.warn`, and returns `false` — never
+throws. `replyWithCompletion` records the dedupe row `completed` **only when
+`sendUserNotice` reports `delivered: true`**: an undelivered notice leaves
+the row `pending`, the same "record completion only where a reply actually
+reached the user" rule the ordinary happy-path send already followed. The
+informational `logger.warn("agent turn reached MAX_ITERATIONS without a
+final response", { channelUserId, dedupeKey, iterations, totalCostUsd })`
+fires only on the delivered branch — the plan's own test spec pins exactly
+one `logger.warn` per outcome — but the delivery-failure warn inside
+`sendUserNotice` carries the same `iterations`/`totalCostUsd` fields (passed
+in via its `context` argument), so the cost figures are never lost even when
+the notice itself fails to reach the user.
+
 ## Approval gate
 
 `echo` and `sheets_write` are the two tools this codebase ships with
