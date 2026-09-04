@@ -147,9 +147,9 @@ describe("createTelegramPoller — message offset advances without waiting for i
   // BEFORE it's even dispatched, not merely without waiting on its handler,
   // whether or not (and regardless of how long before) its handler ever
   // resolves. This means a crash while a message handler is in flight is
-  // NOT redelivered on restart: an accepted trade-off, guarded on the
-  // redelivery side by apps/hermes/src/handlers/complete.ts's dedupe
-  // machinery instead.
+  // NOT redelivered on restart, and nothing downstream recovers it: the
+  // pending llm_dedupe row it leaves behind is inert, so that turn is lost
+  // rather than retried — an accepted trade-off.
   it("persists a message update's offset even while its handler is still pending", async () => {
     const update = makeUpdate(80);
     const getUpdates = vi

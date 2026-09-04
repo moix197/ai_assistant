@@ -204,7 +204,9 @@ export function createTelegramPoller(options: TelegramPollerOptions): TelegramPo
    * fall back on the way there is for a `callback_query` failure, so a
    * rejection here is terminal for this update: logged loudly rather than
    * silently swallowed. `apps/hermes/src/handlers/complete.ts`'s dedupe
-   * machinery is what now guards the redelivery side; see
+   * machinery does not recover it either: Telegram never redelivers an acked
+   * `update_id`, so the `pending` `llm_dedupe` row a failed turn leaves is
+   * inert — that reclaim path is defensive, not load-bearing. See
    * `packages/channels/README.md`.
    */
   async function dispatchMessage(update: TelegramUpdate): Promise<void> {
