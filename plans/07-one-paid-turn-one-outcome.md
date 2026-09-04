@@ -631,11 +631,11 @@ documents shipped behavior rather than intended behavior.
 
 - [x] Re-read every file listed above in full before editing — do not edit
       from memory of this plan's Context section alone
-- [ ] Re-run the sweep that found `.ai/architecture.md` (`grep -rn "retries\|retried" .ai/`)
+- [x] Re-run the sweep that found `.ai/architecture.md` (`grep -rn "retries\|retried" .ai/`)
       after editing, and confirm every remaining hit is about something else
       (HTTP retry classes, token refresh, Sheets write modes) — not about a
       `pending` dedupe row
-- [ ] Confirm `packages/channels/README.md` and `.ai/index.md`'s "poller"
+- [x] Confirm `packages/channels/README.md` and `.ai/index.md`'s "poller"
       row don't also need a matching correction beyond what Phases 1 and 3
       already made to `packages/channels/README.md`. Note `channels`'
       README already describes the message-side behavior correctly at
@@ -643,7 +643,7 @@ documents shipped behavior rather than intended behavior.
       the `"message handler failed after its offset was already advanced,
       not retried"` log line) — Phase 1's own edit lands there, so this step
       is a check, not a second edit
-- [ ] Cross-check `apps/hermes/src/handlers/__tests__/complete-dedupe.test.ts`
+- [x] Cross-check `apps/hermes/src/handlers/__tests__/complete-dedupe.test.ts`
       and `complete-dedupe-crash-window.test.ts` for any comment asserting
       the old "redelivers" framing in prose (not assertions) — update
       comments only if they exist; no code change expected in these DB
@@ -659,23 +659,23 @@ behavior it documents was already tested in Phases 1-4.
 
 **Verification:**
 
-- [ ] Every corrected file re-read after editing to confirm no internal
+- [x] Every corrected file re-read after editing to confirm no internal
       contradiction remains (the `telegram-long-polling-correctness.md`
       edit specifically must not leave two paragraphs disagreeing)
-- [ ] `pnpm lint` green (markdown is not linted, but confirm no code file
+- [x] `pnpm lint` green (markdown is not linted, but confirm no code file
       was accidentally touched in this phase)
 
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [x] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [x] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
+- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
+- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
 - [x] Code-reviewer agent has verified this phase
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing (n/a — see Tests above)
+- [x] Tests for this phase written and passing (n/a — see Tests above)
 - [x] Documentation updated (this phase *is* the documentation update)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `docs: sync knowledge base for 07-one-paid-turn-one-outcome`
+- [x] Changes committed: `docs: sync knowledge base for 07-one-paid-turn-one-outcome`
 - [ ] Phase marked complete
 
 ---
