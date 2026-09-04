@@ -216,8 +216,8 @@ tuteo, matching `EMPTY_REPLY_FALLBACK`/`MAX_ITERATIONS_REPLY`/
 `GENERIC_FAILURE_REPLY = "No pude procesar tu mensaje ahora. Prueba de
 nuevo en un rato."`, `OUT_OF_BUDGET_REPLY = "Hermes se quedó sin
 presupuesto este mes. Prueba de nuevo después del reinicio mensual."` — the
-latter still never includes `capUsd`/`spentUsd`, which stay boot-log/`
-/stats`-only.
+latter still never includes `capUsd`/`spentUsd`, which stay
+boot-log/`/stats`-only.
 
 ## Approval gate
 

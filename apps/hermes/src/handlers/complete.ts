@@ -233,7 +233,9 @@ async function replyWithCompletion(
 /**
  * The one place a failure becomes user-visible text: a budget rejection gets
  * its own fixed string, anything else the generic one. The error itself is
- * logged, never sent.
+ * logged, never sent. `sendUserNotice`'s delivered result is ignored here
+ * (unlike in `replyWithCompletion`) because there is no dedupe completion
+ * to gate on it.
  */
 async function replyWithFailureNotice(
   options: CreateCompletionHandlerOptions,

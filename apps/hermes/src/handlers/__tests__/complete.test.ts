@@ -311,6 +311,10 @@ describe("createCompletionHandler", () => {
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
 
     expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "failed to deliver notice to user — likely blocked the bot or unreachable",
+      expect.objectContaining({ channelUserId: ALLOWED_ID, error: expect.any(String) }),
+    );
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(
       "llm completion failed",
