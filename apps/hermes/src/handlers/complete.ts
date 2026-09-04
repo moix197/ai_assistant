@@ -21,7 +21,7 @@ export interface LlmDedupeRepo {
 
 /** Never leaks a stack trace or provider error detail into chat. */
 export const GENERIC_FAILURE_REPLY =
-  "Sorry, I couldn't process that message right now. Please try again in a moment.";
+  "No pude procesar tu mensaje ahora. Prueba de nuevo en un rato.";
 
 /**
  * Distinct from `GENERIC_FAILURE_REPLY`: a deliberate, fixed string, never
@@ -30,7 +30,7 @@ export const GENERIC_FAILURE_REPLY =
  * figures surface to users via `/stats` (02-telemetry), not here.
  */
 const OUT_OF_BUDGET_REPLY =
-  "Hermes is out of budget for this month. Please try again after the monthly reset.";
+  "Hermes se quedó sin presupuesto este mes. Prueba de nuevo después del reinicio mensual.";
 
 /**
  * Distinct from `GENERIC_FAILURE_REPLY`: this is not a failure — the agent
@@ -241,7 +241,7 @@ async function replyWithFailureNotice(
   channelUserId: number,
   error: unknown,
 ): Promise<void> {
-  const { channel, logger } = options;
+  const { logger } = options;
 
   if (error instanceof BudgetExceededError) {
     logger.error("llm completion rejected, monthly budget exceeded", {
@@ -249,7 +249,7 @@ async function replyWithFailureNotice(
       capUsd: error.capUsd,
       spentUsd: error.spentUsd,
     });
-    await channel.send(message.chatId, OUT_OF_BUDGET_REPLY);
+    await sendUserNotice(options, message, OUT_OF_BUDGET_REPLY, { channelUserId });
     return;
   }
 
@@ -257,7 +257,7 @@ async function replyWithFailureNotice(
     channelUserId,
     error: error instanceof Error ? error.message : String(error),
   });
-  await channel.send(message.chatId, GENERIC_FAILURE_REPLY);
+  await sendUserNotice(options, message, GENERIC_FAILURE_REPLY, { channelUserId });
 }
 
 /**

@@ -160,7 +160,7 @@ describe("createCompletionHandler", () => {
       string,
       string,
     ];
-    expect(replyText).toMatch(/budget/i);
+    expect(replyText).toMatch(/presupuesto/i);
     expect(replyText).not.toMatch(/\$5/);
     expect(replyText).not.toBe(GENERIC_FAILURE_REPLY);
   });
@@ -298,6 +298,24 @@ describe("createCompletionHandler", () => {
     expect(channel.send).toHaveBeenCalledTimes(2);
     expect(channel.send).toHaveBeenNthCalledWith(2, "555", GENERIC_FAILURE_REPLY);
     expect(dedupeRepo.complete).not.toHaveBeenCalled();
+  });
+
+  it("logs exactly one warn and resolves, without a second mislabeled error, when channel.send is blocked on every call", async () => {
+    const channel = createMockChannel();
+    (channel.send as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("bot blocked"));
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "llm completion failed",
+      expect.objectContaining({ channelUserId: ALLOWED_ID }),
+    );
   });
 
   it("ignores an edited message, no agent call", async () => {

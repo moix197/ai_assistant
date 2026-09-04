@@ -192,6 +192,33 @@ critically — the user is **not** then also sent `GENERIC_FAILURE_REPLY`,
 which is what would happen if this second send fell through unguarded to
 `handleCompletion`'s catch.
 
+### Failure-notice guard, and Spanish copy (`07-one-paid-turn-one-outcome` Phase 4)
+
+`replyWithFailureNotice` — the last-resort path `handleCompletion`'s own
+catch falls into — sent `OUT_OF_BUDGET_REPLY`/`GENERIC_FAILURE_REPLY` via a
+raw `channel.send()` until this phase. A blocked bot (Telegram 403) made
+that send itself throw, escaping `replyWithFailureNotice` and
+`handleCompletion` entirely, up to the poller's own top-level catch, which
+logged a second, mislabeled error for what was really an ordinary delivery
+failure. Both sends now go through the same `sendUserNotice` helper the two
+notices above use — no second guard helper was added. Unlike those two,
+`replyWithFailureNotice` records no dedupe completion in the first place
+(the claim was never going to succeed), so `sendUserNotice`'s `boolean`
+return is ignored here; its one `logger.warn` (context: `channelUserId`) is
+the entire outcome of a failed delivery, and nothing escapes upward — a
+fully blocked bot now costs exactly one `logger.warn` plus the one
+`logger.error` `replyWithFailureNotice` already logged for the original
+failure, never a second `error`.
+
+`GENERIC_FAILURE_REPLY` and `OUT_OF_BUDGET_REPLY` are also now Spanish
+tuteo, matching `EMPTY_REPLY_FALLBACK`/`MAX_ITERATIONS_REPLY`/
+`PARTIAL_SEND_NOTICE`'s register:
+`GENERIC_FAILURE_REPLY = "No pude procesar tu mensaje ahora. Prueba de
+nuevo en un rato."`, `OUT_OF_BUDGET_REPLY = "Hermes se quedó sin
+presupuesto este mes. Prueba de nuevo después del reinicio mensual."` — the
+latter still never includes `capUsd`/`spentUsd`, which stay boot-log/`
+/stats`-only.
+
 ## Approval gate
 
 `echo` and `sheets_write` are the two tools this codebase ships with
