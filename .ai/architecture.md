@@ -376,13 +376,20 @@ worth anything *before* `complete()`; run either after the call and it records
 the spend it existed to prevent. The two failure shapes are deliberately
 opposite: a breached ceiling **blocks** (fail closed, the operator asked it to
 stop), while a `pending` dedupe row stays **claimable** (fail open, because a
-wedged message is worse than one bounded duplicate charge). That fail-open
-branch is not a retry for a message update: its offset is acked before its
-handler is dispatched, so nothing redelivers the update and nothing reaches
-the branch — a `pending` row left by a failed message turn is inert and that
-turn is lost, not retried. The branch earns its keep for `callback_query`,
-which is handled before its offset is written and therefore really can be
-replayed after a partial turn — see
+wedged message is worse than one bounded duplicate charge). That rationale
+still governs `claim()`'s behavior — a `pending` row really does return
+`{status: "claimed"}` again — but after `07-one-paid-turn-one-outcome` no live
+path reaches the branch. `llm_dedupe` is claimed in exactly one place,
+`apps/hermes/src/handlers/complete.ts`, keyed on `InboundMessage.updateId`, so
+only message updates can get there; a `callback_query` is routed straight to
+`handleApprovalCallback` and never claims a dedupe key at all. A message's
+offset is acked before its handler is dispatched, so nothing redelivers the
+update and nothing claims that key twice — a `pending` row left by a failed
+message turn is inert and that turn is lost, not retried. The branch is now
+defensive rather than load-bearing: reaching it would take the same
+`update_id` being delivered twice despite its offset having been persisted
+first (a rewound `telegram_offset` row, a second poller past the boot advisory
+lock) — see
 [telegram-long-polling-correctness](decisions/telegram-long-polling-correctness.md).
 
 `llm_usage` is therefore read and written on the same path: the ceiling's

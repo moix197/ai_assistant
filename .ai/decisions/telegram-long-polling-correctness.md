@@ -8,14 +8,20 @@ in ways that produce *no error at all*.
 
 1. The poll offset is persisted per update, never batched — and, for a
    `callback_query` update, **after** it is fully handled. 03-agent-core Phase 3
-   carved message updates out of that rule: their offset advances immediately
-   while the handler runs detached, because the approval gate deadlocks
-   otherwise. The reasoning and the trade-off live in
+   carved message updates out of that rule and `07-one-paid-turn-one-outcome`
+   finished the reversal: a message's offset is now persisted *and awaited*
+   **before** its handler is dispatched, and the handler then runs detached,
+   because the approval gate deadlocks otherwise. The reasoning and the
+   trade-off live in
    [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md);
    the section below is why the rule existed and why callbacks still keep it.
 2. Exactly one Hermes process may poll a given bot token, enforced at boot by a
    Postgres session advisory lock on a dedicated connection.
-3. Handlers must be idempotent, because a redelivered update is replayed.
+3. `callback_query` handlers must be idempotent, because a redelivered callback
+   really is replayed: it is handled *before* its offset is written, so a failed
+   `setOffset` re-invokes a handler that already ran. Message handlers are
+   invoked at most once since `07-one-paid-turn-one-outcome` acked them before
+   dispatch — see "Constraints it creates" below.
 
 ## Why offset-after-handling
 
@@ -116,12 +122,18 @@ completed *after* the reply is sent. Two cases, not equally covered:
   had already been dispatched, so the replay's `claim()` found handler #1's
   `pending` row and fail-opened into a second paid turn — is closed by that same
   reorder: a failed ack now replays an update whose handler never ran, making the
-  replay the first paid turn rather than a second one. The fail-open branch stays
-  load-bearing for `callback_query`, which is handled *before* its offset is
-  written and therefore really can be replayed after a partial turn; the cost of
-  that side is bounded and one-shot, one duplicate completion. The dedupe
-  machinery's remaining paid-path job is the deterministic case above:
-  exact-duplicate **delivery** of an already-completed update.
+  replay the first paid turn rather than a second one. The fail-open branch is
+  therefore now **defensive, not load-bearing**, and a `callback_query` replay is
+  not the thing that keeps it alive: `llm_dedupe` is claimed in exactly one place
+  (`apps/hermes/src/handlers/complete.ts`, keyed on `InboundMessage.updateId`),
+  which only message updates reach — `boot.ts` wires `subscribeCallback` straight
+  to `handleApprovalCallback`, so a callback never claims a dedupe key at all,
+  replay or not. Reaching the branch would take the same `update_id` being
+  delivered twice despite its offset having been persisted first, which the
+  poller can no longer produce on its own. The dedupe machinery's remaining
+  paid-path job is the deterministic case above — exact-duplicate **delivery** of
+  an already-completed update — which the primary key closes for free, whether or
+  not any current path can still produce one.
 
 Ordering is what makes both work: recording completion *before* the send would
 mark a turn done that the user never received, converting a rare double charge
