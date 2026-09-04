@@ -375,8 +375,14 @@ Both gates on that path — the dedupe claim and the budget check — are only
 worth anything *before* `complete()`; run either after the call and it records
 the spend it existed to prevent. The two failure shapes are deliberately
 opposite: a breached ceiling **blocks** (fail closed, the operator asked it to
-stop), while a `pending` dedupe row **retries** (fail open, because a wedged
-message is worse than one bounded duplicate charge) — see
+stop), while a `pending` dedupe row stays **claimable** (fail open, because a
+wedged message is worse than one bounded duplicate charge). That fail-open
+branch is not a retry for a message update: its offset is acked before its
+handler is dispatched, so nothing redelivers the update and nothing reaches
+the branch — a `pending` row left by a failed message turn is inert and that
+turn is lost, not retried. The branch earns its keep for `callback_query`,
+which is handled before its offset is written and therefore really can be
+replayed after a partial turn — see
 [telegram-long-polling-correctness](decisions/telegram-long-polling-correctness.md).
 
 `llm_usage` is therefore read and written on the same path: the ceiling's
@@ -388,9 +394,13 @@ call's cost of the cap rather than stopping exactly at it.
 
 For a `callback_query`, the offset write is still the last step of handling the
 update, and a throwing callback handler aborts the rest of the batch so no later
-update's offset can leapfrog the one that failed. For a message it is the
-*first* step: the handler runs detached and its failures are logged, never
-retried, and never allowed to stop the batch. Both halves of that asymmetry are
+update's offset can leapfrog the one that failed. For a message it is strictly
+the *first* step: since `07-one-paid-turn-one-outcome`, `setOffset` is awaited
+to completion **before** `dispatchMessage` is invoked, so a failed ack replays
+an update whose handler never ran, and a successful ack means no redelivery can
+race the still-running handler. The handler itself is still never awaited; it
+runs detached and its failures are logged, never retried, and never allowed to
+stop the batch. Both halves of that asymmetry are
 load-bearing — see
 [poller-concurrent-message-dispatch](decisions/poller-concurrent-message-dispatch.md).
 

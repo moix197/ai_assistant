@@ -93,8 +93,10 @@ describe.skipIf(!testDatabaseUrl)(
         dedupeRepo,
       });
 
-      // Redelivery of the same update_id after the simulated crash: the
-      // retry must proceed (fail-open), not be permanently blocked.
+      // A second claim of the same key after the simulated crash — the
+      // DB-level fail-open branch must proceed, not permanently block. What
+      // reaches it is a `callback_query` replay; a message update is acked
+      // before its handler is dispatched, so its `pending` row is inert.
       await handler(inboundMessage(9002));
 
       expect(calls.count).toBe(1);

@@ -142,8 +142,9 @@ see `packages/channels/README.md`'s `InboundMessage.updateId`.
   - the row is `completed` -> `{status: "completed", resultText}`, the
     stored reply from the original call — the handler replies with this
     directly and never calls the provider again
-  - the row is still `pending` -> `{status: "claimed"}` **again** — see
-    "Claim-to-complete crash window" below
+  - the row is still `pending` -> `{status: "claimed"}` **again** — the
+    deliberate fail-open branch; see "Claim-to-complete crash window" below
+    for who actually reaches it
 - `complete(pool, dedupeKey, resultText)` — marks the row `completed` and
   stores `resultText`, called by the handler strictly *after* the reply is
   sent, never before.
@@ -153,10 +154,18 @@ see `packages/channels/README.md`'s `InboundMessage.updateId`.
 There is a real window between `claim()` returning `{status: "claimed"}` and
 the later `complete()` call landing: a crash anywhere in that window
 (mid-provider-call, mid-reply-send, or between reply-send and the
-`complete()` write) leaves the row `pending`. On restart, Telegram redelivers
-the same `update_id`, `claim()` sees `pending`, and returns
-`{status: "claimed"}` again — **the retry proceeds and may issue a second
-real paid call.**
+`complete()` write) leaves the row `pending`. If that key is ever claimed
+again, `claim()` sees `pending` and returns `{status: "claimed"}` again — the
+fail-open branch — and a second real paid call can follow.
+
+**Whether anything claims it again depends on the update kind.** For a
+`telegram:<updateId>` key from a *message* update, nothing does: the poller
+persists the offset and awaits it *before* dispatching the handler
+(`07-one-paid-turn-one-outcome`), Telegram never redelivers an acked
+`update_id`, and no other code path claims that key — so the row is **inert**
+and the turn is simply lost, not retried. A `callback_query` is handled
+*before* its offset is written, so its replay is real, and the fail-open
+branch is what keeps such an update from wedging.
 
 This is deliberately **fail-open (retry), not fail-closed (permanently
 block)**: a chat assistant that permanently wedges a user's message because
@@ -180,8 +189,8 @@ here: a finer-grained schema — e.g. an `attempt` counter or a richer status
 enum (`pending` -> `provider_called` -> `completed`) — letting a resumed
 process distinguish "claimed but the provider was never called" from "the
 provider call was actually issued and may have succeeded" before deciding to
-retry, enabling true exactly-once completion detection instead of today's
-at-most-one-retry-on-crash behavior. This mirrors how `telegram_offset`'s
+re-run it, enabling true exactly-once completion detection instead of today's
+fail-open reclaim behavior. This mirrors how `telegram_offset`'s
 at-least-once contract (above) is documented as an accepted gap rather than
 hidden.
 
@@ -530,7 +539,7 @@ time.
 
 `src/__tests__/llm-dedupe-repo.test.ts` is integration-only, gated the same
 way: a first `claim` returns `claimed`; a second `claim` on the same
-still-`pending` key also returns `claimed` (the documented retry case);
+still-`pending` key also returns `claimed` (the documented fail-open branch);
 after `complete()`, a further `claim` returns `completed` with the stored
 `resultText`; and a raw duplicate `INSERT` on the same `dedupe_key`
 (bypassing `claim`'s `ON CONFLICT`) is rejected by the primary-key constraint
@@ -584,7 +593,7 @@ registered.
 
 `src/__tests__/sheet-write-log-repo.test.ts` is integration-only, gated the
 same way: `claim` on a fresh key returns `"claimed"`; a repeat `claim` on the
-same key before `complete()` also returns `"claimed"` (the pending-retry
+same key before `complete()` also returns `"claimed"` (the pending fail-open
 case); after `complete()`, a further `claim` returns `{alreadyComplete: true,
 outcome}` with the stored outcome.
 

@@ -5,9 +5,24 @@ the two inbound kinds differently. A `callback_query` update is still awaited
 inline and its offset persisted only after its handler resolves — the original
 at-least-once contract, unchanged. A `message`/`edited_message` update is handed
 to `dispatchMessage` **without the loop awaiting it**, and
-`setOffset(update_id + 1)` runs immediately, while the handler is still running.
-`stop()` drains those detached dispatches (`inFlightDispatches`) before it
-resolves.
+`setOffset(update_id + 1)` runs immediately — originally right after firing the
+dispatch, and since `07-one-paid-turn-one-outcome` awaited to completion
+*before* the dispatch is fired (see the amendment below). Either way the loop
+never waits on the handler. `stop()` drains those detached dispatches
+(`inFlightDispatches`) before it resolves.
+
+**Amended by `07-one-paid-turn-one-outcome`: ack before dispatch.** Only the
+ack's position relative to the fire moved; the dispatch is still never awaited,
+for exactly the deadlock reason below. The reason for the move is money: with
+dispatch-then-ack, a `setOffset` rejection (a DB blip, pool exhaustion, a
+failover) abandoned the batch un-acked while handler #1 was already running
+against the provider, so the redelivered update dispatched a *second* paid
+handler whose `claim()` found handler #1's `pending` row and fail-opened. With
+ack-then-dispatch, a failed ack means nothing was dispatched and nothing was
+paid for, and a successful ack means no redelivery can race the still-running
+handler. The trade-off below is unchanged — the loss window just moves earlier
+by microseconds, from "crash after the fire" to "crash between the ack and the
+fire".
 
 **Why:** Phase 3's approval gate made the old "await every handler" loop
 **deadlock, deterministically** — not race, deadlock. A gated tool call parks
@@ -50,8 +65,14 @@ at all. Two things bound the damage:
 
 - The **double-processing** side is still guarded — `apps/hermes/src/handlers/
   complete.ts`'s `llm_dedupe` claim keys on `telegram:<updateId>`, so an
-  exact-duplicate delivery still costs zero provider calls. Nothing guards the
-  **loss** side; there is nothing left to guard it with.
+  exact-duplicate delivery still costs zero provider calls. That was optimistic
+  until `07-one-paid-turn-one-outcome`: it was false in exactly one case — the
+  `setOffset`-failure replay above, where the duplicate delivery raced a handler
+  that had already claimed the key, so `claim()` fail-opened and a second paid
+  turn ran. Acking before dispatch removes that case, because a replay can now
+  only ever carry an update whose handler never ran; from this plan onward the
+  claim holds unconditionally for message updates. Nothing guards the **loss**
+  side; there is nothing left to guard it with.
 - `dispatchMessage` catches its own failures and logs them at `error`
   ("message handler failed after its offset was already advanced, not retried")
   rather than swallowing them. That log line is the only remaining evidence such

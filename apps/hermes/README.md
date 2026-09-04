@@ -532,7 +532,13 @@ here in `apps/hermes`.
 
 - `complete.ts` — the dispatcher's fallthrough and the only handler that
   spends money. Claims `telegram:<updateId>` in `llm_dedupe` before the
-  agent turn and marks it completed after the reply lands.
+  agent turn and marks it completed after the reply lands. Since
+  `07-one-paid-turn-one-outcome` it sends distinct Spanish copy for a
+  partial send (`TelegramPartialSendError`, an earlier chunk landed) and for
+  a max-iterations stop (`MaxIterationsReachedError`), routes every notice
+  send through one `sendUserNotice` guard so a user who blocked the bot
+  produces a single `warn` instead of an escaped, mislabeled error, and
+  records dedupe completion only when a reply actually reached the user.
 - `connect.ts` — `/connect google` requests `IDENTITY_SCOPES`; `/connect
   google sheets` (`05-google-sheets` Phase 2, case-insensitive, whitespace
   trimmed) requests identity plus `SHEETS_SCOPES`. Both forms and the

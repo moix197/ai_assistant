@@ -100,17 +100,28 @@ completed *after* the reply is sent. Two cases, not equally covered:
   deterministically. `llm_dedupe.dedupe_key` is a primary key, so uniqueness is a
   Postgres guarantee, not an application check-then-insert race; the replay
   resends the stored reply and makes zero provider calls.
-- **A crash between claim and complete** — *not* closed. **Named accepted risk.**
-  The row is left `pending`, and a `pending` row is claimable again: a redelivery
-  runs the call a second time. Fail-**open** on purpose. Fail-closed would wedge
-  that message permanently — no reply, no way to retry — and by construction it
-  is a message the user is waiting on. The cost of the chosen side is bounded
-  and one-shot: one duplicate completion, at development message volumes.
-  Since Phase 3 detached message dispatch, a *crash* mid-turn no longer produces
-  that redelivery at all — the offset was already advanced, so the update is
-  gone and the `pending` row is simply never reclaimed. The dedupe machinery now
-  earns its keep against exact-duplicate **delivery** (a `setOffset` that itself
-  failed, replaying the batch), not against the crash window.
+- **A failure between claim and complete** — no longer a double-charge for a
+  message update, and never fully closed as exactly-once. The row is left
+  `pending`, and `claim()` fail-**opens** on a `pending` row: it returns
+  `{status: "claimed"}` again rather than wedging that message permanently — no
+  reply, no way to retry — on a message the user is waiting on by construction.
+  **What differs is whether anything ever reaches that branch.** For a *message*
+  update nothing does: `03-agent-core` Phase 3 detached message dispatch and
+  `07-one-paid-turn-one-outcome` moved the ack strictly ahead of it, so by the
+  time a crash, a thrown handler, a 403, a partial send or a max-iterations stop
+  leaves the row `pending`, the `update_id` is permanently acked, Telegram will
+  not redeliver it, and nothing else claims that key — the row is inert and the
+  turn is lost, logged and not retried. The one case that *did* reach the branch
+  — a `setOffset` that itself failed, replaying a batch whose message handlers
+  had already been dispatched, so the replay's `claim()` found handler #1's
+  `pending` row and fail-opened into a second paid turn — is closed by that same
+  reorder: a failed ack now replays an update whose handler never ran, making the
+  replay the first paid turn rather than a second one. The fail-open branch stays
+  load-bearing for `callback_query`, which is handled *before* its offset is
+  written and therefore really can be replayed after a partial turn; the cost of
+  that side is bounded and one-shot, one duplicate completion. The dedupe
+  machinery's remaining paid-path job is the deterministic case above:
+  exact-duplicate **delivery** of an already-completed update.
 
 Ordering is what makes both work: recording completion *before* the send would
 mark a turn done that the user never received, converting a rare double charge
@@ -139,15 +150,19 @@ Don't build it without a real incident.
 
 **Constraints it creates:**
 
-- **Every handler must tolerate being invoked twice for the same update.** Echo,
-  `/ping` and `/start` are safe by inspection (a duplicate reply is visible and
-  harmless). Any handler with an external side effect MUST carry its own
-  idempotency key. This decision does not solve idempotency generally, only for
-  reply-only handlers. Still required after Phase 3: a failed `setOffset`
-  replays the batch even though a crash no longer does.
+- **Every `callback_query` handler must tolerate being invoked twice for the
+  same update.** A callback is handled *before* its offset is written, so a
+  failed `setOffset` re-invokes a handler that already ran. **This no longer
+  applies to message updates** (`07-one-paid-turn-one-outcome`): a message is
+  acked before it is dispatched, so a failed ack replays an update whose handler
+  never started, and a successful ack rules out redelivery entirely — a message
+  handler is invoked at most once. Echo, `/ping` and `/start` are safe by
+  inspection either way (a duplicate reply is visible and harmless). Any handler
+  with an external side effect MUST carry its own idempotency key. This decision
+  does not solve idempotency generally, only for reply-only handlers.
 - **A message handler must also tolerate never being invoked again.** Its
-  update's offset advances while it runs, so a failure or a crash is terminal
-  for that update — nothing retries it. See
+  update's offset is already acked when it starts, so a failure or a crash is
+  terminal for that update — nothing retries it. See
   [poller-concurrent-message-dispatch](poller-concurrent-message-dispatch.md).
 - **`InboundMessage` carries `updateId`** so a paid handler can derive one.
   Required, not optional: an absent id would collapse every such message to the
