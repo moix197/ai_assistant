@@ -374,9 +374,6 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
           body.reply_markup = options.replyMarkup;
         }
         try {
-          // Safe to treat `index` as the exact delivered count only because
-          // this loop is strictly sequential: each chunk fully resolves
-          // before the next one starts.
           lastMessage = await callWithRetry<TelegramMessage>(
             fetchImpl,
             token,
@@ -385,6 +382,9 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
             SEND_MESSAGE_TIMEOUT_MS,
           );
         } catch (error) {
+          // Safe to treat `index` as the exact delivered count only because
+          // this loop is strictly sequential: each chunk fully resolves
+          // before the next one starts.
           if (index === 0) {
             // Zero chunks delivered — a total failure, not a partial one.
             throw error;

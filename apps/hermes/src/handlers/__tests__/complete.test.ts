@@ -6,14 +6,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../agent/build-agent";
 import {
   EMPTY_REPLY_FALLBACK,
+  GENERIC_FAILURE_REPLY,
   type LlmDedupeRepo,
   MAX_ITERATIONS_REPLY,
   PARTIAL_SEND_NOTICE,
   createCompletionHandler,
 } from "../complete";
-
-const GENERIC_FAILURE_REPLY =
-  "Sorry, I couldn't process that message right now. Please try again in a moment.";
 
 const ALLOWED_ID = 111;
 
@@ -164,9 +162,7 @@ describe("createCompletionHandler", () => {
     ];
     expect(replyText).toMatch(/budget/i);
     expect(replyText).not.toMatch(/\$5/);
-    expect(replyText).not.toBe(
-      "Sorry, I couldn't process that message right now. Please try again in a moment.",
-    );
+    expect(replyText).not.toBe(GENERIC_FAILURE_REPLY);
   });
 
   it.each([
@@ -206,10 +202,7 @@ describe("createCompletionHandler", () => {
     await expect(handler(inboundMessage())).resolves.toBeUndefined();
 
     expect(channel.send).toHaveBeenCalledWith("555", MAX_ITERATIONS_REPLY);
-    expect(channel.send).not.toHaveBeenCalledWith(
-      "555",
-      "Sorry, I couldn't process that message right now. Please try again in a moment.",
-    );
+    expect(channel.send).not.toHaveBeenCalledWith("555", GENERIC_FAILURE_REPLY);
     expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", MAX_ITERATIONS_REPLY);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.any(String),
@@ -283,7 +276,11 @@ describe("createCompletionHandler", () => {
     expect(channel.send).toHaveBeenCalledTimes(2);
     expect(channel.send).not.toHaveBeenCalledWith("555", GENERIC_FAILURE_REPLY);
     expect(dedupeRepo.complete).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ partsSent: 1, totalParts: 3 }),
+    );
   });
 
   it("falls through to the ordinary generic-failure reply, unchanged, on a total (first-chunk) send failure", async () => {

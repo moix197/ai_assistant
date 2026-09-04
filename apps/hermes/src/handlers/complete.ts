@@ -20,7 +20,7 @@ export interface LlmDedupeRepo {
 }
 
 /** Never leaks a stack trace or provider error detail into chat. */
-const GENERIC_FAILURE_REPLY =
+export const GENERIC_FAILURE_REPLY =
   "Sorry, I couldn't process that message right now. Please try again in a moment.";
 
 /**
@@ -204,18 +204,19 @@ async function replyWithCompletion(
       throw error;
     }
 
-    options.logger.warn("reply send failed partway through a multi-part message", {
+    const delivered = await sendUserNotice(options, message, PARTIAL_SEND_NOTICE, {
       channelUserId: message.channelUserId,
       dedupeKey,
       partsSent: error.partsSent,
       totalParts: error.totalParts,
     });
-
-    const delivered = await sendUserNotice(options, message, PARTIAL_SEND_NOTICE, {
-      channelUserId: message.channelUserId,
-      dedupeKey,
-    });
     if (delivered) {
+      options.logger.warn("reply send failed partway through a multi-part message", {
+        channelUserId: message.channelUserId,
+        dedupeKey,
+        partsSent: error.partsSent,
+        totalParts: error.totalParts,
+      });
       await recordDedupeCompletion(
         options.dedupeRepo,
         options.logger,
