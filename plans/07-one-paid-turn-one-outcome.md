@@ -455,30 +455,30 @@ accepted as impractical.
 |---|---|---|
 | modify | `packages/channels/src/telegram/client.ts` | Add `export class TelegramPartialSendError extends Error { readonly partsSent: number; readonly totalParts: number; constructor(message: string, info: { partsSent: number; totalParts: number }) { super(message); this.name = "TelegramPartialSendError"; this.partsSent = info.partsSent; this.totalParts = info.totalParts; } }` near `TelegramApiError` (L130-142). In `sendMessage`'s chunk loop (L351-364), wrap the `callWithRetry` call in try/catch: if it throws and `index > 0` (an earlier chunk already landed), throw `new TelegramPartialSendError(...)` instead, carrying `partsSent: index` and `totalParts: parts.length`; if `index === 0`, rethrow the original error unchanged — **a first-chunk failure is a total failure, not a partial one**: zero chunks reached the user, so the generic "something went wrong" reply is the *correct* outcome there and today's behavior is untouched. `partsSent` **is** the delivered count (it equals `index`, the number of chunks that fully resolved before the failure, and is `>= 1` by construction since `index === 0` never reaches this throw) — no separate `deliveredCount` field is added, since a second name for the same number is exactly the kind of drift-inviting duplication CLAUDE.md warns about. Fold the underlying error's message into the new error's `message` string so the `TelegramApiError` detail (status, error code) is not lost to the logs when the wrapper replaces it. One-line comment noting this is only correct because the loop is strictly sequential (`client.ts:351-364` — verified: `await callWithRetry(...)` sits directly in the `for` body, one chunk fully resolving before the next starts; see Dependencies & Risks) |
 | modify | `packages/channels/src/index.ts` | Add `TelegramPartialSendError` to the existing named export list from `./telegram/client`, alongside `TelegramApiError` |
-| modify | `apps/hermes/src/handlers/complete.ts` | Import `TelegramPartialSendError` from `@hermes/channels`. Add `export const PARTIAL_SEND_NOTICE = "Se cortó la respuesta a la mitad. Pídemelo de nuevo, o en partes más chicas."` beside the other constants. In `replyWithCompletion` (L99-123, now already carrying Phase 2's try/catch around the agent call), wrap the existing `await options.channel.send(message.chatId, resultText)` call in its own try/catch: on `TelegramPartialSendError`, `logger.warn` with `{channelUserId: message.channelUserId, dedupeKey, partsSent: error.partsSent, totalParts: error.totalParts}`** — same scoping note as Phase 2: no local `channelUserId` in `replyWithCompletion`, only `message.channelUserId` **, then `const delivered = await sendUserNotice(...PARTIAL_SEND_NOTICE...)` — **reusing Phase 2's helper, not a second inline try/catch** — and only if `delivered`, `await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, PARTIAL_SEND_NOTICE)`, then `return`. **This is the answer to "what if the cut-off notice itself fails?":** the helper swallows it into one `warn`, the row is left `pending` (per the locked rule), the user keeps the partial answer they already received, and — critically — they are **not** then also sent `GENERIC_FAILURE_REPLY`, which is what would happen if this second send were left unguarded to fall through to `handleCompletion`'s catch. Any other error from the first send rethrows unchanged so `replyWithFailureNotice` still handles a total send failure exactly as before |
+| modify | `apps/hermes/src/handlers/complete.ts` | Import `TelegramPartialSendError` from `@hermes/channels`. Add `export const PARTIAL_SEND_NOTICE = "Se cortó la respuesta a la mitad. Pídemelo de nuevo, o en partes más chicas."` beside the other constants. In `replyWithCompletion` (L99-123, now already carrying Phase 2's try/catch around the agent call), wrap the existing `await options.channel.send(message.chatId, resultText)` call in its own try/catch: on `TelegramPartialSendError`, `logger.warn` with `{channelUserId: message.channelUserId, dedupeKey, partsSent: error.partsSent, totalParts: error.totalParts}`** — same scoping note as Phase 2: no local `channelUserId` in `replyWithCompletion`, only `message.channelUserId` **, then `const delivered = await sendUserNotice(...PARTIAL_SEND_NOTICE...)` — **reusing Phase 2's helper, not a second inline try/catch** — and only if `delivered`, `await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, PARTIAL_SEND_NOTICE)`, then `return`. **This is the answer to "what if the cut-off notice itself fails?":** the helper swallows it into one `warn`, the row is left `pending` (per the locked rule), the user keeps the partial answer they already received, and — critically — they are **not** then also sent `GENERIC_FAILURE_REPLY`, which is what would happen if this second send were left unguarded to fall through to `handleCompletion`'s catch. **Resolved during execution (code review, Phase 3):** this phase's File-changes prose put the informational `logger.warn` *unconditionally before* `sendUserNotice`, contradicting this phase's own "exactly one `warn`" success criterion — the same contradiction Phase 2 carried, but initially resolved here in the opposite direction, leaving two sibling catch blocks in `replyWithCompletion` logging differently for structurally identical situations. Unified on Phase 2's shape: the informational warn is gated on `delivered === true` and `partsSent`/`totalParts` are passed into `sendUserNotice`'s own `context`, so exactly one warn fires per outcome with no diagnostics lost on either path. `GENERIC_FAILURE_REPLY` was also exported so the tests assert against the real constant instead of a re-declared literal. Any other error from the first send rethrows unchanged so `replyWithFailureNotice` still handles a total send failure exactly as before |
 | modify | `packages/channels/README.md` | Verified: the port's `send(target, text, options?)` bullet (**L28-31**) documents only the return value (`Promise<{ messageId: string }>`) and `options.buttons` — no throw contract. The nearest existing prose is the retry-class paragraph at **L66-78**, which says the client "rethrows to the poller's own retry loop" after bounded retries, but says nothing about *partial* delivery, so a caller today cannot tell "nothing was sent" from "half was sent." Add to the `send` bullet: `send` can throw a plain error (total failure — nothing delivered) or, for the Telegram implementation specifically, `TelegramPartialSendError` when an earlier chunk of a multi-part message already landed before a later one failed — callers that care about the distinction should check `instanceof TelegramPartialSendError` |
 
 **Steps:**
 
-- [ ] Write the client-level test first: a 3-chunk send whose 2nd
+- [x] Write the client-level test first: a 3-chunk send whose 2nd
       `callWithRetry` call rejects — assert the thrown error is a
       `TelegramPartialSendError` with `partsSent: 1, totalParts: 3` (not the
       underlying error), while a 1-chunk (or first-chunk) failure still
       throws the original, unwrapped error
-- [ ] Write the `complete.ts`-level test: `channel.send` rejects with a
+- [x] Write the `complete.ts`-level test: `channel.send` rejects with a
       `TelegramPartialSendError` on the first call — assert a *second*
       `channel.send` call with the exact `PARTIAL_SEND_NOTICE` text,
       `dedupeRepo.complete` called with `("telegram:1", PARTIAL_SEND_NOTICE)`,
       and no call ever reaches `replyWithFailureNotice`'s generic text
-- [ ] Confirm a *total* send failure (a plain `Error` from `channel.send`,
+- [x] Confirm a *total* send failure (a plain `Error` from `channel.send`,
       first chunk) still falls through to the existing generic-failure path
       unchanged — regression case in the same test file
-- [ ] Write the double-failure test: `channel.send` rejects with
+- [x] Write the double-failure test: `channel.send` rejects with
       `TelegramPartialSendError` on the first call **and** rejects again on
       the notice send — assert exactly one `warn` from `sendUserNotice`,
       `dedupeRepo.complete` never called, `GENERIC_FAILURE_REPLY` never
       sent, and the handler's promise resolves
-- [ ] Confirm the Spanish copy uses tuteo, matching the existing precedents
+- [x] Confirm the Spanish copy uses tuteo, matching the existing precedents
 
 **Tests:**
 
@@ -489,11 +489,11 @@ accepted as impractical.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/channels test` green
-- [ ] `pnpm --filter hermes test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/channels test` green
+- [x] `pnpm --filter hermes test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [~] Manual live trigger of a genuine mid-send failure — accepted as
       impractical to force against the real Telegram API on demand; unit
       tests above are the accepted bar for this phase (see HIL Prerequisites)
@@ -503,12 +503,12 @@ accepted as impractical.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat(hermes): typed partial-send signal and spanish cut-off notice`
+- [x] Changes committed: `feat(hermes): typed partial-send signal and spanish cut-off notice`
 - [ ] Phase marked complete
 
 ---
