@@ -258,19 +258,19 @@ Steps).
 
 **Steps:**
 
-- [ ] Write the "setOffset rejects → handler never called" test *first*
+- [x] Write the "setOffset rejects → handler never called" test *first*
       against the pre-fix code, prove it currently fails (today, the old
       dispatch-then-ack order calls the handler regardless of `setOffset`'s
       outcome), then reorder the code and prove it passes
-- [ ] Write the "clean single redelivery" test: same rejected-`setOffset`
+- [x] Write the "clean single redelivery" test: same rejected-`setOffset`
       setup, then a fresh `getUpdates` response carrying the same
       `update_id` — assert the handler fires exactly once for that update,
       not zero and not twice
-- [ ] Write the call-order assertion for the success path (setOffset
+- [x] Write the call-order assertion for the success path (setOffset
       resolves fully before dispatch begins) — this is the property the
       whole fix rests on, so assert it directly rather than only inferring
       it from the failure-path tests
-- [ ] **Preserve batch-abort semantics — assert them, don't assume them.**
+- [x] **Preserve batch-abort semantics — assert them, don't assume them.**
       The shared catch (L293-308) ends in `return;` (L306-307): a rejected
       `setOffset` (or `handleCallback`) exits `pollOnce` **entirely**, it
       does not `break`/`continue` within the `for` loop. Since `offset` was
@@ -281,7 +281,7 @@ Steps).
       `return` into a `continue`, and must not introduce a per-branch catch.
       Add an assertion to the new test file: a 2-update batch whose first
       update's `setOffset` rejects dispatches **neither** update's handler
-- [ ] Confirm `poller.test.ts`'s existing message-branch tests pass
+- [x] Confirm `poller.test.ts`'s existing message-branch tests pass
       unmodified — L148-192 ("still advances the offset when a message
       handler throws"), L194-223 ("keeps processing the rest of a batch
       after a message handler throws"), and L230-304 (the malformed-update
@@ -292,12 +292,12 @@ Steps).
       reorder should not require editing them; if any turns out to assert
       ordering implicitly (e.g. via mock call sequence), update it minimally
       and note why in this file
-- [ ] Confirm `poller-offset-ordering.test.ts` passes with **zero edits** —
+- [x] Confirm `poller-offset-ordering.test.ts` passes with **zero edits** —
       it is genuinely callback-only (`describe("createTelegramPoller —
       offset persistence ordering (callback_query)")`, L48; both `it`s use
       `makeCallbackUpdate`), exercising the offset-after-handling guarantee
       this phase does not touch
-- [ ] **`poller-crash-replay.test.ts` is *not* callback-only — its
+- [x] **`poller-crash-replay.test.ts` is *not* callback-only — its
       assertions survive, its comment does not.** Its first describe
       (L53-140) is callback_query-only crash-replay, untouched. Its second
       (L142-186, "message offset advances without waiting for its handler")
@@ -311,7 +311,7 @@ Steps).
       that comment in this phase — a comment-only edit, no assertion
       touched — and say so here rather than claiming the file needs zero
       edits
-- [ ] Confirm `poller.ts`'s catch-block comment (L294-295, "Only a
+- [x] Confirm `poller.ts`'s catch-block comment (L294-295, "Only a
       callback_query's handleCallback (or offsetRepo.setOffset itself) can
       land here now") is still accurate after the reorder — it should be,
       since `trackDispatch(dispatchMessage(update))` still cannot throw
@@ -326,10 +326,10 @@ Steps).
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/channels test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter @hermes/channels test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [ ] Manual: send an ordinary message to the real bot in Telegram and
       confirm a normal reply still arrives — the reorder should be
       invisible on the golden path
@@ -339,12 +339,12 @@ Steps).
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
+- [x] Code-reviewer agent has verified this phase
 - [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `fix(channels): ack telegram message offset before dispatching its handler`
+- [x] Changes committed: `fix(channels): ack telegram message offset before dispatching its handler`
 - [ ] Phase marked complete
 
 ---
