@@ -141,6 +141,25 @@ export class TelegramApiError extends Error {
   }
 }
 
+/**
+ * Thrown by `sendMessage` when a multi-part chunked send fails partway
+ * through: an earlier chunk already reached the user before a later one
+ * failed. Distinguishes "the user got nothing" (a plain/`TelegramApiError`
+ * failure on the first chunk) from "the user got the first N of M chunks"
+ * so callers can send a cut-off notice instead of the generic failure reply.
+ */
+export class TelegramPartialSendError extends Error {
+  readonly partsSent: number;
+  readonly totalParts: number;
+
+  constructor(message: string, info: { partsSent: number; totalParts: number }) {
+    super(message);
+    this.name = "TelegramPartialSendError";
+    this.partsSent = info.partsSent;
+    this.totalParts = info.totalParts;
+  }
+}
+
 function redact(value: string, token: string): string {
   return value.split(token).join(REDACTED_TOKEN);
 }
@@ -354,13 +373,28 @@ export function createTelegramClient(options: TelegramClientOptions): TelegramCl
         if (isLast && options?.replyMarkup) {
           body.reply_markup = options.replyMarkup;
         }
-        lastMessage = await callWithRetry<TelegramMessage>(
-          fetchImpl,
-          token,
-          "sendMessage",
-          body,
-          SEND_MESSAGE_TIMEOUT_MS,
-        );
+        try {
+          // Safe to treat `index` as the exact delivered count only because
+          // this loop is strictly sequential: each chunk fully resolves
+          // before the next one starts.
+          lastMessage = await callWithRetry<TelegramMessage>(
+            fetchImpl,
+            token,
+            "sendMessage",
+            body,
+            SEND_MESSAGE_TIMEOUT_MS,
+          );
+        } catch (error) {
+          if (index === 0) {
+            // Zero chunks delivered — a total failure, not a partial one.
+            throw error;
+          }
+          const underlyingMessage = error instanceof Error ? error.message : String(error);
+          throw new TelegramPartialSendError(
+            `sendMessage delivered ${index} of ${parts.length} parts before failing: ${underlyingMessage}`,
+            { partsSent: index, totalParts: parts.length },
+          );
+        }
       }
       // `parts` is never empty — chunkText always returns at least one part,
       // even for an empty string — so lastMessage is always assigned here.

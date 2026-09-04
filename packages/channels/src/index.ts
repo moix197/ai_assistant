@@ -15,6 +15,7 @@ export { chunkText } from "./telegram/chunk";
 export {
   createTelegramClient,
   TelegramApiError,
+  TelegramPartialSendError,
   type GetUpdatesParams,
   type SendMessageOptions,
   type TelegramCallbackQuery,

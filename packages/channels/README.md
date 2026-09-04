@@ -31,7 +31,12 @@ implements:
   `{ label, callbackData }`, Phase 3) attaches an inline keyboard — only
   meaningful on a channel whose `capabilities.buttons` is true. Additive over
   the pre-Phase-3 shape: a caller that passes no `options` and ignores the
-  return value is unaffected.
+  return value is unaffected. `send` can throw a plain error (total
+  failure — nothing delivered) or, for the Telegram implementation
+  specifically, `TelegramPartialSendError` when an earlier chunk of a
+  multi-part message already landed before a later one failed — callers that
+  care about the distinction should check `instanceof
+  TelegramPartialSendError` (`07-one-paid-turn-one-outcome` Phase 3).
 - `subscribeCallback(handler)`, `editMessage(target, messageId, text)`,
   `answerCallback(callbackId, text?)` (Phase 3, all optional on the `Channel`
   port) — the inline-keyboard surface `apps/hermes/src/agent/

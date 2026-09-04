@@ -1,5 +1,5 @@
 import { MaxIterationsReachedError } from "@hermes/agent";
-import type { Channel, InboundMessage } from "@hermes/channels";
+import { type Channel, type InboundMessage, TelegramPartialSendError } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError, LlmHttpError, LlmTimeoutError } from "@hermes/llm";
 import { describe, expect, it, vi } from "vitest";
@@ -8,8 +8,12 @@ import {
   EMPTY_REPLY_FALLBACK,
   type LlmDedupeRepo,
   MAX_ITERATIONS_REPLY,
+  PARTIAL_SEND_NOTICE,
   createCompletionHandler,
 } from "../complete";
+
+const GENERIC_FAILURE_REPLY =
+  "Sorry, I couldn't process that message right now. Please try again in a moment.";
 
 const ALLOWED_ID = 111;
 
@@ -230,6 +234,73 @@ describe("createCompletionHandler", () => {
       expect.any(String),
       expect.objectContaining({ iterations: 12, totalCostUsd: 1.23 }),
     );
+  });
+
+  it("sends the exact PARTIAL_SEND_NOTICE text and records dedupe completion when the reply send fails with TelegramPartialSendError", async () => {
+    const channel = createMockChannel();
+    (channel.send as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(
+        new TelegramPartialSendError("delivered 1 of 3 parts before failing: boom", {
+          partsSent: 1,
+          totalParts: 3,
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(channel.send).toHaveBeenNthCalledWith(2, "555", PARTIAL_SEND_NOTICE);
+    expect(channel.send).not.toHaveBeenCalledWith("555", GENERIC_FAILURE_REPLY);
+    expect(dedupeRepo.complete).toHaveBeenCalledWith("telegram:1", PARTIAL_SEND_NOTICE);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ partsSent: 1, totalParts: 3 }),
+    );
+  });
+
+  it("never records dedupe completion and never sends the generic failure text when the cut-off notice itself also fails to send", async () => {
+    const channel = createMockChannel();
+    (channel.send as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(
+        new TelegramPartialSendError("delivered 1 of 3 parts before failing: boom", {
+          partsSent: 1,
+          totalParts: 3,
+        }),
+      )
+      .mockRejectedValueOnce(new Error("bot blocked"));
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(channel.send).not.toHaveBeenCalledWith("555", GENERIC_FAILURE_REPLY);
+    expect(dedupeRepo.complete).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("falls through to the ordinary generic-failure reply, unchanged, on a total (first-chunk) send failure", async () => {
+    const channel = createMockChannel();
+    (channel.send as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
+    const logger = createMockLogger();
+    const agent = createMockAgent();
+    const dedupeRepo = createPermissiveDedupeRepo();
+    const handler = createCompletionHandler({ channel, agent, logger, dedupeRepo });
+
+    await expect(handler(inboundMessage())).resolves.toBeUndefined();
+
+    // Two calls total: the failed send attempt, then the ordinary
+    // generic-failure reply — same shape as any other total-failure path.
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(channel.send).toHaveBeenNthCalledWith(2, "555", GENERIC_FAILURE_REPLY);
+    expect(dedupeRepo.complete).not.toHaveBeenCalled();
   });
 
   it("ignores an edited message, no agent call", async () => {

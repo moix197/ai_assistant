@@ -169,6 +169,29 @@ one `logger.warn` per outcome — but the delivery-failure warn inside
 in via its `context` argument), so the cost figures are never lost even when
 the notice itself fails to reach the user.
 
+### Partial-send notice (`07-one-paid-turn-one-outcome` Phase 3)
+
+A long reply is chunked and sent as multiple Telegram messages
+(`packages/channels`' `sendMessage`, `chunk.ts`). If an earlier chunk lands
+but a later one fails, that's not a total failure — the user already
+received real content, so `sendMessage` throws a distinguishable
+`TelegramPartialSendError` (`partsSent`/`totalParts`) instead of the plain
+error a first-chunk failure still throws unwrapped (zero chunks delivered
+there, so the ordinary generic-failure path is correct and untouched).
+`complete.ts` catches it by `instanceof` around the reply send in
+`replyWithCompletion` and replies with its own distinct Spanish text —
+`PARTIAL_SEND_NOTICE = "Se cortó la respuesta a la mitad. Pídemelo de nuevo,
+o en partes más chicas."` — never `GENERIC_FAILURE_REPLY`.
+
+Sending that notice reuses the same `sendUserNotice` helper the
+max-iterations notice above uses, so the same rule applies: the dedupe row
+is recorded `completed` with `PARTIAL_SEND_NOTICE` as the stored text only
+when the notice itself is delivered; if it also fails, the row is left
+`pending`, exactly one `logger.warn` fires (from `sendUserNotice`), and —
+critically — the user is **not** then also sent `GENERIC_FAILURE_REPLY`,
+which is what would happen if this second send fell through unguarded to
+`handleCompletion`'s catch.
+
 ## Approval gate
 
 `echo` and `sheets_write` are the two tools this codebase ships with

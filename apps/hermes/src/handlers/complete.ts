@@ -1,5 +1,5 @@
 import { MaxIterationsReachedError } from "@hermes/agent";
-import type { Channel, InboundMessage } from "@hermes/channels";
+import { type Channel, type InboundMessage, TelegramPartialSendError } from "@hermes/channels";
 import type { Logger } from "@hermes/core";
 import { BudgetExceededError } from "@hermes/llm";
 import type { LlmDedupeClaimResult } from "@hermes/store";
@@ -54,6 +54,16 @@ export const EMPTY_REPLY_FALLBACK =
  */
 export const MAX_ITERATIONS_REPLY =
   "Esto se alargó demasiado y no llegué a una respuesta final. Pídemelo de nuevo, quizás en partes más chicas.";
+
+/**
+ * Distinct from `GENERIC_FAILURE_REPLY`: the user already received the
+ * earlier chunk(s) of a multi-part reply before a later chunk failed to
+ * send (see `TelegramPartialSendError`), so the generic "something went
+ * wrong" copy would be misleading — they did get something. Spanish,
+ * tuteo, matching `EMPTY_REPLY_FALLBACK` and `MAX_ITERATIONS_REPLY`.
+ */
+export const PARTIAL_SEND_NOTICE =
+  "Se cortó la respuesta a la mitad. Pídemelo de nuevo, o en partes más chicas.";
 
 export interface CreateCompletionHandlerOptions {
   channel: Channel;
@@ -187,7 +197,34 @@ async function replyWithCompletion(
     resultText = EMPTY_REPLY_FALLBACK;
   }
 
-  await options.channel.send(message.chatId, resultText);
+  try {
+    await options.channel.send(message.chatId, resultText);
+  } catch (error) {
+    if (!(error instanceof TelegramPartialSendError)) {
+      throw error;
+    }
+
+    options.logger.warn("reply send failed partway through a multi-part message", {
+      channelUserId: message.channelUserId,
+      dedupeKey,
+      partsSent: error.partsSent,
+      totalParts: error.totalParts,
+    });
+
+    const delivered = await sendUserNotice(options, message, PARTIAL_SEND_NOTICE, {
+      channelUserId: message.channelUserId,
+      dedupeKey,
+    });
+    if (delivered) {
+      await recordDedupeCompletion(
+        options.dedupeRepo,
+        options.logger,
+        dedupeKey,
+        PARTIAL_SEND_NOTICE,
+      );
+    }
+    return;
+  }
 
   await recordDedupeCompletion(options.dedupeRepo, options.logger, dedupeKey, resultText);
 }
