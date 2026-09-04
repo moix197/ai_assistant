@@ -114,17 +114,18 @@ completed *after* the reply is sent. Two cases, not equally covered:
   **What differs is whether anything ever reaches that branch.** For a *message*
   update nothing does: `03-agent-core` Phase 3 detached message dispatch and
   `07-one-paid-turn-one-outcome` moved the ack strictly ahead of it, so by the
-  time a crash, a thrown handler, a 403, a partial send or a max-iterations stop
-  leaves the row `pending`, the `update_id` is permanently acked, Telegram will
-  not redeliver it, and nothing else claims that key — the row is inert and the
-  turn is lost, logged and not retried. The one case that *did* reach the branch
-  — a `setOffset` that itself failed, replaying a batch whose message handlers
-  had already been dispatched, so the replay's `claim()` found handler #1's
-  `pending` row and fail-opened into a second paid turn — is closed by that same
-  reorder: a failed ack now replays an update whose handler never ran, making the
-  replay the first paid turn rather than a second one. The fail-open branch is
-  therefore now **defensive, not load-bearing**, and a `callback_query` replay is
-  not the thing that keeps it alive: `llm_dedupe` is claimed in exactly one place
+  time a crash, a thrown handler, a 403, or a partial send or max-iterations stop
+  whose notice also failed to deliver leaves the row `pending`, the `update_id`
+  is permanently acked, Telegram will not redeliver it, and nothing else claims
+  that key — the row is inert and the turn is lost, logged and not retried. The
+  one case that *did* reach the branch — a `setOffset` that itself failed,
+  replaying a batch whose message handlers had already been dispatched, so the
+  replay's `claim()` found handler #1's `pending` row and fail-opened into a
+  second paid turn — is closed by that same reorder: a failed ack now replays an
+  update whose handler never ran, making the replay the first paid turn rather
+  than a second one. The fail-open branch is therefore now **defensive, not
+  load-bearing**, and a `callback_query` replay is not the thing that keeps it
+  alive: `llm_dedupe` is claimed in exactly one place
   (`apps/hermes/src/handlers/complete.ts`, keyed on `InboundMessage.updateId`),
   which only message updates reach — `boot.ts` wires `subscribeCallback` straight
   to `handleApprovalCallback`, so a callback never claims a dedupe key at all,
