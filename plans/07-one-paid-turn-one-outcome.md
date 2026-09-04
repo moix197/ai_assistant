@@ -377,22 +377,22 @@ required here.
 |---|---|---|
 | modify | `packages/agent/src/loop.ts` | Add `export` to `class MaxIterationsReachedError extends Error` (L67) — no other change to the class |
 | modify | `packages/agent/src/index.ts` | Add `export { MaxIterationsReachedError } from "./loop";` alongside the existing type-only exports |
-| modify | `apps/hermes/src/handlers/complete.ts` | Import `MaxIterationsReachedError` from `@hermes/agent`. Add `export const MAX_ITERATIONS_REPLY = "Esto se alargó demasiado y no llegué a una respuesta final. Pídemelo de nuevo, quizás en partes más chicas."` beside the other reply constants, with a one-line comment on why it's distinct from `GENERIC_FAILURE_REPLY` (a paid, fully-run turn with a real result reported, not an error). Add `sendUserNotice(options, message, text, context): Promise<boolean>` beside `recordDedupeCompletion` (same file, same shape — a small named helper that swallows one failure and reports it): `try { await options.channel.send(message.chatId, text); return true; } catch (sendError) { options.logger.warn("failed to deliver notice to user — likely blocked the bot or unreachable", { ...context, error: sendError instanceof Error ? sendError.message : String(sendError) }); return false; }`. It is introduced here, in the **first** phase that adds a new user-facing notice send, and reused by Phase 3's cut-off notice and Phase 4's two failure-notice sends — one helper, four call sites by the end of the plan, no duplicated try/catch. In `replyWithCompletion` (L99-123, which has **no** try/catch today), wrap the `agent.handleMessage(...)` call in its own try/catch: on `MaxIterationsReachedError`, `logger.warn` with `{channelUserId: message.channelUserId, dedupeKey, iterations: error.iterations, totalCostUsd: error.totalCostUsd}`** — note `channelUserId: message.channelUserId`, not a bare shorthand: `replyWithCompletion`'s params are `(options, message, dedupeKey)`, there is no local `channelUserId` variable in this function, only `message.channelUserId` (string) — the existing empty-reply guard two lines above already uses exactly this pattern (`complete.ts:114`), match it, don't introduce an undefined-identifier bug **, then `const delivered = await sendUserNotice(...MAX_ITERATIONS_REPLY...)`, and **only if `delivered`**, `await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, MAX_ITERATIONS_REPLY)`, then `return`. The `delivered` gate is the locked "record completion only where a reply actually reached the user" rule made explicit: an undelivered notice (403) leaves the row `pending`, which is inert by Phase 1's reasoning. This mirrors the existing empty-reply guard's ordering (guard before send, send before complete); any other error rethrows unchanged, so `replyWithFailureNotice`'s existing budget/generic handling is untouched |
+| modify | `apps/hermes/src/handlers/complete.ts` | Import `MaxIterationsReachedError` from `@hermes/agent`. Add `export const MAX_ITERATIONS_REPLY = "Esto se alargó demasiado y no llegué a una respuesta final. Pídemelo de nuevo, quizás en partes más chicas."` beside the other reply constants, with a one-line comment on why it's distinct from `GENERIC_FAILURE_REPLY` (a paid, fully-run turn with a real result reported, not an error). Add `sendUserNotice(options, message, text, context): Promise<boolean>` beside `recordDedupeCompletion` (same file, same shape — a small named helper that swallows one failure and reports it): `try { await options.channel.send(message.chatId, text); return true; } catch (sendError) { options.logger.warn("failed to deliver notice to user — likely blocked the bot or unreachable", { ...context, error: sendError instanceof Error ? sendError.message : String(sendError) }); return false; }`. It is introduced here, in the **first** phase that adds a new user-facing notice send, and reused by Phase 3's cut-off notice and Phase 4's two failure-notice sends — one helper, four call sites by the end of the plan, no duplicated try/catch. In `replyWithCompletion` (L99-123, which has **no** try/catch today), wrap the `agent.handleMessage(...)` call in its own try/catch: on `MaxIterationsReachedError`, `logger.warn` with `{channelUserId: message.channelUserId, dedupeKey, iterations: error.iterations, totalCostUsd: error.totalCostUsd}`** — note `channelUserId: message.channelUserId`, not a bare shorthand: `replyWithCompletion`'s params are `(options, message, dedupeKey)`, there is no local `channelUserId` variable in this function, only `message.channelUserId` (string) — the existing empty-reply guard two lines above already uses exactly this pattern (`complete.ts:114`), match it, don't introduce an undefined-identifier bug **, then `const delivered = await sendUserNotice(...MAX_ITERATIONS_REPLY...)`, and **only if `delivered`**, `await recordDedupeCompletion(dedupeRepo, logger, dedupeKey, MAX_ITERATIONS_REPLY)`, then `return`. **Resolved during execution (code review, Phase 2):** the plan's original prose put the informational `logger.warn` *unconditionally before* `sendUserNotice`, which contradicted this same phase's explicit test requirement of "exactly one `logger.warn`" on delivery failure (it would fire two). The informational warn is therefore gated on `delivered === true`, and `iterations`/`totalCostUsd` are passed into `sendUserNotice`'s own `context` so the delivery-failure warn still carries the money actually spent — one warn per outcome, cost figures present on both paths. The `delivered` gate is the locked "record completion only where a reply actually reached the user" rule made explicit: an undelivered notice (403) leaves the row `pending`, which is inert by Phase 1's reasoning. This mirrors the existing empty-reply guard's ordering (guard before send, send before complete); any other error rethrows unchanged, so `replyWithFailureNotice`'s existing budget/generic handling is untouched |
 | modify | `apps/hermes/src/handlers/__tests__/complete.test.ts` | New test: `agent.handleMessage` rejects with `new MaxIterationsReachedError(1.23, 12)` (constructor order is `(totalCostUsd, iterations)` — verified at `loop.ts:67-75`) → asserts `channel.send` called once with `MAX_ITERATIONS_REPLY` and *not* with `GENERIC_FAILURE_REPLY`, `dedupeRepo.complete` called with `("telegram:1", MAX_ITERATIONS_REPLY)`, and `logger.warn` called. Second new test: the same rejection **plus** a rejecting `channel.send` → `dedupeRepo.complete` never called, exactly one `logger.warn`, `await handler(...)` resolves. Both follow the existing empty-reply `it.each` block's structure (`complete.test.ts:162-186`), reusing its `createMockChannel`/`createMockAgent`/`createPermissiveDedupeRepo`/`inboundMessage` factories |
 
 **Steps:**
 
-- [ ] Export `MaxIterationsReachedError` and confirm `pnpm --filter @hermes/agent typecheck` still passes with no other package needing a type update (it's a new export, not a changed one)
-- [ ] Write the max-iterations test in `complete.test.ts` following the existing empty-reply test's exact structure (mock factories already present: `createMockChannel`, `createMockAgent`, `createPermissiveDedupeRepo`, `inboundMessage`)
-- [ ] Confirm the new try/catch in `replyWithCompletion` does not change behavior for any other thrown error (budget, generic, empty-reply) — run the full existing `complete.test.ts` suite and confirm zero unrelated failures
-- [ ] Confirm the Spanish copy uses tuteo, matching `EMPTY_REPLY_FALLBACK`'s register exactly (`pídemelo`, not `pedime`/`pedíme`)
-- [ ] **Leave the happy-path send at L120 unguarded.** `sendUserNotice` is
+- [x] Export `MaxIterationsReachedError` and confirm `pnpm --filter @hermes/agent typecheck` still passes with no other package needing a type update (it's a new export, not a changed one)
+- [x] Write the max-iterations test in `complete.test.ts` following the existing empty-reply test's exact structure (mock factories already present: `createMockChannel`, `createMockAgent`, `createPermissiveDedupeRepo`, `inboundMessage`)
+- [x] Confirm the new try/catch in `replyWithCompletion` does not change behavior for any other thrown error (budget, generic, empty-reply) — run the full existing `complete.test.ts` suite and confirm zero unrelated failures
+- [x] Confirm the Spanish copy uses tuteo, matching `EMPTY_REPLY_FALLBACK`'s register exactly (`pídemelo`, not `pedime`/`pedíme`)
+- [x] **Leave the happy-path send at L120 unguarded.** `sendUserNotice` is
       for the *notice* sends this plan adds (and, in Phase 4, the two
       pre-existing failure notices) — not for the ordinary reply. A failing
       ordinary send must keep falling through to `handleCompletion`'s catch
       and `replyWithFailureNotice` exactly as today; widening the guard to
       the happy path would change behavior this plan is not asked to change
-- [ ] Confirm the un-delivered case really does leave the row `pending`:
+- [x] Confirm the un-delivered case really does leave the row `pending`:
       assert `dedupeRepo.complete` was never called, not merely that no
       error was thrown
 
@@ -404,9 +404,9 @@ required here.
 
 **Verification:**
 
-- [ ] `pnpm -r typecheck` green
+- [x] `pnpm -r typecheck` green
 - [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm lint` green
 - [~] Manual live trigger of `MAX_ITERATIONS` — accepted as impractical to
       force on demand against the real bot; unit test above is the
       accepted bar for this phase (see HIL Prerequisites)
@@ -416,12 +416,12 @@ required here.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat(hermes): spanish reply and dedupe completion on max-iterations`
+- [x] Changes committed: `feat(hermes): spanish reply and dedupe completion on max-iterations`
 - [ ] Phase marked complete
 
 ---
