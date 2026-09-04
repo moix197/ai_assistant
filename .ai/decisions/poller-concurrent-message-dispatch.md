@@ -120,7 +120,11 @@ at all. Two things bound the damage:
   "message dispatch concurrency (approval-gate deadlock fix)", "message handler
   failure (no redelivery under detached dispatch)" and "graceful shutdown drains
   in-flight message dispatch" suites, plus the callback-side halves of
-  `poller-offset-ordering.test.ts` and `poller-crash-replay.test.ts`. All of
-  those must survive any refactor of the loop together — the callback tests
-  prove the guarantee that was *kept*, the message tests prove the one that was
-  deliberately given up.
+  `poller-offset-ordering.test.ts` and `poller-crash-replay.test.ts`. The
+  amendment above has its own pin,
+  `poller-ack-before-dispatch.test.ts` ("ack before dispatch (message
+  updates)") — a rejected `setOffset` must dispatch no handler at all, and the
+  callback branch must still handle before it acks. All of those must survive
+  any refactor of the loop together — the callback tests prove the guarantee
+  that was *kept*, the message tests prove the one that was deliberately given
+  up.

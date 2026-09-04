@@ -197,12 +197,14 @@ Telegram getUpdates (long poll, 30s)
    │        │     prompt this bot sent into an already-allowlisted chat.
    │        ▼  AWAITED inline, then setOffset. Crash-replay preserved.
    │
-   ▼  message / edited_message  →  normalizeTelegramUpdate
+   ▼  message / edited_message
+   │  ACKED here: setOffset(update_id + 1) is awaited BEFORE anything below
+   │  runs — normalization included — and the rest then runs DETACHED
+   ▼  normalizeTelegramUpdate
    │                                              ← drops updates with no message.from
    │                                                (no user id ⇒ fail-open risk)
    ▼  InboundMessage (provider-neutral; carries updateId — the dedupe key's
    │                   only source, hence required, not optional)
-   │  DETACHED here: setOffset(update_id + 1) runs now, not after the handler
    │
    ▼  apps/hermes  withAllowlist( withPrivateChat( dispatchCommand ) )
    │                    │              │
@@ -248,7 +250,7 @@ Telegram getUpdates (long poll, 30s)
    │                                    ▼  dedupe complete, storing the reply —
    │                                    │     AFTER the send, never before
    │
-   ▼  nothing left to ack: this update's offset advanced back at the DETACHED
+   ▼  nothing left to ack: this update's offset advanced back at the ACKED
        mark. A failure anywhere below it is terminal — logged, never retried.
 ```
 
