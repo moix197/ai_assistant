@@ -136,6 +136,12 @@ completed *after* the reply is sent. Two cases, not equally covered:
   an already-completed update — which the primary key closes for free, whether or
   not any current path can still produce one.
 
+One `pending`-leaving failure was not a crash window at all, and is fixed at the
+source rather than tolerated: an empty model reply used to strand the row
+*deterministically*, every time, no crash required — `send` 400s on empty text,
+so `complete()` never ran. `complete.ts` now substitutes `EMPTY_REPLY_FALLBACK`
+for empty reply text, so the reply lands and the row completes normally.
+
 Ordering is what makes both work: recording completion *before* the send would
 mark a turn done that the user never received, converting a rare double charge
 into a silently dropped answer.
