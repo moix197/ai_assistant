@@ -543,19 +543,19 @@ assert the two translated constants' exact Spanish text.
 
 **Steps:**
 
-- [ ] Write the double-403 regression test *first* against the pre-fix code
+- [x] Write the double-403 regression test *first* against the pre-fix code
       (a rejecting `channel.send` inside the failure path today throws out
       of `handleCompletion`), prove it fails, then add the guard and prove
       it passes
-- [ ] Grep `complete.ts` after the change to confirm no direct
+- [x] Grep `complete.ts` after the change to confirm no direct
       `channel.send` call remains inside `replyWithFailureNotice`, and that
       no *second* guard helper was added — every notice send in the file
       goes through Phase 2's single `sendUserNotice`. The only remaining
       direct `channel.send` calls should be the two deliberate ones: the
       ordinary reply (L120) and the already-completed replay (L189)
-- [ ] Update the two Spanish-breaking assertions in `complete.test.ts` in
+- [x] Update the two Spanish-breaking assertions in `complete.test.ts` in
       this same commit, not a follow-up
-- [ ] Confirm the two translated constants use tuteo consistent with the
+- [x] Confirm the two translated constants use tuteo consistent with the
       rest of this plan's copy
 
 **Tests:**
@@ -566,10 +566,10 @@ assert the two translated constants' exact Spanish text.
 
 **Verification:**
 
-- [ ] `pnpm --filter hermes test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
+- [x] `pnpm --filter hermes test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
 - [~] Manual live 403 (blocking the real bot from a test account) — accepted
       as impractical/destructive to provision on demand; unit test above is
       the accepted bar for this phase (see HIL Prerequisites)
@@ -582,12 +582,12 @@ assert the two translated constants' exact Spanish text.
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+- [x] Code-reviewer agent has verified this phase
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `fix(hermes): guard failure-notice sends and translate reply copy to spanish`
+- [x] Changes committed: `fix(hermes): guard failure-notice sends and translate reply copy to spanish`
 - [ ] Phase marked complete
 
 ---
