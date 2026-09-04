@@ -405,7 +405,7 @@ required here.
 **Verification:**
 
 - [x] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
+- [x] `pnpm -r test` green
 - [x] `pnpm lint` green
 - [~] Manual live trigger of `MAX_ITERATIONS` — accepted as impractical to
       force on demand against the real bot; unit test above is the
