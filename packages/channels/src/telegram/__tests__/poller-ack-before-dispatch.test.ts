@@ -121,6 +121,12 @@ describe("createTelegramPoller — ack before dispatch (message updates)", () =>
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ text: "text-101" }));
     expect(setOffset).toHaveBeenCalledTimes(2);
     expect(setOffset).toHaveBeenNthCalledWith(2, 102);
+
+    // Let the poller go around once more (a third getUpdates call) before
+    // re-asserting the handler count, so "exactly once" is proven rather
+    // than merely "the count had reached 1 by the moment waitFor observed it".
+    await vi.waitFor(() => expect(getUpdates).toHaveBeenCalledTimes(3));
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("resolves setOffset fully before the handler's first call, on the success path", async () => {
@@ -137,6 +143,11 @@ describe("createTelegramPoller — ack before dispatch (message updates)", () =>
       order.push("handler");
     });
     const setOffset = vi.fn().mockImplementation(async () => {
+      // Push only after this mock's own promise has actually resolved (a
+      // microtask tick later), not at invocation time — otherwise this
+      // would prove only "setOffset was called before the handler", which
+      // holds even if the caller never awaits setOffset at all.
+      await Promise.resolve();
       order.push("setOffset");
     });
 
