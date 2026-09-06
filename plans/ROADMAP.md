@@ -9,11 +9,16 @@ first set of hands; Slack and WhatsApp come later.
 generic Sheets capability (`05-google-sheets.md`). Two off-roadmap hardening PRDs also
 shipped: `06-legible-approvals-bounded-reads.md` and `07-one-paid-turn-one-outcome.md`.
 
-**Phase 4 is the current phase and is NOT complete.** `05-google-sheets.md` deliberately
-shipped only the generic Sheets read/write capability — nothing trading-specific. The
-`trading-journal` package, the `log_trade` / `update_trade` / `close_trade` / `query_trades`
-tools, the column-mapping config, and locally-computed aggregates all remain unbuilt and
-are the roadmap's next deliverable.
+**Phase 4 is DEFERRED.** `05-google-sheets.md` deliberately shipped only the generic
+Sheets read/write capability — nothing trading-specific. The `trading-journal` package, the
+`log_trade` / `update_trade` / `close_trade` / `query_trades` tools, the column-mapping
+config, and locally-computed aggregates remain unbuilt and are on hold; see
+`.ai/decisions/defer-trading-journal.md`.
+
+**Next up: Phase 5 (Calendar) and Phase 6 (Gmail), built in parallel.** Both are Google
+tool packages riding Phase 3's OAuth, and share only `packages/google-auth/src/scopes.ts`
+and the tool registry. Phase 10 (WhatsApp) stays blocked on Phase 7's ingress; its Meta
+Business verification paperwork is the item to start early.
 
 This document is the spine — each phase below becomes its own PRD in `plans/` before
 implementation starts.
@@ -457,6 +462,11 @@ address. Refresh works across a container restart.
 ---
 
 ### Phase 4 — Trading journal (Sheets) ⭐ first real capability
+
+> **DEFERRED — not the next phase.** Only the generic Sheets capability from
+> `plans/05-google-sheets.md` shipped; everything trading-specific below is
+> unbuilt and on hold. Build order is now Phase 5 (Calendar) and Phase 6 (Gmail),
+> in parallel. See `.ai/decisions/defer-trading-journal.md`.
 
 The thing you actually asked for.
 
