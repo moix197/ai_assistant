@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-25
 **Branch:** `feat/00-skeleton-telegram`
-**Status:** not started
+**Status:** complete. All five phases shipped and verified; Phase 5's Final Verification is fully ticked, with its findings and the carried-forward migrations-before-advisory-lock gap recorded in `.ai/decisions/telegram-long-polling-correctness.md`.
 
 ## Context
 

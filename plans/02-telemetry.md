@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-27
 **Branch:** `feat/02-telemetry`
-**Status:** not started
+**Status:** Phases 1-6 complete. Phase 6's execution record carries the exceptions: live verification found and fixed two shutdown defects (`ff8ca2f`, `a63f544`), and the two CI-run bullets plus the branch-protection follow-up were blocked because the repo had no git remote at the time. Those three boxes stay unticked because that work did not happen; a remote now exists, so they are unblocked.
 
 ## Context
 

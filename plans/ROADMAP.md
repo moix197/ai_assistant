@@ -4,8 +4,19 @@ A self-hosted personal assistant you drive by texting it. Runs in Docker (local
 today, any host later). Telegram is the control surface; Google Workspace is the
 first set of hands; Slack and WhatsApp come later.
 
-**Status:** planning. Nothing built. This document is the spine — each phase
-below becomes its own PRD in `plans/` before implementation starts.
+**Status:** in progress. Phases 0-3 are shipped and merged (`plans/00-skeleton.md`,
+`01-llm-port.md`, `02-telemetry.md`, `03-agent-core.md`, `04-google-auth.md`), as is the
+generic Sheets capability (`05-google-sheets.md`). Two off-roadmap hardening PRDs also
+shipped: `06-legible-approvals-bounded-reads.md` and `07-one-paid-turn-one-outcome.md`.
+
+**Phase 4 is the current phase and is NOT complete.** `05-google-sheets.md` deliberately
+shipped only the generic Sheets read/write capability — nothing trading-specific. The
+`trading-journal` package, the `log_trade` / `update_trade` / `close_trade` / `query_trades`
+tools, the column-mapping config, and locally-computed aggregates all remain unbuilt and
+are the roadmap's next deliverable.
+
+This document is the spine — each phase below becomes its own PRD in `plans/` before
+implementation starts.
 
 ---
 

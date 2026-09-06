@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-28
 **Branch:** `feat/05-google-sheets`
-**Status:** not started
+**Status:** complete. All seven phases shipped and the eight exit-criterion behaviors were verified live end to end. Two `[~]` items are accepted, not outstanding: real-429 and post-send-ambiguous-write cases are cross-checked by fake-client unit tests rather than provoked against Google, and in-turn write dedupe is unit-test-only because every inbound Telegram message is a new turn.
 
 ## Context
 

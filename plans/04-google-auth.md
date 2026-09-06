@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-28
 **Branch:** `feat/04-google-auth`
-**Status:** not started
+**Status:** complete. All five phases shipped; Phase 5's Final Verification ran end to end on a real bot, including the forced-expiry refresh and forced-refresh-failure alert paths.
 
 ## Context
 

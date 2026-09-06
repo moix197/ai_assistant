@@ -2,7 +2,7 @@
 
 **Created:** 2026-08-29
 **Branch:** `feat/06-legible-approvals-bounded-reads`
-**Status:** not started
+**Status:** complete. All nine phases shipped and the golden path was verified on a real phone against the real bot. One `[~]` remains accepted: in-turn write dedupe stays unit-test-only, unchanged from `05-google-sheets`.
 
 ## Context
 
