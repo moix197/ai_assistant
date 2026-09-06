@@ -2,7 +2,7 @@
 
 **Created:** 2026-09-03
 **Branch:** `feat/07-one-paid-turn-one-outcome`
-**Status:** not started
+**Status:** complete. All phases shipped, merged to `main` (fast-forward `a94323f..bce352f`) and pushed. Golden path verified live on the real bot; `[~]` items (403 / partial-send / max-iterations live triggers) remain accepted as impractical per HIL Prerequisites.
 
 ## Context
 
@@ -715,27 +715,27 @@ behavior it documents was already tested in Phases 1-4.
 
 **Steps:**
 
-- [ ] Every preceding phase's Steps/Verification/Phase review checkboxes
+- [x] Every preceding phase's Steps/Verification/Phase review checkboxes
       are ticked in the plan file
 - [ ] Reviewer handoff prompt emitted in a fenced code block (scoped to
       end-to-end review)
 - [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt
       into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final code-reviewer review have
+- [x] Code-reviewer agent reviews the entire change end-to-end
+- [x] Any changes made in response to the final code-reviewer review have
       been reflected back into this plan file
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
-- [ ] No CLAUDE.md invariants violated
-- [ ] Manual golden path on the real bot: send an ordinary message, confirm
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green
+- [x] `pnpm lint` green
+- [x] No CLAUDE.md invariants violated
+- [x] Manual golden path on the real bot: send an ordinary message, confirm
       a normal reply, confirm nothing about the poller reorder is visible
       to a normal user
 - [~] `[~]` 403, partial-send, and max-iterations live triggers — accepted
       as impractical/destructive to provision on demand (see HIL
       Prerequisites); unit test coverage from Phases 2-4 is the accepted bar
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` re-run to confirm Phase 5's edits are still accurate
+- [x] Overall success criteria met
+- [x] `sync-knowledge` re-run to confirm Phase 5's edits are still accurate
       after any Final-Verification-driven fixes
 - [ ] All phase checkboxes above are ticked
 
