@@ -570,17 +570,17 @@ approval gate's single-resolve semantics — this mechanism is not that).
 
 - [x] `pnpm --filter @hermes/google-calendar test` passes
 - [x] `pnpm -r typecheck` passes
-- [ ] Manual: against the real bot, "schedule lunch with Alex tomorrow at noon" produces a Spanish approval prompt with the real title/time; approving creates a real, visible event on the connected Google Calendar; denying creates nothing
+- [x] Manual: against the real bot, "schedule lunch with Alex tomorrow at noon" produces a Spanish approval prompt with the real title/time; approving creates a real, visible event on the connected Google Calendar; denying creates nothing — first pass surfaced an illegible-time-format bug (raw ISO in the approval prompt), fixed in commit `b8f3f24`; re-verification of the fixed prompt pending
 
 **Phase review:**
 
-- [x] All Steps and Verification checkboxes above ticked in the plan file (automated ones; manual live-bot check pending)
-- [x] Code-reviewer agent has verified this phase (verdict: green)
-- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits only, no changes required)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [x] Code-reviewer agent has verified this phase (verdict: green; a separate live-testing defect was found and fixed after review — see `b8f3f24`)
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (review nits: no changes required; live-testing fix: documented above and propagated to Phase 5/6 design notes)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (README.md)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [x] Changes committed: `feat(google-calendar): add approval-gated create_event tool`
+- [ ] Orchestrator (user) has verified and approved this phase (pending re-verification of the fixed approval-prompt text)
+- [x] Changes committed: `feat(google-calendar): add approval-gated create_event tool` (`a7b5b5c`), `fix(google-calendar): render create_event approval time range in legible Spanish, not raw ISO` (`b8f3f24`)
 - [ ] Phase marked complete
 
 ---
