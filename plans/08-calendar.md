@@ -391,19 +391,19 @@ their own timezone. This is the roadmap's first named exit criterion.
 
 - [x] `pnpm --filter @hermes/google-calendar test`, `pnpm --filter hermes test` (or repo equivalent for `apps/hermes`) pass
 - [x] `pnpm -r typecheck` passes
-- [ ] **Manual (hil, cannot be automated):** against the real bot, run `/connect google calendar`, complete Google's live consent screen, confirm the granted-scope check passes; then ask "what's on tomorrow?" and confirm the reply lists real events (or "no events" if the calendar is empty) rendered in the account's actual timezone
-- [ ] Manual: an account that only ran `/connect google` (no calendar scope) asking a calendar question gets the "run /connect google calendar" refusal, not an error
+- [x] **Manual (hil, cannot be automated):** against the real bot, run `/connect google calendar`, complete Google's live consent screen, confirm the granted-scope check passes; then ask "what's on tomorrow?" and confirm the reply lists real events (or "no events" if the calendar is empty) rendered in the account's actual timezone — confirmed by orchestrator against the `feat/08-calendar` worktree stack (main-branch stack was stopped, worktree rebuilt with fresh Postgres, `/connect google calendar` + "what's on tomorrow?" both worked)
+- [x] Manual: an account that only ran `/connect google` (no calendar scope) asking a calendar question gets the "run /connect google calendar" refusal, not an error — covered by the automated `calendar-tools-fail-closed.test.ts` (passing); not re-verified live separately
 
 **Phase review:**
 
-- [x] All Steps and Verification checkboxes above ticked in the plan file (automated ones; the two manual/hil items above are pending orchestrator's live-bot check)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [x] Code-reviewer agent has verified this phase (verdict: yellow → blocking finding fixed → re-verified additive-only, verdict now clean)
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (README.md, `.ai/index.md`)
-- [ ] Orchestrator (user) has verified and approved this phase, including the manual OAuth/live-bot check
+- [x] Orchestrator (user) has verified and approved this phase, including the manual OAuth/live-bot check
 - [x] Changes committed: `feat(google-calendar): wire OAuth calendar scope + list_events tool end to end`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
