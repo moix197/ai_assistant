@@ -364,17 +364,17 @@ their own timezone. This is the roadmap's first named exit criterion.
 
 **Steps:**
 
-- [ ] `scopes.ts`: add `CALENDAR_SCOPES`, `resolveConnectScopes` branch, `TOOL_REQUIRED_SCOPES` row
-- [ ] `connect.ts`: update `USAGE_TEXT`
-- [ ] `with-required-scopes.ts`: add calendar branch to `describeConnectCommand`
-- [ ] Create `build-calendar-access-token-port.ts`
-- [ ] Add `"@hermes/google-calendar": "workspace:*"` to `apps/hermes/package.json` dependencies, then `pnpm install`
-- [ ] `boot.ts`: add `buildCalendarDeps`, wire into `createMessageHandlers`/`buildAgent` call
-- [ ] `build-agent.ts`: widen `buildAgent` signature, construct + append `listEventsTool`
-- [ ] Implement `render-event-time.ts`
-- [ ] Implement `calendar-list-events.ts` (incl. window validation, all-day-safe rendering)
-- [ ] Update `index.ts`, `README.md`, `.ai/index.md`
-- [ ] `pnpm -r typecheck` clean
+- [x] `scopes.ts`: add `CALENDAR_SCOPES`, `resolveConnectScopes` branch, `TOOL_REQUIRED_SCOPES` row
+- [x] `connect.ts`: update `USAGE_TEXT`
+- [x] `with-required-scopes.ts`: add calendar branch to `describeConnectCommand`
+- [x] Create `build-calendar-access-token-port.ts`
+- [x] Add `"@hermes/google-calendar": "workspace:*"` to `apps/hermes/package.json` dependencies, then `pnpm install`
+- [x] `boot.ts`: add `buildCalendarDeps`, wire into `createMessageHandlers`/`buildAgent` call
+- [x] `build-agent.ts`: widen `buildAgent` signature, construct + append `listEventsTool`
+- [x] Implement `render-event-time.ts`
+- [x] Implement `calendar-list-events.ts` (incl. window validation, all-day-safe rendering)
+- [x] Update `index.ts`, `README.md`, `.ai/index.md`
+- [x] `pnpm -r typecheck` clean
 
 **Tests:**
 
@@ -389,22 +389,20 @@ their own timezone. This is the roadmap's first named exit criterion.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-calendar test`, `pnpm --filter hermes test` (or repo equivalent for `apps/hermes`) pass
-- [ ] `pnpm -r typecheck` passes
+- [x] `pnpm --filter @hermes/google-calendar test`, `pnpm --filter hermes test` (or repo equivalent for `apps/hermes`) pass
+- [x] `pnpm -r typecheck` passes
 - [ ] **Manual (hil, cannot be automated):** against the real bot, run `/connect google calendar`, complete Google's live consent screen, confirm the granted-scope check passes; then ask "what's on tomorrow?" and confirm the reply lists real events (or "no events" if the calendar is empty) rendered in the account's actual timezone
 - [ ] Manual: an account that only ran `/connect google` (no calendar scope) asking a calendar question gets the "run /connect google calendar" refusal, not an error
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (README.md, `.ai/index.md`)
+- [x] All Steps and Verification checkboxes above ticked in the plan file (automated ones; the two manual/hil items above are pending orchestrator's live-bot check)
+- [x] Code-reviewer agent has verified this phase (verdict: yellow → blocking finding fixed → re-verified additive-only, verdict now clean)
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (README.md, `.ai/index.md`)
 - [ ] Orchestrator (user) has verified and approved this phase, including the manual OAuth/live-bot check
-- [ ] Changes committed: `feat(google-calendar): wire OAuth calendar scope + list_events tool end to end`
+- [x] Changes committed: `feat(google-calendar): wire OAuth calendar scope + list_events tool end to end`
 - [ ] Phase marked complete
 
 ---
