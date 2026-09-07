@@ -136,7 +136,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -166,14 +166,18 @@ describe("buildAgent — wiring", () => {
       expect.objectContaining({
         model: "another-model",
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
-        // for deterministic output — "echo" precedes "get_current_time"
-        // precedes "list_events" precedes "sheets_inspect" precedes
-        // "sheets_read" precedes "sheets_write" precedes "whoami". The
-        // existing prefix (echo, get_current_time, whoami) is byte-stable —
-        // 05-google-sheets Phase 4 inserted the two read entries, Phase 5
-        // inserts sheets_write, 08-calendar Phase 2 inserts list_events.
+        // for deterministic output — "check_availability" precedes "echo"
+        // precedes "find_free_slot" precedes "get_current_time" precedes
+        // "list_events" precedes "sheets_inspect" precedes "sheets_read"
+        // precedes "sheets_write" precedes "whoami". The existing prefix
+        // (echo, get_current_time, whoami) is byte-stable — 05-google-sheets
+        // Phase 4 inserted the two read entries, Phase 5 inserts
+        // sheets_write, 08-calendar Phase 2 inserts list_events, Phase 3
+        // inserts find_free_slot/check_availability.
         tools: [
+          expect.objectContaining({ name: "check_availability" }),
           expect.objectContaining({ name: "echo" }),
+          expect.objectContaining({ name: "find_free_slot" }),
           expect.objectContaining({ name: "get_current_time" }),
           expect.objectContaining({ name: "list_events" }),
           expect.objectContaining({ name: "sheets_inspect" }),

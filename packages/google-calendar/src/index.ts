@@ -43,3 +43,11 @@ export {
   createCalendarListEventsTool,
   type CreateCalendarListEventsToolDeps,
 } from "./tools/calendar-list-events";
+export {
+  createCalendarFindFreeSlotTool,
+  type CreateCalendarFindFreeSlotToolDeps,
+} from "./tools/calendar-find-free-slot";
+export {
+  createCalendarCheckAvailabilityTool,
+  type CreateCalendarCheckAvailabilityToolDeps,
+} from "./tools/calendar-check-availability";

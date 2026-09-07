@@ -5,9 +5,10 @@ own primary calendar. See `plans/08-calendar.md`'s Context for the full
 design. Phase 1 shipped the package scaffold — REST client, timezone
 resolution, deterministic relative-time resolution, window bounds, and the
 event idempotency id — with nothing wired into the bot yet. Phase 2 wires
-`/connect google calendar` and ships `list_events`, the first of the six
-tools (`find_free_slot`, `check_availability`, `create_event`,
-`reschedule_event`, `cancel_event` follow in later phases).
+`/connect google calendar` and ships `list_events`. Phase 3 adds
+`find_free_slot` and `check_availability`, rounding out the package's three
+ungated read tools (`create_event`, `reschedule_event`, `cancel_event`
+follow in later phases).
 
 ## Tools
 
@@ -28,6 +29,29 @@ tools (`find_free_slot`, `check_availability`, `create_event`,
   attempting to parse a missing `dateTime`. `id` is always present on a
   returned event — it's the only handle a later `reschedule_event`/
   `cancel_event` call has for "which event."
+- **`find_free_slot`** (`tools/calendar-find-free-slot.ts`) — ungated read, no
+  `prepare`. Resolves and validates a search window the same way `list_events`
+  does (explicit `startIso`/`endIso` win outright; otherwise
+  `relativeDay`/`weekday`/`timeOfDay` resolve one via `resolveRelativeWindow`,
+  defaulting to `{ relativeDay: "today" }`), then calls
+  `calendarClient.queryFreeBusy` over it and computes gaps of at least
+  `durationMinutes` (default 30, min 5, max 480) between the returned busy
+  intervals. Emits one candidate slot per qualifying gap (not multiple slices
+  of a single large gap), capped at 5, each rendered in the user's timezone
+  via `renderEventTime` (fed a synthetic timed event for its local-offset-ISO
+  formatting). Returns `{ ok: true, timeZone, durationMinutes, range, candidates }`.
+- **`check_availability`** (`tools/calendar-check-availability.ts`) — ungated
+  read, no `prepare`. Resolves a single `[instant, instant + durationMinutes)`
+  window instead of a search window: explicit `startIso` wins, else
+  `resolveRelativeInstant`; explicit `endIso` wins for the end, else
+  `startIso + durationMinutes`. Validated the same way, then queries
+  `calendarClient.queryFreeBusy` — a busy-free result short-circuits to
+  `available: true`; a busy result makes one bounded `listEvents` call over
+  the same window purely to name the conflicting event(s) (freebusy alone
+  returns only interval bounds, no `id`/`summary`). Returns
+  `{ ok: true, timeZone, range, available, conflicts? }` — conflict entries
+  render via `renderEventTime`, so an all-day conflicting event never crashes
+  the response.
 
 ## `render-event-time.ts`
 

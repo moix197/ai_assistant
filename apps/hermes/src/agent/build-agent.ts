@@ -4,6 +4,10 @@ import { type Logger, createLogger } from "@hermes/core";
 import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
 import type { CalendarToolDeps } from "@hermes/google-calendar";
 import { createCalendarListEventsTool } from "@hermes/google-calendar";
+import {
+  createCalendarCheckAvailabilityTool,
+  createCalendarFindFreeSlotTool,
+} from "@hermes/google-calendar";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -181,6 +185,16 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("list_events"),
   })(createCalendarListEventsTool(calendarDeps));
 
+  const findFreeSlotTool = withRequiredScopes("find_free_slot", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("find_free_slot"),
+  })(createCalendarFindFreeSlotTool(calendarDeps));
+
+  const checkAvailabilityTool = withRequiredScopes("check_availability", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("check_availability"),
+  })(createCalendarCheckAvailabilityTool(calendarDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -193,6 +207,8 @@ export function buildAgent(
       sheetsReadTool,
       sheetsWriteTool,
       listEventsTool,
+      findFreeSlotTool,
+      checkAvailabilityTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };
