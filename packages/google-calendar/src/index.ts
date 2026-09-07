@@ -62,3 +62,8 @@ export {
   type CreateCalendarRescheduleEventToolDeps,
   type RescheduleEventPlan,
 } from "./tools/calendar-reschedule-event";
+export {
+  createCalendarCancelEventTool,
+  type CreateCalendarCancelEventToolDeps,
+  type CancelEventPlan,
+} from "./tools/calendar-cancel-event";

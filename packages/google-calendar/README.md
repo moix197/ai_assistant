@@ -9,8 +9,9 @@ event idempotency id — with nothing wired into the bot yet. Phase 2 wires
 `find_free_slot` and `check_availability`, rounding out the package's three
 ungated read tools. Phase 4 adds `create_event`, the package's first
 approval-gated write tool. Phase 5 adds `reschedule_event`, the first tool to
-pre-read an existing event before building its approval prompt (`cancel_event`
-follows in a later phase).
+pre-read an existing event before building its approval prompt. Phase 6 adds
+`cancel_event`, completing the package's six-tool surface (three ungated
+reads, three approval-gated writes).
 
 ## Tools
 
@@ -97,6 +98,25 @@ follows in a later phase).
   `calendarClient.patchEvent(accessToken, plan.eventId, { start:
   plan.newStartUtc, end: plan.newEndUtc }, signal)` — it never re-reads or
   re-resolves anything.
+- **`cancel_event`** (`tools/calendar-cancel-event.ts`) — approval-gated
+  write, `requiresApproval: true`. `prepare` does the same one bounded
+  pre-read as `reschedule_event`: `calendarClient.getEvent(accessToken,
+  eventId, signal)`. A 404 fails closed with `{ ok: false, result: { ok:
+  false, reason: "event_not_found" } }` — no approval prompt for a
+  nonexistent event. Unlike `reschedule_event`, there is no `all_day_event`
+  guard: cancelling doesn't need a duration or a new window — `deleteEvent`
+  only needs the `eventId` — so an all-day event can be cancelled the same as
+  a timed one; only the approval `target`'s rendering branches: an all-day
+  event uses `renderEventTime`'s plain-date `localLabel` as-is (no time range
+  to format), a timed event uses `format-approval-time.ts`'s
+  `formatApprovalTimeRangeEs` (same correction as Phase 5, never
+  `renderEventTime`'s raw ISO). Builds a Spanish `ApprovalSummary` (`action`
+  names the event title, `target` shows the event's own time/date, one
+  `effects` sentence noting the event will be removed). `handler` reads
+  `ctx.plan` and calls `calendarClient.deleteEvent(accessToken, plan.eventId,
+  signal)` — a `404`/`410 Gone` (already deleted or unknown) is treated as a
+  successful no-op, not an error, since "gone" is already the end state the
+  user wanted.
 
 ## `render-event-time.ts`
 
@@ -111,11 +131,12 @@ conflict display (Phase 3).
 ## `format-approval-time.ts`
 
 `formatApprovalTimeRangeEs(startUtc, endUtc, timeZone)` — pure function
-building `create_event`'s human-facing Spanish approval-summary `target`
-(Phase 4 fix). A distinct UI surface from `renderEventTime` above: this one
-renders a legible sentence (`"martes 8 de septiembre, 12:00 – 13:00"`
-same-day; both ends' full date+time when the range crosses a calendar day)
-for a non-technical Telegram user approving a real write, never raw ISO.
+building a human-facing Spanish approval-summary `target` (Phase 4 fix,
+reused by `reschedule_event` and `cancel_event`'s timed-event targets). A
+distinct UI surface from `renderEventTime` above: this one renders a legible
+sentence (`"martes 8 de septiembre, 12:00 – 13:00"` same-day; both ends' full
+date+time when the range crosses a calendar day) for a non-technical
+Telegram user approving a real write, never raw ISO.
 
 ## Ports
 

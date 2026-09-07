@@ -4,6 +4,7 @@ import { type Logger, createLogger } from "@hermes/core";
 import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
 import type {
   CalendarToolDeps,
+  CancelEventPlan,
   CreateEventPlan,
   RescheduleEventPlan,
 } from "@hermes/google-calendar";
@@ -14,6 +15,7 @@ import {
 } from "@hermes/google-calendar";
 import { createCalendarCreateEventTool } from "@hermes/google-calendar";
 import { createCalendarRescheduleEventTool } from "@hermes/google-calendar";
+import { createCalendarCancelEventTool } from "@hermes/google-calendar";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -211,6 +213,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("reschedule_event"),
   })(createCalendarRescheduleEventTool(calendarDeps));
 
+  const cancelEventTool = withRequiredScopes<CancelEventPlan>("cancel_event", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("cancel_event"),
+  })(createCalendarCancelEventTool(calendarDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -227,6 +234,7 @@ export function buildAgent(
       checkAvailabilityTool,
       createEventTool,
       rescheduleEventTool,
+      cancelEventTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };
