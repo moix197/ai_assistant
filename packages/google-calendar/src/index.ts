@@ -57,3 +57,8 @@ export {
   type CreateCalendarCreateEventToolDeps,
   type CreateEventPlan,
 } from "./tools/calendar-create-event";
+export {
+  createCalendarRescheduleEventTool,
+  type CreateCalendarRescheduleEventToolDeps,
+  type RescheduleEventPlan,
+} from "./tools/calendar-reschedule-event";

@@ -8,8 +8,9 @@ event idempotency id — with nothing wired into the bot yet. Phase 2 wires
 `/connect google calendar` and ships `list_events`. Phase 3 adds
 `find_free_slot` and `check_availability`, rounding out the package's three
 ungated read tools. Phase 4 adds `create_event`, the package's first
-approval-gated write tool (`reschedule_event`, `cancel_event` follow in later
-phases).
+approval-gated write tool. Phase 5 adds `reschedule_event`, the first tool to
+pre-read an existing event before building its approval prompt (`cancel_event`
+follows in a later phase).
 
 ## Tools
 
@@ -73,6 +74,26 @@ phases).
   transparently retrying an ambiguous insert failure — is treated as
   already-created: fetches and returns the existing event via `getEvent`
   instead of erroring.
+- **`reschedule_event`** (`tools/calendar-reschedule-event.ts`) —
+  approval-gated write, `requiresApproval: true`. `prepare` first does the one
+  bounded pre-read decision 3 calls for:
+  `calendarClient.getEvent(accessToken, eventId, signal)`. A 404 fails closed
+  with `{ ok: false, result: { ok: false, reason: "event_not_found" } }` — no
+  approval prompt for a nonexistent event, same posture as Sheets'
+  unknown-slug refusal. Otherwise it resolves the new `startUtc`/`endUtc`
+  (explicit `startIso`/`endIso` win outright over the intent
+  fields/`durationMinutes`; omitting both `durationMinutes` and `endIso`
+  preserves the pre-read event's own current duration) and validates the new
+  window via `validateTimeWindow` before ever building it into a plan.
+  Builds a Spanish `ApprovalSummary` (`action` names the event title,
+  `target` shows `${oldLocalRange} → ${newLocalRange}` — **both** halves built
+  with `format-approval-time.ts`'s `formatApprovalTimeRangeEs`, never
+  `renderEventTime`'s raw ISO, per the Phase 4 correction: the old range comes
+  from the pre-read event's own start/end, the new range from the resolved
+  `newStartUtc`/`newEndUtc`). `handler` reads `ctx.plan` and calls
+  `calendarClient.patchEvent(accessToken, plan.eventId, { start:
+  plan.newStartUtc, end: plan.newEndUtc }, signal)` — it never re-reads or
+  re-resolves anything.
 
 ## `render-event-time.ts`
 

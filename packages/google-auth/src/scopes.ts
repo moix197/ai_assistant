@@ -61,4 +61,5 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   ["find_free_slot", CALENDAR_SCOPES],
   ["check_availability", CALENDAR_SCOPES],
   ["create_event", CALENDAR_SCOPES],
+  ["reschedule_event", CALENDAR_SCOPES],
 ]);

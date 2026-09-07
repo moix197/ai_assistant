@@ -136,7 +136,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event, reschedule_event) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -168,13 +168,14 @@ describe("buildAgent — wiring", () => {
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
         // for deterministic output — "check_availability" precedes
         // "create_event" precedes "echo" precedes "find_free_slot" precedes
-        // "get_current_time" precedes "list_events" precedes "sheets_inspect"
-        // precedes "sheets_read" precedes "sheets_write" precedes "whoami".
+        // "get_current_time" precedes "list_events" precedes
+        // "reschedule_event" precedes "sheets_inspect" precedes
+        // "sheets_read" precedes "sheets_write" precedes "whoami".
         // The existing prefix (echo, get_current_time, whoami) is
         // byte-stable — 05-google-sheets Phase 4 inserted the two read
         // entries, Phase 5 inserts sheets_write, 08-calendar Phase 2 inserts
         // list_events, Phase 3 inserts find_free_slot/check_availability,
-        // Phase 4 inserts create_event.
+        // Phase 4 inserts create_event, Phase 5 inserts reschedule_event.
         tools: [
           expect.objectContaining({ name: "check_availability" }),
           expect.objectContaining({ name: "create_event" }),
@@ -182,6 +183,7 @@ describe("buildAgent — wiring", () => {
           expect.objectContaining({ name: "find_free_slot" }),
           expect.objectContaining({ name: "get_current_time" }),
           expect.objectContaining({ name: "list_events" }),
+          expect.objectContaining({ name: "reschedule_event" }),
           expect.objectContaining({ name: "sheets_inspect" }),
           expect.objectContaining({ name: "sheets_read" }),
           expect.objectContaining({ name: "sheets_write" }),
