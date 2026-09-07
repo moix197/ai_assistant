@@ -1,0 +1,24 @@
+{
+  "name": "@hermes/google-calendar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsup src/index.ts --format esm --dts --clean --target node22 --out-dir dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hermes/core": "workspace:*",
+    "luxon": "^3.7.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.5"
+  }
+}

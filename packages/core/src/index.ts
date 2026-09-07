@@ -19,6 +19,7 @@ export type {
 export { nextDelay } from "./backoff";
 export { delay } from "./delay";
 export { withHttpRetry } from "./http-retry";
+export { sha256HexOfCanonicalJson } from "./canonical-hash";
 export type {
   HttpRetryOptions,
   RetryClassConfig,
