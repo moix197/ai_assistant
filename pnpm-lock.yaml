@@ -44,6 +44,9 @@ importers:
       '@hermes/google-auth':
         specifier: workspace:*
         version: link:../../packages/google-auth
+      '@hermes/google-calendar':
+        specifier: workspace:*
+        version: link:../../packages/google-calendar
       '@hermes/google-sheets':
         specifier: workspace:*
         version: link:../../packages/google-sheets

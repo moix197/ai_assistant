@@ -2,6 +2,8 @@ import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
 import { type Logger, createLogger } from "@hermes/core";
 import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
+import type { CalendarToolDeps } from "@hermes/google-calendar";
+import { createCalendarListEventsTool } from "@hermes/google-calendar";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -138,6 +140,13 @@ export function buildAgent(
   sheetsDeps: SheetsToolDeps,
   sheetWriteLogRepo: SheetWriteLogPort,
   /**
+   * `08-calendar` Phase 2 — the Calendar tools' real-infra dependencies
+   * (`accessTokenPort`, `calendarClient`), constructed and passed in
+   * already-built by `boot.ts`'s `buildCalendarDeps`, the same
+   * already-built-deps convention `sheetsDeps` above follows.
+   */
+  calendarDeps: CalendarToolDeps,
+  /**
    * `06-legible-approvals-bounded-reads` Phase 3 — `createTelegramApprovalGate`
    * logs each ready call's raw args/resolved plan at debug level right
    * before sending its prompt. `boot.ts` wires its own config-aware `logger`
@@ -167,6 +176,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("sheets_write"),
   })(createSheetsWriteTool({ ...sheetsDeps, sheetWriteLogRepo, logger }));
 
+  const listEventsTool = withRequiredScopes("list_events", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("list_events"),
+  })(createCalendarListEventsTool(calendarDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -178,6 +192,7 @@ export function buildAgent(
       sheetsInspectTool,
       sheetsReadTool,
       sheetsWriteTool,
+      listEventsTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

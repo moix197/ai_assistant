@@ -21,6 +21,7 @@ import {
   createRefreshCoordinator,
   decryptTokenEnvelope,
 } from "@hermes/google-auth";
+import { type CalendarToolDeps, createCalendarClient } from "@hermes/google-calendar";
 import {
   type SheetWriteLogPort,
   type SheetsToolDeps,
@@ -50,6 +51,7 @@ import {
 import type { TelemetryRecorderHandle } from "@hermes/telemetry";
 import { buildAgent } from "./agent/build-agent";
 import { buildAccessTokenPort } from "./google/build-access-token-port";
+import { buildCalendarAccessTokenPort } from "./google/build-calendar-access-token-port";
 import { buildGoogleOAuthClient } from "./google/build-google-oauth-client";
 import {
   type OauthCallbackRoute,
@@ -531,6 +533,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     telemetryRecorder,
   );
   const sheetsDeps = buildSheetsDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
+  const calendarDeps = buildCalendarDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
   const { agent, handleApprovalCallback } = buildAgent(
     pool,
     llmProvider,
@@ -540,6 +543,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     channel,
     sheetsDeps,
     buildSheetWriteLogRepo(pool),
+    calendarDeps,
     logger,
   );
 
@@ -762,6 +766,37 @@ export function buildSheetsDeps(
     sheetRegistry: buildSheetRegistryRepo(pool),
     accessTokenPort,
     sheetsClient: createSheetsClient(),
+  };
+}
+
+/**
+ * Builds `list_events`' (Phase 2) real-infra dependencies: the
+ * `AccessTokenPort` bound to the refresh seam, and the Calendar HTTP client.
+ * Mirrors `buildSheetsDeps` exactly, including the unconfigured-Google
+ * fallback (a throwing stub rather than `undefined`) — see that function's
+ * own doc comment for why the stub is never actually reached: every gated
+ * Calendar tool is wired unconditionally, and `withRequiredScopes` always
+ * gates the call on a connected account first, which cannot exist without
+ * this same env group.
+ */
+export function buildCalendarDeps(
+  pool: Pool,
+  googleAccountRepo: GoogleAccountRepo,
+  coordinator: RefreshCoordinator | undefined,
+): CalendarToolDeps {
+  const accessTokenPort = coordinator
+    ? buildCalendarAccessTokenPort({ pool, googleAccountRepo, refreshCoordinator: coordinator })
+    : {
+        getAccessToken: async (): Promise<string> => {
+          throw new Error(
+            "Google Calendar is not configured (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/TOKEN_ENCRYPTION_KEY unset)",
+          );
+        },
+      };
+
+  return {
+    accessTokenPort,
+    calendarClient: createCalendarClient(),
   };
 }
 

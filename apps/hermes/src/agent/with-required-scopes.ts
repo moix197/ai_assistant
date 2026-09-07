@@ -1,5 +1,6 @@
 import type { ToolContext, ToolPreparation, ToolSpec } from "@hermes/agent";
 import {
+  CALENDAR_SCOPES,
   type GoogleAccount,
   type GoogleAccountRepo,
   SHEETS_SCOPES,
@@ -50,13 +51,18 @@ export type ScopeGateFailure =
  * The `/connect` invocation that would grant `requiredScopes` — derived, not
  * assumed, so a future scoped tool gating on identity alone (or on some
  * later incremental scope) doesn't inherit a `fix` message that names the
- * wrong sub-command. Today there are exactly two tiers: identity alone
- * (`/connect google`) and identity plus Sheets (`/connect google sheets`);
- * anything requiring a Sheets scope needs the latter.
+ * wrong sub-command. Today there are three tiers: identity alone
+ * (`/connect google`), identity plus Sheets (`/connect google sheets`), and
+ * identity plus Calendar (`/connect google calendar`); anything requiring a
+ * Sheets scope needs the second, anything requiring a Calendar scope needs
+ * the third.
  */
 function describeConnectCommand(requiredScopes: string[]): string {
   const needsSheets = requiredScopes.some((scope) => SHEETS_SCOPES.includes(scope));
-  return needsSheets ? "run /connect google sheets" : "run /connect google";
+  if (needsSheets) return "run /connect google sheets";
+  const needsCalendar = requiredScopes.some((scope) => CALENDAR_SCOPES.includes(scope));
+  if (needsCalendar) return "run /connect google calendar";
+  return "run /connect google";
 }
 
 /**

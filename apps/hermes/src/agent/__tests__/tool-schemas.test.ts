@@ -1,6 +1,11 @@
 import { assemblePrefix, createAgent } from "@hermes/agent";
 import type { TelegramPoller } from "@hermes/channels";
 import type {
+  AccessTokenPort as CalendarAccessTokenPort,
+  CalendarClient,
+  CalendarToolDeps,
+} from "@hermes/google-calendar";
+import type {
   AccessTokenPort,
   SheetRegistryPort,
   SheetWriteLogPort,
@@ -51,6 +56,21 @@ function createFakeSheetWriteLogRepo(): SheetWriteLogPort {
   return { claim: vi.fn(), complete: vi.fn() };
 }
 
+/** Never exercised by this test (no Calendar tool call is triggered) — just needs to satisfy the type. */
+function createFakeCalendarDeps(): CalendarToolDeps {
+  const accessTokenPort: CalendarAccessTokenPort = { getAccessToken: vi.fn() };
+  const calendarClient: CalendarClient = {
+    getPrimaryCalendarTimeZone: vi.fn(),
+    listEvents: vi.fn(),
+    getEvent: vi.fn(),
+    queryFreeBusy: vi.fn(),
+    insertEvent: vi.fn(),
+    patchEvent: vi.fn(),
+    deleteEvent: vi.fn(),
+  };
+  return { accessTokenPort, calendarClient };
+}
+
 function createMockChannel(): TelegramPoller {
   return {
     capabilities: { markdown: true, files: true, buttons: true, maxMessageLength: 4096 },
@@ -81,6 +101,7 @@ describe("tool schemas — LLM wire-format regression", () => {
       createMockChannel(),
       createFakeSheetsDeps(),
       createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
     );
 
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];

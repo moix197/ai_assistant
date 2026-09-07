@@ -37,6 +37,7 @@ export {
   type StoredTokens,
 } from "./refresh";
 export {
+  CALENDAR_SCOPES,
   hasRequiredScopes,
   IDENTITY_SCOPES,
   resolveConnectScopes,

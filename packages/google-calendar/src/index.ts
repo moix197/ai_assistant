@@ -34,3 +34,12 @@ export {
 } from "./window-bounds";
 export { deriveEventId } from "./deterministic-event-id";
 export type { CalendarToolDeps, CalendarToolContext } from "./tools/tool-deps";
+export {
+  renderEventTime,
+  type RenderableEventDateTime,
+  type RenderedEventTime,
+} from "./render-event-time";
+export {
+  createCalendarListEventsTool,
+  type CreateCalendarListEventsToolDeps,
+} from "./tools/calendar-list-events";

@@ -2,11 +2,42 @@
 
 The generic Google Calendar capability: read and manage events on the user's
 own primary calendar. See `plans/08-calendar.md`'s Context for the full
-design. Phase 1 ships the package scaffold — REST client, timezone
+design. Phase 1 shipped the package scaffold — REST client, timezone
 resolution, deterministic relative-time resolution, window bounds, and the
-event idempotency id — with nothing wired into the bot yet. Phase 2 onward
-add the six tools (`list_events`, `find_free_slot`, `check_availability`,
-`create_event`, `reschedule_event`, `cancel_event`).
+event idempotency id — with nothing wired into the bot yet. Phase 2 wires
+`/connect google calendar` and ships `list_events`, the first of the six
+tools (`find_free_slot`, `check_availability`, `create_event`,
+`reschedule_event`, `cancel_event` follow in later phases).
+
+## Tools
+
+- **`list_events`** (`tools/calendar-list-events.ts`) — ungated read, no
+  `prepare`; the scope gate alone protects it
+  (`apps/hermes/src/agent/with-required-scopes.ts`, gated on
+  `CALENDAR_SCOPES`). Lists events on the user's primary calendar within a
+  resolved time window: explicit `startIso`/`endIso` win outright; otherwise
+  `relativeDay`/`weekday`/`timeOfDay` resolve one via `resolveRelativeWindow`,
+  defaulting to `{ relativeDay: "today" }` when none of the three are given.
+  The resolved window always passes through `validateTimeWindow` before any
+  Calendar API call. `maxResults` (default 20, max 50) is passed straight to
+  the API's own `maxResults` param — a single bounded request, no
+  client-side pagination. Each returned event's `description` is truncated
+  to 500 chars with a trailing `"… (truncado)"` marker if longer. Every
+  event's time fields are rendered via `render-event-time.ts`'s
+  `renderEventTime` — all-day events render a plain date, never crash
+  attempting to parse a missing `dateTime`. `id` is always present on a
+  returned event — it's the only handle a later `reschedule_event`/
+  `cancel_event` call has for "which event."
+
+## `render-event-time.ts`
+
+`renderEventTime(event, timeZone)` — pure function branching on
+`start.date` (all-day) vs `start.dateTime` (timed). A timed event renders
+both the raw UTC ISO (`startUtc`/`endUtc`) and a human, local-offset-ISO
+`localLabel` in the user's own timezone; an all-day event renders `localLabel`
+as the plain `date` Google returned, with `allDay: true` and no timezone
+math attempted. Shared by `list_events` here and `check_availability`'s
+conflict display (Phase 3).
 
 ## Ports
 

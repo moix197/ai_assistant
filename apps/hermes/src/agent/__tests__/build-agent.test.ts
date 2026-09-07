@@ -1,6 +1,11 @@
 import { createAgent } from "@hermes/agent";
 import type { TelegramPoller } from "@hermes/channels";
 import type {
+  AccessTokenPort as CalendarAccessTokenPort,
+  CalendarClient,
+  CalendarToolDeps,
+} from "@hermes/google-calendar";
+import type {
   AccessTokenPort,
   SheetRegistryPort,
   SheetWriteLogPort,
@@ -55,6 +60,21 @@ function createFakeSheetWriteLogRepo(): SheetWriteLogPort {
   return { claim: vi.fn(), complete: vi.fn() };
 }
 
+/** Never exercised by these tests (no Calendar tool call is triggered) — just needs to satisfy the type. */
+function createFakeCalendarDeps(): CalendarToolDeps {
+  const accessTokenPort: CalendarAccessTokenPort = { getAccessToken: vi.fn() };
+  const calendarClient: CalendarClient = {
+    getPrimaryCalendarTimeZone: vi.fn(),
+    listEvents: vi.fn(),
+    getEvent: vi.fn(),
+    queryFreeBusy: vi.fn(),
+    insertEvent: vi.fn(),
+    patchEvent: vi.fn(),
+    deleteEvent: vi.fn(),
+  };
+  return { accessTokenPort, calendarClient };
+}
+
 /** Never exercised by these tests (no gated tool call is triggered) — just needs to satisfy the type. */
 function createMockChannel(): TelegramPoller {
   return {
@@ -92,6 +112,7 @@ describe("buildAgent — wiring", () => {
       createMockChannel(),
       createFakeSheetsDeps(),
       createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
     );
     const reply = await agent.handleMessage("telegram", "555", "111", "hello");
 
@@ -115,7 +136,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -137,6 +158,7 @@ describe("buildAgent — wiring", () => {
       createMockChannel(),
       createFakeSheetsDeps(),
       createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
     );
     await agent.handleMessage("telegram", "999", "111", "hi");
 
@@ -145,13 +167,15 @@ describe("buildAgent — wiring", () => {
         model: "another-model",
         // assemblePrefix (packages/agent/src/prompt.ts) sorts tools by name
         // for deterministic output — "echo" precedes "get_current_time"
-        // precedes "sheets_inspect" precedes "sheets_read" precedes
-        // "sheets_write" precedes "whoami". The existing prefix (echo,
-        // get_current_time, whoami) is byte-stable — 05-google-sheets Phase 4
-        // inserted the two read entries, Phase 5 inserts sheets_write.
+        // precedes "list_events" precedes "sheets_inspect" precedes
+        // "sheets_read" precedes "sheets_write" precedes "whoami". The
+        // existing prefix (echo, get_current_time, whoami) is byte-stable —
+        // 05-google-sheets Phase 4 inserted the two read entries, Phase 5
+        // inserts sheets_write, 08-calendar Phase 2 inserts list_events.
         tools: [
           expect.objectContaining({ name: "echo" }),
           expect.objectContaining({ name: "get_current_time" }),
+          expect.objectContaining({ name: "list_events" }),
           expect.objectContaining({ name: "sheets_inspect" }),
           expect.objectContaining({ name: "sheets_read" }),
           expect.objectContaining({ name: "sheets_write" }),
@@ -185,6 +209,7 @@ describe("buildAgent — wiring", () => {
     const llmProvider: LlmProvider = { complete };
     const sheetsDeps = createFakeSheetsDeps();
     const sheetWriteLogRepo = createFakeSheetWriteLogRepo();
+    const calendarDeps = createFakeCalendarDeps();
 
     const { agent } = buildAgent(
       pool,
@@ -195,6 +220,7 @@ describe("buildAgent — wiring", () => {
       createMockChannel(),
       sheetsDeps,
       sheetWriteLogRepo,
+      calendarDeps,
     );
     await agent.handleMessage("telegram", "888", "111", "hi");
 
@@ -207,5 +233,44 @@ describe("buildAgent — wiring", () => {
     expect(sheetsDeps.sheetsClient.updateValues).not.toHaveBeenCalled();
     expect(sheetWriteLogRepo.claim).not.toHaveBeenCalled();
     expect(sheetWriteLogRepo.complete).not.toHaveBeenCalled();
+    expect(calendarDeps.accessTokenPort.getAccessToken).not.toHaveBeenCalled();
+    expect(calendarDeps.calendarClient.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("passes list_events (08-calendar Phase 2) in the tools array, ungated (requiresApproval: false)", async () => {
+    const pool = createMockPool([
+      { id: "thread-4", channel: "telegram", chat_id: "777", messages: [] },
+    ]);
+    const complete = vi.fn().mockResolvedValue({
+      text: "ok",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
+      finishReason: "stop",
+      costUsd: 0,
+    });
+    const llmProvider: LlmProvider = { complete };
+
+    const { agent } = buildAgent(
+      pool,
+      llmProvider,
+      "some-model",
+      createMockRecorder(),
+      new AbortController().signal,
+      createMockChannel(),
+      createFakeSheetsDeps(),
+      createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
+    );
+    await agent.handleMessage("telegram", "777", "111", "hi");
+
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: expect.arrayContaining([expect.objectContaining({ name: "list_events" })]),
+      }),
+    );
+
+    const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
+    const listEventsTool = definitionArg?.tools.find((tool) => tool.name === "list_events");
+    expect(listEventsTool?.requiresApproval).toBe(false);
   });
 });

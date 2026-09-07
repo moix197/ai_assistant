@@ -17,6 +17,7 @@
     "@hermes/config": "workspace:*",
     "@hermes/core": "workspace:*",
     "@hermes/google-auth": "workspace:*",
+    "@hermes/google-calendar": "workspace:*",
     "@hermes/google-sheets": "workspace:*",
     "@hermes/llm": "workspace:*",
     "@hermes/store": "workspace:*",
