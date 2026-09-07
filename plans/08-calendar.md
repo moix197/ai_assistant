@@ -513,6 +513,7 @@ approval gate's single-resolve semantics — this mechanism is not that).
 | create | `packages/google-calendar/src/tools/calendar-create-event.ts` | `createCalendarCreateEventTool(deps)` — schema, `prepare`, `handler` below |
 | modify | `packages/google-calendar/src/index.ts` | export `createCalendarCreateEventTool`, `CreateEventPlan` |
 | modify | `packages/google-calendar/README.md` | document `create_event` |
+| create | `packages/google-calendar/src/format-approval-time.ts` | **Added post-review, from live hil testing.** `formatApprovalTimeRangeEs(startUtc, endUtc, timeZone): string` — legible Spanish time-range label for approval-summary display only (e.g. `"martes 8 de septiembre, 12:00 – 13:00"`), distinct from `renderEventTime`'s ISO `localLabel` (which stays correct/untouched for `list_events`/`find_free_slot`/`check_availability`'s JSON tool results). Reused by Phases 5–6's approval targets — see their Design notes. |
 
 **Design:**
 
@@ -645,6 +646,20 @@ roadmap's second named exit criterion.
     },
   }
   ```
+  **Correction from live Phase 4 testing:** `oldLocalRange`/`newLocalRange`
+  must be built with Phase 4's `formatApprovalTimeRangeEs(startUtc, endUtc,
+  timeZone)` (`packages/google-calendar/src/format-approval-time.ts`), NOT
+  `renderEventTime(...).localLabel`. A live user found the raw local-offset-ISO
+  `localLabel` illegible in an approval prompt (Spanish, shown directly to a
+  non-technical user before a real write) — `renderEventTime`'s ISO output
+  stays correct and untouched for `list_events`/`find_free_slot`/
+  `check_availability`'s JSON tool results, but every approval-summary
+  `target`/`action` string in this plan must use the legible formatter
+  instead. Old range comes from the pre-read `event`'s own start/end (rendered
+  via `renderEventTime` first just to get UTC instants, or read directly if
+  the API response already gives ISO strings — then formatted with
+  `formatApprovalTimeRangeEs`); new range from `plan.newStartUtc`/
+  `newEndUtc`.
 - `handler(args, ctx & { plan })`: `calendarClient.patchEvent(accessToken,
   plan.eventId, { start: plan.newStartUtc, end: plan.newEndUtc }, signal)`,
   return the updated event.
@@ -721,6 +736,10 @@ time being cancelled → approving removes it from the calendar.
     },
   }
   ```
+  **Same correction as Phase 5:** `localRange` must be built with
+  `formatApprovalTimeRangeEs(startUtc, endUtc, timeZone)`
+  (`packages/google-calendar/src/format-approval-time.ts`, added in the
+  Phase 4 fix), not `renderEventTime(...).localLabel` — see Phase 5's note.
 - `handler(args, ctx & { plan })`: `calendarClient.deleteEvent(accessToken,
   plan.eventId, signal)`. Calendar's `DELETE` on an already-deleted/unknown
   event id returns `410 Gone`/`404` — treat either as a successful no-op
