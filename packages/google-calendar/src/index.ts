@@ -39,6 +39,7 @@ export {
   type RenderableEventDateTime,
   type RenderedEventTime,
 } from "./render-event-time";
+export { formatApprovalTimeRangeEs } from "./format-approval-time";
 export {
   createCalendarListEventsTool,
   type CreateCalendarListEventsToolDeps,

@@ -116,9 +116,7 @@ describe("createCalendarCreateEventTool", () => {
     )) as { ok: true; summary: { action: string; target?: string; effects: string[] } };
 
     expect(result.summary.action).toBe('Crear evento: "Lunch with Alex"');
-    expect(result.summary.target).toBe(
-      "2026-09-08T12:00:00.000Z – 2026-09-08T13:00:00.000Z",
-    );
+    expect(result.summary.target).toBe("martes 8 de septiembre, 12:00 – 13:00");
     expect(result.summary.effects).toEqual([
       "Se creará un evento nuevo en tu calendario principal.",
     ]);

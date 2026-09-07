@@ -61,9 +61,13 @@ phases).
   summary, startUtc, endUtc })` (settled decision 6, corrected — see
   `.ai/decisions/calendar-event-idempotency.md`) — no Google call, nothing
   exists yet to pre-read (settled decision 3). Builds a Spanish
-  `ApprovalSummary` (`action` names the event title, `target` shows the
-  local start–end range via `renderEventTime`, one `effects` sentence).
-  `handler` calls `calendarClient.insertEvent` with `plan.eventId` as the
+  `ApprovalSummary` (`action` names the event title, `target` shows a legible
+  Spanish start–end range via `format-approval-time.ts`'s
+  `formatApprovalTimeRangeEs` — e.g. `"martes 8 de septiembre, 12:00 – 13:00"`
+  same-day, or `"martes 8 de septiembre, 23:30 – miércoles 9 de septiembre,
+  01:00"` crossing midnight — never `renderEventTime`'s raw ISO, which stays
+  reserved for tool-result JSON, one `effects` sentence). `handler` calls
+  `calendarClient.insertEvent` with `plan.eventId` as the
   caller-supplied idempotency id; a `409 Conflict` — the model emitting two
   identical `create_event` calls in the same turn, or `calendar-client.ts`
   transparently retrying an ambiguous insert failure — is treated as
@@ -79,6 +83,15 @@ both the raw UTC ISO (`startUtc`/`endUtc`) and a human, local-offset-ISO
 as the plain `date` Google returned, with `allDay: true` and no timezone
 math attempted. Shared by `list_events` here and `check_availability`'s
 conflict display (Phase 3).
+
+## `format-approval-time.ts`
+
+`formatApprovalTimeRangeEs(startUtc, endUtc, timeZone)` — pure function
+building `create_event`'s human-facing Spanish approval-summary `target`
+(Phase 4 fix). A distinct UI surface from `renderEventTime` above: this one
+renders a legible sentence (`"martes 8 de septiembre, 12:00 – 13:00"`
+same-day; both ends' full date+time when the range crosses a calendar day)
+for a non-technical Telegram user approving a real write, never raw ISO.
 
 ## Ports
 

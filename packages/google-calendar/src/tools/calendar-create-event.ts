@@ -2,8 +2,8 @@ import { type Clock, systemClock } from "@hermes/core";
 import { z } from "zod/v4";
 import { CalendarApiError } from "../calendar-client";
 import { deriveEventId } from "../deterministic-event-id";
+import { formatApprovalTimeRangeEs } from "../format-approval-time";
 import { type RelativeTimeIntent, resolveRelativeInstant } from "../relative-time";
-import { renderEventTime } from "../render-event-time";
 import { resolveUserTimeZone } from "../timezone-cache";
 import type { CalendarToolContext, CalendarToolDeps } from "./tool-deps";
 
@@ -88,9 +88,11 @@ function resolveEndUtc(args: Args, startUtc: string): string {
  * needed is already resolvable locally (settled decision 3: `create_event`
  * needs no pre-read, nothing exists yet). Builds the Spanish
  * `ApprovalSummary` the approval gate shows before a human ever sees
- * anything: `target` reuses `renderEventTime`'s local-offset-ISO
- * `"start – end"` rendering (fed a synthetic timed event), same reuse
- * convention `find_free_slot` already uses for its candidate slots.
+ * anything: `target` uses `formatApprovalTimeRangeEs` for a legible Spanish
+ * date/time label — a non-technical user approves a real write off this
+ * string, so it must read as a sentence, not `renderEventTime`'s ISO-based
+ * `localLabel` (correct for `list_events`/`find_free_slot`'s tool-result
+ * JSON, wrong for this human-facing summary).
  */
 async function prepareCreateEvent(
   deps: CreateCalendarCreateEventToolDeps,
@@ -109,17 +111,13 @@ async function prepareCreateEvent(
   const startUtc = resolveStartUtc(parsed, nowUtcIso, timeZone);
   const endUtc = resolveEndUtc(parsed, startUtc);
   const eventId = deriveEventId(ctx.turnId, { summary: parsed.summary, startUtc, endUtc });
-  const rendered = renderEventTime(
-    { start: { dateTime: startUtc }, end: { dateTime: endUtc } },
-    timeZone,
-  );
 
   return {
     ok: true,
     plan: { eventId, summary: parsed.summary, description: parsed.description, startUtc, endUtc },
     summary: {
       action: `Crear evento: "${parsed.summary}"`,
-      target: rendered.localLabel,
+      target: formatApprovalTimeRangeEs(startUtc, endUtc, timeZone),
       effects: ["Se creará un evento nuevo en tu calendario principal."],
     },
   };
