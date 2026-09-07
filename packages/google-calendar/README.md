@@ -80,7 +80,10 @@ follows in a later phase).
   `calendarClient.getEvent(accessToken, eventId, signal)`. A 404 fails closed
   with `{ ok: false, result: { ok: false, reason: "event_not_found" } }` — no
   approval prompt for a nonexistent event, same posture as Sheets'
-  unknown-slug refusal. Otherwise it resolves the new `startUtc`/`endUtc`
+  unknown-slug refusal. If the pre-read event turns out to be all-day (e.g. a
+  stale `eventId` from an earlier `list_events` call pointing at a holiday or
+  birthday), it fails closed the same way with `reason: "all_day_event"`
+  instead of throwing. Otherwise it resolves the new `startUtc`/`endUtc`
   (explicit `startIso`/`endIso` win outright over the intent
   fields/`durationMinutes`; omitting both `durationMinutes` and `endIso`
   preserves the pre-read event's own current duration) and validates the new

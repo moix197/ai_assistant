@@ -62,7 +62,10 @@ type ReschedulePrepareResult =
     }
   | {
       ok: false;
-      result: { ok: false; reason: "event_not_found" | "inverted_window" | "window_too_large" };
+      result: {
+        ok: false;
+        reason: "event_not_found" | "inverted_window" | "window_too_large" | "all_day_event";
+      };
     };
 
 /** Resolves the event's new start instant: explicit `startIso` wins outright; otherwise the intent fields resolve via `resolveRelativeInstant`, same pattern as `create_event`. */
@@ -132,8 +135,10 @@ async function prepareRescheduleEvent(
     // All-day events are never created or rescheduled (plan Context,
     // structural scoping) — this branch only guards against attempting to
     // move one that predates the bot, e.g. a holiday the user manually put
-    // on their own calendar.
-    throw new Error("cannot reschedule an all-day event");
+    // on their own calendar. Fails closed with a refusal reason, same as
+    // the other guards in this function, rather than throwing — a stale
+    // eventId from an earlier list_events call can point at one of these.
+    return { ok: false, result: { ok: false, reason: "all_day_event" } };
   }
   const currentDurationMs =
     new Date(rendered.endUtc).getTime() - new Date(rendered.startUtc).getTime();

@@ -194,6 +194,24 @@ describe("createCalendarRescheduleEventTool", () => {
     expect(result).toEqual({ ok: false, result: { ok: false, reason: "window_too_large" } });
   });
 
+  it("all_day_event refusal when the pre-read event is all-day — fails closed instead of throwing", async () => {
+    const allDayEvent: CalendarEvent = {
+      id: "evt-holiday",
+      summary: "Labor Day",
+      start: { date: "2026-09-08" },
+      end: { date: "2026-09-09" },
+    };
+    const deps = fakeDeps({ existingEvent: allDayEvent });
+    const tool = createCalendarRescheduleEventTool(deps);
+
+    const result = await tool.prepare?.(
+      { eventId: "evt-holiday", startIso: "2026-09-10T14:00:00.000Z" },
+      ctxFor(),
+    );
+
+    expect(result).toEqual({ ok: false, result: { ok: false, reason: "all_day_event" } });
+  });
+
   it("handler calls patchEvent with exactly the planned start/end and returns the updated event", async () => {
     const patchedEvent: CalendarEvent = {
       id: "evt-1",
