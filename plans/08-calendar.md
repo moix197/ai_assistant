@@ -475,18 +475,18 @@ Thursday?" and gets a real yes/no with the conflicting event named if not.
 
 - [x] `pnpm --filter @hermes/google-calendar test` passes
 - [x] `pnpm -r typecheck` passes
-- [ ] Manual: against the real bot, "find me a free 30 min slot tomorrow morning" and "am I free Thursday at 3?" both return real, correct answers
+- [x] Manual: against the real bot, "find me a free 30 min slot tomorrow morning" and "am I free Thursday at 3?" both return real, correct answers — confirmed by orchestrator against the rebuilt `feat/08-calendar` worktree stack
 
 **Phase review:**
 
-- [x] All Steps and Verification checkboxes above ticked in the plan file (automated ones; manual live-bot check pending)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [x] Code-reviewer agent has verified this phase (verdict: green)
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits only, no changes required — one-candidate-per-gap design judged faithful to plan wording)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (README.md)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat(google-calendar): add find_free_slot and check_availability tools`
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
