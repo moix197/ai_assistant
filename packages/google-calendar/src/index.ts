@@ -51,3 +51,8 @@ export {
   createCalendarCheckAvailabilityTool,
   type CreateCalendarCheckAvailabilityToolDeps,
 } from "./tools/calendar-check-availability";
+export {
+  createCalendarCreateEventTool,
+  type CreateCalendarCreateEventToolDeps,
+  type CreateEventPlan,
+} from "./tools/calendar-create-event";

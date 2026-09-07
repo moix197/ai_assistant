@@ -2,12 +2,13 @@ import { type Agent, type AgentDefinition, type ThreadRepo, createAgent } from "
 import type { InboundCallback, TelegramPoller } from "@hermes/channels";
 import { type Logger, createLogger } from "@hermes/core";
 import { TOOL_REQUIRED_SCOPES } from "@hermes/google-auth";
-import type { CalendarToolDeps } from "@hermes/google-calendar";
+import type { CalendarToolDeps, CreateEventPlan } from "@hermes/google-calendar";
 import { createCalendarListEventsTool } from "@hermes/google-calendar";
 import {
   createCalendarCheckAvailabilityTool,
   createCalendarFindFreeSlotTool,
 } from "@hermes/google-calendar";
+import { createCalendarCreateEventTool } from "@hermes/google-calendar";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -195,6 +196,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("check_availability"),
   })(createCalendarCheckAvailabilityTool(calendarDeps));
 
+  const createEventTool = withRequiredScopes<CreateEventPlan>("create_event", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("create_event"),
+  })(createCalendarCreateEventTool(calendarDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -209,6 +215,7 @@ export function buildAgent(
       listEventsTool,
       findFreeSlotTool,
       checkAvailabilityTool,
+      createEventTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

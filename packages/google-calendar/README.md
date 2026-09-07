@@ -7,8 +7,9 @@ resolution, deterministic relative-time resolution, window bounds, and the
 event idempotency id — with nothing wired into the bot yet. Phase 2 wires
 `/connect google calendar` and ships `list_events`. Phase 3 adds
 `find_free_slot` and `check_availability`, rounding out the package's three
-ungated read tools (`create_event`, `reschedule_event`, `cancel_event`
-follow in later phases).
+ungated read tools. Phase 4 adds `create_event`, the package's first
+approval-gated write tool (`reschedule_event`, `cancel_event` follow in later
+phases).
 
 ## Tools
 
@@ -52,6 +53,22 @@ follow in later phases).
   `{ ok: true, timeZone, range, available, conflicts? }` — conflict entries
   render via `renderEventTime`, so an all-day conflicting event never crashes
   the response.
+- **`create_event`** (`tools/calendar-create-event.ts`) — approval-gated
+  write, `requiresApproval: true`. `prepare` resolves the user's timezone and
+  the requested `startUtc`/`endUtc` (explicit `startIso`/`endIso` win
+  outright over the intent fields/`durationMinutes`, default 60 minutes, min
+  5, max 1440) and derives `eventId` via `deriveEventId(ctx.turnId, {
+  summary, startUtc, endUtc })` (settled decision 6, corrected — see
+  `.ai/decisions/calendar-event-idempotency.md`) — no Google call, nothing
+  exists yet to pre-read (settled decision 3). Builds a Spanish
+  `ApprovalSummary` (`action` names the event title, `target` shows the
+  local start–end range via `renderEventTime`, one `effects` sentence).
+  `handler` calls `calendarClient.insertEvent` with `plan.eventId` as the
+  caller-supplied idempotency id; a `409 Conflict` — the model emitting two
+  identical `create_event` calls in the same turn, or `calendar-client.ts`
+  transparently retrying an ambiguous insert failure — is treated as
+  already-created: fetches and returns the existing event via `getEvent`
+  instead of erroring.
 
 ## `render-event-time.ts`
 
