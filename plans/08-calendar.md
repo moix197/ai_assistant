@@ -682,18 +682,18 @@ roadmap's second named exit criterion.
 
 - [x] `pnpm --filter @hermes/google-calendar test` passes
 - [x] `pnpm -r typecheck` passes
-- [ ] Manual: against the real bot — ask "what's on today?", note a real event's time, then say "move my \<that time\> to Thursday 10am"; confirm the approval prompt shows the real old time → new time; approve; confirm the event's time actually changed on Google Calendar
+- [x] Manual: against the real bot — ask "what's on today?", note a real event's time, then say "move my \<that time\> to Thursday 10am"; confirm the approval prompt shows the real old time → new time; approve; confirm the event's time actually changed on Google Calendar — confirmed by orchestrator, roadmap's second exit criterion working end to end
 
 **Phase review:**
 
-- [x] All Steps and Verification checkboxes above ticked in the plan file (automated ones; manual live-bot check pending)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [x] Code-reviewer agent has verified this phase (verdict: green; one nit — all-day-event refusal threw instead of failing closed — fixed in `d23432c`)
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (README.md)
-- [ ] Orchestrator (user) has verified and approved this phase, including the manual live-bot check
+- [x] Orchestrator (user) has verified and approved this phase, including the manual live-bot check
 - [x] Changes committed: `feat(google-calendar): add approval-gated reschedule_event tool with pre-read diff` (`f44b8af`), `fix(google-calendar): fail closed instead of throwing when rescheduling an all-day event` (`d23432c`)
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
