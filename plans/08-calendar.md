@@ -316,6 +316,7 @@ their own timezone. This is the roadmap's first named exit criterion.
 | modify | `packages/google-auth/src/scopes.ts` | add `CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"]`; add `if (normalized === "calendar") return [...IDENTITY_SCOPES, ...CALENDAR_SCOPES];` in `resolveConnectScopes` (before the final `return undefined`); add `["list_events", CALENDAR_SCOPES]` to `TOOL_REQUIRED_SCOPES` (additive — other 5 tool rows land in their own phases) |
 | modify | `apps/hermes/src/handlers/connect.ts` | `USAGE_TEXT` gains a clause: `"Usage: /connect google, /connect google sheets, or /connect google calendar"` |
 | modify | `apps/hermes/src/agent/with-required-scopes.ts` | `describeConnectCommand`: add a `CALENDAR_SCOPES` branch (import from `@hermes/google-auth`) — check sheets first, then calendar, else identity; returns `"run /connect google calendar"` when the gated tool needs `CALENDAR_SCOPES` |
+| modify | `apps/hermes/package.json` | add `"@hermes/google-calendar": "workspace:*"` to `dependencies`, mirroring the existing `@hermes/google-sheets` entry. **Omitted from the original draft.** Without it `apps/hermes` imports a package it never declares: `tsconfig.base.json`'s path mapping keeps `typecheck` green, so the gap only surfaces at build/runtime under pnpm's strict `node_modules` layout — a failure no phase gate in this plan would catch. |
 | create | `apps/hermes/src/google/build-calendar-access-token-port.ts` | mirrors `build-access-token-port.ts` exactly, typed against `@hermes/google-calendar`'s `AccessTokenPort`, bound to the same shared `RefreshCoordinator` instance boot.ts already holds (never a second coordinator — settled decision 18 from `04-google-auth`) |
 | modify | `apps/hermes/src/boot.ts` | add `buildCalendarDeps(pool, googleAccountRepo, coordinator): CalendarToolDeps`, mirroring `buildSheetsDeps` (unconfigured-Google fallback throws the same style of error); call it in `createMessageHandlers`, pass `calendarDeps` into `buildAgent` |
 | modify | `apps/hermes/src/agent/build-agent.ts` | import `CalendarToolDeps`, `createCalendarListEventsTool`; `buildAgent` gains `calendarDeps: CalendarToolDeps` inserted immediately before the trailing `logger: Logger = createLogger()` param; construct `listEventsTool = withRequiredScopes("list_events", { googleAccountRepo, requiredScopes: requiredScopesFor("list_events") })(createCalendarListEventsTool(calendarDeps))`; append `listEventsTool` to the end of the `tools` array (after `sheetsWriteTool`) |
@@ -369,6 +370,7 @@ their own timezone. This is the roadmap's first named exit criterion.
 - [ ] `connect.ts`: update `USAGE_TEXT`
 - [ ] `with-required-scopes.ts`: add calendar branch to `describeConnectCommand`
 - [ ] Create `build-calendar-access-token-port.ts`
+- [ ] Add `"@hermes/google-calendar": "workspace:*"` to `apps/hermes/package.json` dependencies, then `pnpm install`
 - [ ] `boot.ts`: add `buildCalendarDeps`, wire into `createMessageHandlers`/`buildAgent` call
 - [ ] `build-agent.ts`: widen `buildAgent` signature, construct + append `listEventsTool`
 - [ ] Implement `render-event-time.ts`

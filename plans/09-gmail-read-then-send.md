@@ -459,11 +459,18 @@ first:
    `@hermes/google-sheets`'s `AccessTokenPort`. See the resolution below;
    the edit is idempotent in exactly the same way as (3).
 5. **Migration filename numbering** — `packages/store/src/migrations/` is at
-   `009_sheet_write_log.sql`. If Calendar also adds a table, both plans want
-   `010_`. **Pick the next free number at execution time**; do not hardcode
-   `010` into the implementation from this document. Migrations are applied
-   in filename order and two files sharing a number is a boot-time failure,
-   not a merge conflict a compiler catches.
+   `009_sheet_write_log.sql`, so `010_` is the next free number. **Verified
+   against the Calendar plan: it adds no migration at all** (it persists
+   nothing new), so `010_` is uncontested and this is not a live contention
+   point. Recorded here only so a future third plan does not rediscover it.
+   Should two plans ever want the same number, the failure mode is *not* a
+   boot-time crash: `sortMigrationFilenames` (`packages/store/src/migrate.ts`)
+   filters `*.sql` and sorts on the **full filename**, and the applied id in
+   `schema_migrations` *is* the filename — so two files sharing a numeric
+   prefix get distinct ids and both apply, deterministically ordered by the
+   rest of the name. The real hazard is silent inter-migration ordering, which
+   no compiler and no unique constraint will catch. **Still pick the next free
+   number at execution time** rather than hardcoding `010` from this document.
 
 ### Resolved here, not deferred: `buildAccessTokenPort`'s Sheets-typed signature
 
