@@ -807,7 +807,7 @@ time being cancelled → approving removes it from the calendar.
 - [x] Feature tested manually end to end on the real bot: connect → list → free-slot search → availability check → create → reschedule (the "3pm to Thursday 10am" case specifically) → cancel
 - [x] Overall success criteria met
 - [x] All phase checkboxes above are ticked
-- [ ] `sync-knowledge` run to close out `.ai/` updates (see Knowledge Base Impact below)
+- [x] `sync-knowledge` run to close out `.ai/` updates (see Knowledge Base Impact below)
 
 ## Documentation
 
