@@ -662,9 +662,9 @@ unread mail.
       which fail on `ECONNREFUSED 127.0.0.1:5432` in this environment — no
       local Postgres running; unrelated to `packages/store`, which this phase
       does not touch)
-- [ ] `pnpm lint` green — 14 pre-existing formatting errors in
-      `packages/google-calendar` (untouched by this phase); zero errors in
-      any file this phase created/modified
+- [x] `pnpm lint` green (fixed 14 pre-existing formatting/import-order
+      errors in `packages/google-calendar` + `build-calendar-access-token-port.ts`,
+      whitespace-only, 110/110 google-calendar tests still pass)
 - [x] `pnpm build` (or restart via `pnpm dev`, which runs `predev`) before any
       manual check — the package is invisible to the running bot otherwise
 - [ ] Manual (hil): `/connect google` (identity only) → ask "¿tengo algo sin
@@ -680,7 +680,7 @@ unread mail.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-      (lint and the three manual hil checks remain open — see Verification)
+      (the three manual hil checks remain open — see Verification)
 - [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
       subagent dispatch, superseding this template's manual clear-context
       handoff protocol)
