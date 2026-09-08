@@ -388,6 +388,32 @@ describe("formatBatchPrompt", () => {
       ].join("\n"),
     );
   });
+
+  it("renders gmail_send_draft's summary — including the irreversible-send effect — through the unchanged renderer (09-gmail-read-then-send Phase 5)", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "gmail_send_draft",
+        args: { draftId: "draft-1" },
+        summary: {
+          action: "¿Enviar este correo?",
+          target: "Para: sarah@example.com — Re: Confirmación",
+          items: ["El viernes me sirve."],
+          effects: ["Se envía de verdad. Esto no se puede deshacer."],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        "¿Enviar este correo?",
+        "Para: sarah@example.com — Re: Confirmación",
+        "",
+        "  El viernes me sirve.",
+        "",
+        "Se envía de verdad. Esto no se puede deshacer.",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("formatResolvedText", () => {
