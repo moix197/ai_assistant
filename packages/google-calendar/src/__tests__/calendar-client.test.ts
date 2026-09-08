@@ -5,7 +5,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
@@ -15,7 +19,9 @@ function emptyResponse(status: number): Response {
 
 describe("createCalendarClient", () => {
   it("getPrimaryCalendarTimeZone GETs /calendars/primary and returns the timeZone field", async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(200, { timeZone: "America/New_York" }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { timeZone: "America/New_York" }));
     const client = createCalendarClient({ fetchImpl });
 
     const result = await client.getPrimaryCalendarTimeZone("secret-token");
@@ -321,7 +327,9 @@ describe("createCalendarClient", () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(403, { error: "forbidden" }));
     const client = createCalendarClient({ fetchImpl });
 
-    await expect(client.getPrimaryCalendarTimeZone("token")).rejects.toBeInstanceOf(CalendarApiError);
+    await expect(client.getPrimaryCalendarTimeZone("token")).rejects.toBeInstanceOf(
+      CalendarApiError,
+    );
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

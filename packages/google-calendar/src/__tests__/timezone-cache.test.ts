@@ -15,7 +15,13 @@ function fakeDeps(timeZone: string, now: Date) {
   const calendarClient = {
     getPrimaryCalendarTimeZone,
   } as unknown as CalendarClient;
-  return { accessTokenPort, calendarClient, clock: fixedClock(now), getAccessToken, getPrimaryCalendarTimeZone };
+  return {
+    accessTokenPort,
+    calendarClient,
+    clock: fixedClock(now),
+    getAccessToken,
+    getPrimaryCalendarTimeZone,
+  };
 }
 
 describe("resolveUserTimeZone", () => {

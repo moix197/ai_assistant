@@ -9,9 +9,9 @@ const NY = "America/New_York";
 
 describe("resolveRelativeInstant", () => {
   it("relativeDay 'today' + timeOfDay 'morning' resolves to 09:00 local today", () => {
-    expect(resolveRelativeInstant({ relativeDay: "today", timeOfDay: "morning" }, NOW_UTC_ISO, NY)).toBe(
-      "2026-09-07T13:00:00.000Z",
-    );
+    expect(
+      resolveRelativeInstant({ relativeDay: "today", timeOfDay: "morning" }, NOW_UTC_ISO, NY),
+    ).toBe("2026-09-07T13:00:00.000Z");
   });
 
   it("relativeDay 'tomorrow' + timeOfDay 'afternoon' resolves to 14:00 local tomorrow", () => {
@@ -28,9 +28,9 @@ describe("resolveRelativeInstant", () => {
 
   it("weekday alone (no relativeDay) resolves to the next occurrence of that weekday, timeOfDay 'night' -> 21:00 local", () => {
     // today is Monday; the next Thursday is 3 days out.
-    expect(resolveRelativeInstant({ weekday: "thursday", timeOfDay: "night" }, NOW_UTC_ISO, NY)).toBe(
-      "2026-09-11T01:00:00.000Z",
-    );
+    expect(
+      resolveRelativeInstant({ weekday: "thursday", timeOfDay: "night" }, NOW_UTC_ISO, NY),
+    ).toBe("2026-09-11T01:00:00.000Z");
   });
 
   it("weekday + relativeDay 'next_week' pushes the match one week further out, even when today already matches", () => {
@@ -46,9 +46,9 @@ describe("resolveRelativeInstant", () => {
 
   it("a weekday earlier in the ISO week than today wraps forward to next week", () => {
     // today is Monday (iso 1); sunday (iso 7) is 6 days out, not -1.
-    expect(resolveRelativeInstant({ weekday: "sunday", timeOfDay: "afternoon" }, NOW_UTC_ISO, NY)).toBe(
-      "2026-09-13T18:00:00.000Z",
-    );
+    expect(
+      resolveRelativeInstant({ weekday: "sunday", timeOfDay: "afternoon" }, NOW_UTC_ISO, NY),
+    ).toBe("2026-09-13T18:00:00.000Z");
   });
 
   it("defaults to 'morning' (09:00 local) when timeOfDay is omitted", () => {
@@ -63,9 +63,9 @@ describe("resolveRelativeInstant", () => {
 
   it("respects the given IANA zone, not just the offset a US zone happens to share", () => {
     // UTC has no offset at all, so 09:00 local == 09:00Z, unlike NY's -04:00.
-    expect(resolveRelativeInstant({ relativeDay: "today", timeOfDay: "morning" }, NOW_UTC_ISO, "UTC")).toBe(
-      "2026-09-07T09:00:00.000Z",
-    );
+    expect(
+      resolveRelativeInstant({ relativeDay: "today", timeOfDay: "morning" }, NOW_UTC_ISO, "UTC"),
+    ).toBe("2026-09-07T09:00:00.000Z");
   });
 
   it("resolves the correct offset across a real DST spring-forward transition (America/New_York, 2026-03-08)", () => {
@@ -117,7 +117,9 @@ describe("resolveRelativeWindow", () => {
   });
 
   it("weekday + timeOfDay narrows to that one day's time-of-day hour range", () => {
-    expect(resolveRelativeWindow({ weekday: "friday", timeOfDay: "evening" }, NOW_UTC_ISO, NY)).toEqual({
+    expect(
+      resolveRelativeWindow({ weekday: "friday", timeOfDay: "evening" }, NOW_UTC_ISO, NY),
+    ).toEqual({
       startUtc: "2026-09-11T22:00:00.000Z",
       endUtc: "2026-09-12T01:00:00.000Z",
     });

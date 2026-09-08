@@ -74,9 +74,7 @@ describe("createCalendarCancelEventTool", () => {
     expect(result.summary.action).toBe('Cancelar "Standup"');
     expect(result.summary.target).toBe("lunes 7 de septiembre, 19:00 – 19:30");
     expect(result.summary.target).not.toMatch(/\d{4}-\d{2}-\d{2}T/); // never raw ISO
-    expect(result.summary.effects).toEqual([
-      "El evento se eliminará de tu calendario principal.",
-    ]);
+    expect(result.summary.effects).toEqual(["El evento se eliminará de tu calendario principal."]);
     expect(result.plan).toEqual({ eventId: "evt-1" });
   });
 

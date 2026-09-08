@@ -106,7 +106,11 @@ function findFreeGaps(
     if (cursorMs >= windowEndMs) break;
   }
 
-  if (candidates.length < MAX_CANDIDATES && cursorMs < windowEndMs && windowEndMs - cursorMs >= durationMs) {
+  if (
+    candidates.length < MAX_CANDIDATES &&
+    cursorMs < windowEndMs &&
+    windowEndMs - cursorMs >= durationMs
+  ) {
     candidates.push({
       startUtc: new Date(cursorMs).toISOString(),
       endUtc: new Date(cursorMs + durationMs).toISOString(),

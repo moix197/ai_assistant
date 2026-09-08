@@ -105,7 +105,10 @@ function startOfIsoWeek(day: DateTime): DateTime {
  * `[start, end)` for a single local calendar day, narrowed to `timeOfDay`'s
  * hour range when given, else the whole day.
  */
-function dayBounds(day: DateTime, timeOfDay: TimeOfDay | undefined): { start: DateTime; end: DateTime } {
+function dayBounds(
+  day: DateTime,
+  timeOfDay: TimeOfDay | undefined,
+): { start: DateTime; end: DateTime } {
   const base = day.startOf("day");
   if (timeOfDay === undefined) return { start: base, end: base.plus({ days: 1 }) };
   const range = WINDOW_HOUR_RANGE_BY_TIME_OF_DAY[timeOfDay];

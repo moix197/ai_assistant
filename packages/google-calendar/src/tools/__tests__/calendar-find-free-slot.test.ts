@@ -77,9 +77,7 @@ describe("createCalendarFindFreeSlotTool", () => {
     )) as { ok: true; candidates: Array<{ startUtc: string; endUtc: string }> };
 
     expect(result.ok).toBe(true);
-    expect(
-      result.candidates.map(({ startUtc, endUtc }) => ({ startUtc, endUtc })),
-    ).toEqual([
+    expect(result.candidates.map(({ startUtc, endUtc }) => ({ startUtc, endUtc }))).toEqual([
       { startUtc: "2026-09-07T09:00:00.000Z", endUtc: "2026-09-07T09:30:00.000Z" },
       { startUtc: "2026-09-07T10:30:00.000Z", endUtc: "2026-09-07T11:00:00.000Z" },
       { startUtc: "2026-09-07T15:00:00.000Z", endUtc: "2026-09-07T15:30:00.000Z" },
@@ -118,9 +116,9 @@ describe("createCalendarFindFreeSlotTool", () => {
       ctxFor(),
     )) as { ok: true; candidates: Array<{ startUtc: string; endUtc: string }> };
 
-    expect(
-      result.candidates.map(({ startUtc, endUtc }) => ({ startUtc, endUtc })),
-    ).toEqual([{ startUtc: "2026-09-07T09:00:00.000Z", endUtc: "2026-09-07T09:30:00.000Z" }]);
+    expect(result.candidates.map(({ startUtc, endUtc }) => ({ startUtc, endUtc }))).toEqual([
+      { startUtc: "2026-09-07T09:00:00.000Z", endUtc: "2026-09-07T09:30:00.000Z" },
+    ]);
   });
 
   it("an inverted resolved window (explicit startIso/endIso) is refused before queryFreeBusy is called", async () => {

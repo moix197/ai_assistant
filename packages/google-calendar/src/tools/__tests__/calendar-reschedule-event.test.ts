@@ -138,7 +138,10 @@ describe("createCalendarRescheduleEventTool", () => {
   });
 
   it("resolves a relative intent for the new start time via resolveRelativeInstant", async () => {
-    const deps = fakeDeps({ timeZone: "America/New_York", now: new Date("2026-09-07T12:00:00.000Z") });
+    const deps = fakeDeps({
+      timeZone: "America/New_York",
+      now: new Date("2026-09-07T12:00:00.000Z"),
+    });
     const tool = createCalendarRescheduleEventTool(deps);
 
     const result = (await tool.prepare?.(

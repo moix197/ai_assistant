@@ -66,7 +66,9 @@ function resolveCheckWindow(
     : { relativeDay: "today" };
 
   const startUtc = args.startIso ?? resolveRelativeInstant(intent, nowUtcIso, timeZone);
-  const endUtc = args.endIso ?? new Date(new Date(startUtc).getTime() + args.durationMinutes * 60_000).toISOString();
+  const endUtc =
+    args.endIso ??
+    new Date(new Date(startUtc).getTime() + args.durationMinutes * 60_000).toISOString();
   return { startUtc, endUtc };
 }
 

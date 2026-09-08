@@ -93,7 +93,12 @@ describe("createCalendarCreateEventTool", () => {
     const tool = createCalendarCreateEventTool(deps);
 
     const result = (await tool.prepare?.(
-      { summary: "Lunch with Alex", relativeDay: "tomorrow", timeOfDay: "afternoon", durationMinutes: 60 },
+      {
+        summary: "Lunch with Alex",
+        relativeDay: "tomorrow",
+        timeOfDay: "afternoon",
+        durationMinutes: 60,
+      },
       ctxFor(),
     )) as { ok: true; plan: CreateEventPlan };
 

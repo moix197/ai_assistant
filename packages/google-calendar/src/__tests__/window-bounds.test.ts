@@ -3,21 +3,23 @@ import { validateTimeWindow } from "../window-bounds";
 
 describe("validateTimeWindow", () => {
   it("accepts a valid, forward window within the default max", () => {
-    expect(
-      validateTimeWindow("2026-09-08T00:00:00.000Z", "2026-09-09T00:00:00.000Z"),
-    ).toEqual({ ok: true });
+    expect(validateTimeWindow("2026-09-08T00:00:00.000Z", "2026-09-09T00:00:00.000Z")).toEqual({
+      ok: true,
+    });
   });
 
   it("rejects an equal start/end as inverted_window (zero-length window)", () => {
-    expect(
-      validateTimeWindow("2026-09-08T00:00:00.000Z", "2026-09-08T00:00:00.000Z"),
-    ).toEqual({ ok: false, reason: "inverted_window" });
+    expect(validateTimeWindow("2026-09-08T00:00:00.000Z", "2026-09-08T00:00:00.000Z")).toEqual({
+      ok: false,
+      reason: "inverted_window",
+    });
   });
 
   it("rejects start > end as inverted_window", () => {
-    expect(
-      validateTimeWindow("2026-09-09T00:00:00.000Z", "2026-09-08T00:00:00.000Z"),
-    ).toEqual({ ok: false, reason: "inverted_window" });
+    expect(validateTimeWindow("2026-09-09T00:00:00.000Z", "2026-09-08T00:00:00.000Z")).toEqual({
+      ok: false,
+      reason: "inverted_window",
+    });
   });
 
   it("rejects a window past maxDays as window_too_large", () => {

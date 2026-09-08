@@ -29,7 +29,9 @@ export interface BuildCalendarAccessTokenPortDeps {
  * references avoids writing back an unchanged token envelope on every tool
  * call.
  */
-export function buildCalendarAccessTokenPort(deps: BuildCalendarAccessTokenPortDeps): AccessTokenPort {
+export function buildCalendarAccessTokenPort(
+  deps: BuildCalendarAccessTokenPortDeps,
+): AccessTokenPort {
   return {
     async getAccessToken(channel: string, channelUserId: string): Promise<string> {
       const account = await deps.googleAccountRepo.getAccount(channel, channelUserId);
