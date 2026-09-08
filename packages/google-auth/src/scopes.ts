@@ -97,4 +97,8 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   // file-changes row).
   ["gmail_archive", [GMAIL_MODIFY_SCOPE]],
   ["gmail_label", [GMAIL_MODIFY_SCOPE]],
+  // `drafts.create`/`drafts.update` accept `gmail.modify` per Google's
+  // per-method scope table — the write tier already grants it, so this adds
+  // no new connect-tier scope (Phase 4 file-changes row).
+  ["gmail_draft_reply", [GMAIL_MODIFY_SCOPE]],
 ]);

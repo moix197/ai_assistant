@@ -16,10 +16,16 @@ import {
 import { createCalendarCreateEventTool } from "@hermes/google-calendar";
 import { createCalendarRescheduleEventTool } from "@hermes/google-calendar";
 import { createCalendarCancelEventTool } from "@hermes/google-calendar";
-import type { GmailArchivePlan, GmailLabelPlan, GmailToolDeps } from "@hermes/google-gmail";
+import type {
+  GmailArchivePlan,
+  GmailDraftReplyPlan,
+  GmailLabelPlan,
+  GmailToolDeps,
+} from "@hermes/google-gmail";
 import { createGmailListUnreadTool } from "@hermes/google-gmail";
 import { createGmailReadThreadTool, createGmailSearchTool } from "@hermes/google-gmail";
 import { createGmailArchiveTool, createGmailLabelTool } from "@hermes/google-gmail";
+import { createGmailDraftReplyTool } from "@hermes/google-gmail";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -254,6 +260,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("gmail_label"),
   })(createGmailLabelTool(gmailDeps));
 
+  const gmailDraftReplyTool = withRequiredScopes<GmailDraftReplyPlan>("gmail_draft_reply", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("gmail_draft_reply"),
+  })(createGmailDraftReplyTool(gmailDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -276,6 +287,7 @@ export function buildAgent(
       gmailReadThreadTool,
       gmailArchiveTool,
       gmailLabelTool,
+      gmailDraftReplyTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

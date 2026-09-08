@@ -4,6 +4,8 @@ export {
   GmailApiError,
   type CreateGmailClientOptions,
   type GmailClient,
+  type GmailDraft,
+  type GmailDraftRequest,
   type GmailListMessagesQuery,
   type GmailListMessagesResult,
   type GmailMessageFull,
@@ -12,6 +14,7 @@ export {
   type GmailThread,
   type GmailThreadMessageRef,
 } from "./gmail-client";
+export { buildMimeMessage, type BuildMimeMessageInput } from "./build-mime-message";
 export {
   decodeBase64Url,
   decodePart,
@@ -65,3 +68,8 @@ export {
   type GmailLabelPlan,
   type UnknownLabelResult,
 } from "./tools/gmail-label";
+export {
+  createGmailDraftReplyTool,
+  type CreateGmailDraftReplyToolDeps,
+  type GmailDraftReplyPlan,
+} from "./tools/gmail-draft-reply";

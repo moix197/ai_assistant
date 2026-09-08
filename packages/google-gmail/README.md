@@ -9,7 +9,10 @@ actual mail body text into context, bounded (see "Body pipeline" below).
 Phase 3 ships the write tier's first two tools, `gmail_archive` and
 `gmail_label` — both approval-gated, both reversible, proving the whole
 `prepare` → `ApprovalSummary` → Telegram prompt → tap → handler → Gmail path
-before Phase 5's irreversible `gmail_send_draft` ever exists.
+before Phase 5's irreversible `gmail_send_draft` ever exists. Phase 4 ships
+`gmail_draft_reply` — a real, threaded Gmail draft the human reads in full
+before it exists, still reversible (a draft, never a send) but the first
+tool to compose its own outbound MIME content.
 
 ## Ports
 
@@ -80,6 +83,22 @@ Phase 3 adds the first write method, plus one more read:
   so `prepare` can refuse an unknown label legibly, before any approval
   prompt, listing every registered label.
 
+Phase 4 adds the draft methods, plus `PUT` support in the shared
+request/retry path (`requestJson`/`requestWithRetry` now take an optional
+`method`, defaulting to `POST`/`GET` off `body`'s presence when omitted — no
+existing call site changes):
+
+- `createDraft(accessToken, { threadId, raw }, signal?)` — `POST
+  /users/me/drafts` (`users.drafts.create`). Backs `gmail_draft_reply`'s
+  create path.
+- `updateDraft(accessToken, draftId, { threadId, raw }, signal?)` — `PUT
+  /users/me/drafts/{draftId}` (`users.drafts.update`), the one `PUT` call
+  this client makes. Backs `gmail_draft_reply`'s update path — same draft id
+  in, same draft id out.
+- `getDraft(accessToken, draftId, signal?)` — `GET /users/me/drafts/{draftId}`
+  (`users.drafts.get`). Not called by `gmail_draft_reply`; exists for Phase
+  5's `gmail_send_draft` existence check before sending.
+
 Own `classify` (429 → `rateLimit`, honoring `Retry-After`; 5xx →
 `transient`; anything else — **notably 401/403** — fatal, thrown directly,
 never retried) and own `redact` (strips the bearer token from any thrown
@@ -105,6 +124,35 @@ depth: `withRequiredScopes` already gates every call on a granted scope
 before the handler runs, but a scope revoked at Google *after* that
 pre-check still needs a structured refusal, not a throw. Shared by every
 Gmail tool from here on.
+
+## `build-mime-message.ts` (Phase 4)
+
+Our own, narrow RFC 2822 composer — no library, same posture as
+`gmail-client.ts`'s own fetch wrapper and `mime.ts`'s own parser.
+`buildMimeMessage({ from, to, subject, body, inReplyTo?, references? })`
+returns the base64url-encoded raw message Gmail's `drafts.create`/
+`drafts.update` `raw` field requires:
+
+- `Subject` goes through RFC 2047 encoding (`=?UTF-8?B?<base64>?=`)
+  **whenever it contains non-ASCII** — the default case for Spanish accented
+  text, not an edge case. An ASCII subject passes through unencoded.
+- The body is `Content-Type: text/plain; charset="UTF-8"` with
+  `Content-Transfer-Encoding: base64`, base64-encoded as UTF-8 bytes and
+  wrapped at 76 characters per line — CRLF throughout, matching RFC 2045's
+  recommended line length for encoded content.
+- **Header injection defense**: every header value passes through
+  `sanitizeHeaderValue`, which collapses any `\r`/`\n` to a space before the
+  value is ever written — a subject or body containing a raw CRLF can never
+  terminate a header line early and inject a new one (e.g. a smuggled
+  `Bcc:`). The body is doubly safe: it is always base64-encoded, so even an
+  unsanitized newline inside it would only ever become harmless base64
+  alphabet bytes, never a literal line break in the raw message.
+- `In-Reply-To`/`References` are written only when supplied — a first
+  message in a thread carries neither.
+
+`buildMimeMessage` is called exactly once per `gmail_draft_reply` call,
+**inside `prepare`**, never in the handler — see the tool's own section
+below for why that's the phase's load-bearing safety property.
 
 ## Timeout rationale
 
@@ -227,18 +275,53 @@ no `SheetWriteLogPort`-style claim/complete dance here; see Phase 6's
 `.ai/decisions/gmail-send-intent-log.md` for why `gmail_send_draft`, the one
 *irreversible* tool, needs one and these two don't.
 
-All five are base `ToolSpec`s — `apps/hermes/src/agent/build-agent.ts` wraps
+- `gmail_draft_reply { threadId, body, draftId? }` — approval-gated. A
+  present `draftId` updates that draft; an absent one creates a new one.
+  `prepare` reads the thread's newest message's headers (`getThread` +
+  `getMessageMetadata`, the same call pair `gmail_archive`/`gmail_label`
+  make) to derive the reply's recipient (the newest message's `From`), our
+  own address (the newest message's `To`), the `Re:`-prefixed subject (never
+  double-prefixed if the original already starts with "Re:") and the
+  `In-Reply-To`/`References` threading headers (both set to the newest
+  message's `Message-ID` — this tool has no fuller reference chain to
+  thread). **`prepare` composes the full `raw` MIME message right there**,
+  via `build-mime-message.ts`'s `buildMimeMessage`, and threads it onto
+  `plan.raw` — `handler` posts it verbatim, never recomposing anything, so
+  the bytes a human approved are structurally the bytes Gmail saves
+  (`.ai/decisions/tool-prepare-hook.md`). The approval summary shows
+  `"¿Guardar este borrador de respuesta?"` (create) or `"¿Actualizar el
+  borrador?"` (update), target `"Para: <to> — <subject>"`, the
+  whitespace-collapsed, length-capped body as `items`, and effects
+  `["Se guarda como borrador en Gmail. No se envía nada todavía."]` — the
+  body preview renders through the existing generic `ApprovalSummary.items`
+  mechanism, no renderer change. `handler` dispatches to `updateDraft`
+  (`draftId` present) or `createDraft` (absent) — never both, never
+  neither — and returns `{ ok: true, draftId, to, subject, body }`; a
+  following turn (e.g. "cambiá el viernes por el lunes") passes that
+  `draftId` back in to update the same draft, with no new inbound-reply-
+  correlation machinery. A thread id Gmail 404s on refuses before any
+  prompt with `thread_not_found`, same posture as `gmail_archive`/
+  `gmail_label`. **This tool never calls, references, or wires up
+  `drafts.send`/`messages.send` anywhere** — a draft is reversible, a send
+  is Phase 5's problem.
+
+All six are base `ToolSpec`s — `apps/hermes/src/agent/build-agent.ts` wraps
 each in `withRequiredScopes(name, { googleAccountRepo, requiredScopes })`,
 the same split `whoami`/the Sheets/Calendar tools use: the capability lives
 in this package, the scope gate lives in `apps/hermes`. `requiredScopes` is
 read from `@hermes/google-auth`'s `TOOL_REQUIRED_SCOPES` map
 (`GMAIL_READ_SCOPES` for the three read tools; **`gmail.modify` only** — not
-the whole `GMAIL_WRITE_SCOPES` tier — for `gmail_archive`/`gmail_label`, so
-each tool's declared requirement stays the minimum it actually needs) rather
-than hardcoded at the wiring site. No tool here checks scopes itself and
-none calls the Gmail API (or even fetches an access token) for an
-unconnected or under-scoped account — the gate runs first and short-circuits
-before this package's handler (or `prepare`) is ever invoked.
+the whole `GMAIL_WRITE_SCOPES` tier — for `gmail_archive`/`gmail_label`/
+`gmail_draft_reply`, so each tool's declared requirement stays the minimum
+it actually needs) rather than hardcoded at the wiring site. `gmail_draft_reply`
+adds no new connect-tier scope of its own: `drafts.create`/`drafts.update`
+accept `gmail.modify` per Google's per-method scope table, so it rides the
+write tier `/connect google gmail-send` already grants (Phase 3) — see the
+plan's "This tool requires the write tier" note for why drafting, though
+reversible, is gated exactly as hard as sending is reachable. No tool here
+checks scopes itself and none calls the Gmail API (or even fetches an access
+token) for an unconnected or under-scoped account — the gate runs first and
+short-circuits before this package's handler (or `prepare`) is ever invoked.
 
 ## Two scope tiers (Phase 3)
 

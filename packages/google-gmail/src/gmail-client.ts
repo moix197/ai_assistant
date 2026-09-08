@@ -76,11 +76,12 @@ async function requestJson(
   accessToken: string,
   signal: AbortSignal,
   body?: unknown,
+  method?: string,
 ): Promise<unknown> {
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      method: body !== undefined ? "POST" : "GET",
+      method: method ?? (body !== undefined ? "POST" : "GET"),
       headers: {
         Authorization: `Bearer ${accessToken}`,
         ...(body !== undefined && { "Content-Type": "application/json" }),
@@ -115,12 +116,16 @@ async function requestJson(
 /**
  * Retries `requestJson` via `@hermes/core`'s shared `withHttpRetry` — the
  * same mechanism `packages/google-sheets`'/`packages/google-calendar`'s
- * clients use. Shared by every `GET` and `POST` call this client makes: a
- * `GET` is naturally idempotent, and the one `POST` (`modifyMessage`,
- * `users.messages.modify`) is idempotent by Gmail's own semantics too
- * (adding an already-present label, or removing an already-absent one, is a
- * harmless no-op) — so both retry under the same rules with no special-casing
- * by method.
+ * clients use. Shared by every `GET`, `POST` and `PUT` call this client
+ * makes: a `GET` is naturally idempotent; the `POST`s (`modifyMessage`,
+ * `users.messages.modify`; `createDraft`, `users.drafts.create`) and the one
+ * `PUT` (`updateDraft`, `users.drafts.update`) are all idempotent by Gmail's
+ * own semantics too — adding an already-present label or removing an
+ * already-absent one is a no-op, creating/replacing a draft's content has no
+ * partial-application hazard — so all three retry under the same rules with
+ * no special-casing by method. `method` defaults from `body`'s presence
+ * (`POST`/`GET`) when omitted, so every pre-existing call site is unaffected;
+ * `updateDraft` is the one caller that passes `"PUT"` explicitly.
  */
 async function requestWithRetry(
   fetchImpl: typeof fetch,
@@ -128,9 +133,10 @@ async function requestWithRetry(
   accessToken: string,
   externalSignal: AbortSignal | undefined,
   body?: unknown,
+  method?: string,
 ): Promise<unknown> {
   return withHttpRetry<unknown, GmailRetryClass>({
-    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal, body),
+    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal, body, method),
     timeoutMs: REQUEST_TIMEOUT_MS,
     externalSignal,
     classes: {
@@ -206,6 +212,18 @@ export interface GmailLabel {
   name: string;
 }
 
+/** `users.drafts.create`/`.update`'s request body — the `raw` field is `build-mime-message.ts`'s `buildMimeMessage` output, composed once in `prepare` and threaded here verbatim. */
+export interface GmailDraftRequest {
+  threadId: string;
+  raw: string;
+}
+
+/** One Gmail draft resource, as returned by `drafts.create`/`.update`/`.get` — backs `gmail_draft_reply` (Phase 4) and `gmail_send_draft` (Phase 5, `getDraft`'s existence check). */
+export interface GmailDraft {
+  id: string;
+  message: { id: string; threadId: string };
+}
+
 export interface GmailClient {
   /** `GET /messages?q=...&labelIds=...&maxResults=...` — backs `gmail_list_unread`. Returns `messages: []` (never `undefined`) when the API response omits the field, e.g. an empty inbox. */
   listMessages(
@@ -257,6 +275,31 @@ export interface GmailClient {
   ): Promise<void>;
   /** `GET /labels` — backs `gmail_label`'s label-name-to-id resolution, so `prepare` can refuse an unknown label legibly before any approval prompt. */
   listLabels(accessToken: string, signal?: AbortSignal): Promise<GmailLabel[]>;
+  /**
+   * `POST /drafts` (`users.drafts.create`) — creates a new draft carrying
+   * `raw` (the full composed message) under `threadId`, so it lands
+   * correctly threaded in Gmail's own UI. Backs `gmail_draft_reply`'s create
+   * path (no `draftId` supplied).
+   */
+  createDraft(
+    accessToken: string,
+    request: GmailDraftRequest,
+    signal?: AbortSignal,
+  ): Promise<GmailDraft>;
+  /**
+   * `PUT /drafts/{draftId}` (`users.drafts.update`) — replaces an existing
+   * draft's message wholesale with `raw`/`threadId`. Backs `gmail_draft_reply`'s
+   * update path (a `draftId` supplied) — the same draft id in, the same draft
+   * id out, never a second draft.
+   */
+  updateDraft(
+    accessToken: string,
+    draftId: string,
+    request: GmailDraftRequest,
+    signal?: AbortSignal,
+  ): Promise<GmailDraft>;
+  /** `GET /drafts/{draftId}` (`users.drafts.get`) — fetches one draft by id. Not called by `gmail_draft_reply`; exists for Phase 5's `gmail_send_draft` existence check before sending. */
+  getDraft(accessToken: string, draftId: string, signal?: AbortSignal): Promise<GmailDraft>;
 }
 
 export interface CreateGmailClientOptions {
@@ -300,6 +343,11 @@ interface RawThreadResponse {
 
 interface RawLabelsListResponse {
   labels?: GmailLabel[];
+}
+
+interface RawDraftResponse {
+  id: string;
+  message: { id: string; threadId: string };
 }
 
 function extractHeaders(rawHeaders: RawMessageHeader[] | undefined): Record<string, string> {
@@ -396,6 +444,44 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
         signal,
       )) as RawLabelsListResponse;
       return (result.labels ?? []).map((label) => ({ id: label.id, name: label.name }));
+    },
+    async createDraft(accessToken, request, signal) {
+      const url = `${GMAIL_API_BASE}/drafts`;
+      const result = (await requestWithRetry(fetchImpl, url, accessToken, signal, {
+        message: { threadId: request.threadId, raw: request.raw },
+      })) as RawDraftResponse;
+      return {
+        id: result.id,
+        message: { id: result.message.id, threadId: result.message.threadId },
+      };
+    },
+    async updateDraft(accessToken, draftId, request, signal) {
+      const url = `${GMAIL_API_BASE}/drafts/${encodeURIComponent(draftId)}`;
+      const result = (await requestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        signal,
+        { message: { threadId: request.threadId, raw: request.raw } },
+        "PUT",
+      )) as RawDraftResponse;
+      return {
+        id: result.id,
+        message: { id: result.message.id, threadId: result.message.threadId },
+      };
+    },
+    async getDraft(accessToken, draftId, signal) {
+      const url = `${GMAIL_API_BASE}/drafts/${encodeURIComponent(draftId)}`;
+      const result = (await requestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        signal,
+      )) as RawDraftResponse;
+      return {
+        id: result.id,
+        message: { id: result.message.id, threadId: result.message.threadId },
+      };
     },
   };
 }

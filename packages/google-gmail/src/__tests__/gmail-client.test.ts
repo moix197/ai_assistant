@@ -187,6 +187,70 @@ describe("createGmailClient", () => {
     },
   );
 
+  it("createDraft POSTs to /drafts with { message: { threadId, raw } } and returns the created draft", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      jsonResponse(200, {
+        id: "draft-1",
+        message: { id: "msg-1", threadId: "thread-1" },
+      }),
+    );
+    const client = createGmailClient({ fetchImpl });
+
+    const result = await client.createDraft("secret-token", {
+      threadId: "thread-1",
+      raw: "RAW_BYTES",
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      message: { threadId: "thread-1", raw: "RAW_BYTES" },
+    });
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret-token");
+    expect(result).toEqual({ id: "draft-1", message: { id: "msg-1", threadId: "thread-1" } });
+  });
+
+  it("updateDraft PUTs to /drafts/{draftId} with { message: { threadId, raw } } and returns the updated draft", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      jsonResponse(200, {
+        id: "draft-1",
+        message: { id: "msg-2", threadId: "thread-1" },
+      }),
+    );
+    const client = createGmailClient({ fetchImpl });
+
+    const result = await client.updateDraft("secret-token", "draft-1", {
+      threadId: "thread-1",
+      raw: "RAW_BYTES_2",
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts/draft-1");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      message: { threadId: "thread-1", raw: "RAW_BYTES_2" },
+    });
+    expect(result).toEqual({ id: "draft-1", message: { id: "msg-2", threadId: "thread-1" } });
+  });
+
+  it("getDraft GETs /drafts/{draftId}", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      jsonResponse(200, {
+        id: "draft-1",
+        message: { id: "msg-1", threadId: "thread-1" },
+      }),
+    );
+    const client = createGmailClient({ fetchImpl });
+
+    const result = await client.getDraft("secret-token", "draft-1");
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts/draft-1");
+    expect(init.method).toBe("GET");
+    expect(result).toEqual({ id: "draft-1", message: { id: "msg-1", threadId: "thread-1" } });
+  });
+
   it("never lets the access token appear in a thrown error message for a network failure", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED secret-token-xyz"));
     const client = createGmailClient({ fetchImpl });
