@@ -75,4 +75,6 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   ["reschedule_event", CALENDAR_SCOPES],
   ["cancel_event", CALENDAR_SCOPES],
   ["gmail_list_unread", GMAIL_READ_SCOPES],
+  ["gmail_search", GMAIL_READ_SCOPES],
+  ["gmail_read_thread", GMAIL_READ_SCOPES],
 ]);

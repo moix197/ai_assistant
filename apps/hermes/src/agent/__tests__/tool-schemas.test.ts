@@ -82,6 +82,8 @@ function createFakeGmailDeps(): GmailToolDeps {
   const gmailClient: GmailClient = {
     listMessages: vi.fn(),
     getMessageMetadata: vi.fn(),
+    getMessageFull: vi.fn(),
+    getThread: vi.fn(),
   };
   return { accessTokenPort, gmailClient };
 }

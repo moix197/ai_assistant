@@ -1,0 +1,20 @@
+{
+  "id": "msg-qp-1",
+  "threadId": "thread-qp-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      { "name": "From", "value": "Billing <billing@example.com>" },
+      { "name": "To", "value": "Alex <alex@example.com>" },
+      { "name": "Subject", "value": "Invoice total" },
+      { "name": "Date", "value": "Wed, 2 Sep 2026 11:00:00 +0000" },
+      { "name": "Content-Type", "value": "text/plain; charset=UTF-8" },
+      { "name": "Content-Transfer-Encoding", "value": "quoted-printable" }
+    ],
+    "body": {
+      "size": 70,
+      "data": "SGkgdGVhbSw9MEE9MEFUaGUgaW52b2ljZSB0b3RhbCBpcyA9RTI9ODI9QUM0Mi49MEE9MEFUaGFua3MsPTBBU2FyYWg"
+    }
+  }
+}

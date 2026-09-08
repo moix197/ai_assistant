@@ -1,0 +1,46 @@
+{
+  "id": "msg-mixed-1",
+  "threadId": "thread-mixed-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "multipart/mixed",
+    "headers": [
+      { "name": "From", "value": "Billing <billing@example.com>" },
+      { "name": "To", "value": "Alex <alex@example.com>" },
+      { "name": "Subject", "value": "Your invoice" },
+      { "name": "Date", "value": "Tue, 1 Sep 2026 10:00:00 +0000" }
+    ],
+    "parts": [
+      {
+        "mimeType": "multipart/alternative",
+        "parts": [
+          {
+            "mimeType": "text/plain",
+            "headers": [{ "name": "Content-Type", "value": "text/plain; charset=UTF-8" }],
+            "body": {
+              "size": 51,
+              "data": "UGxlYXNlIHNlZSB0aGUgYXR0YWNoZWQgaW52b2ljZS4KCi0gQmlsbGluZyBUZWFt"
+            }
+          },
+          {
+            "mimeType": "text/html",
+            "headers": [{ "name": "Content-Type", "value": "text/html; charset=UTF-8" }],
+            "body": {
+              "size": 92,
+              "data": "PGh0bWw-PGJvZHk-PHA-UGxlYXNlIHNlZSB0aGUgYXR0YWNoZWQgaW52b2ljZS48L3A-PHA-LSBCaWxsaW5nIFRlYW08L3A-PC9ib2R5PjwvaHRtbD4"
+            }
+          }
+        ]
+      },
+      {
+        "mimeType": "application/pdf",
+        "filename": "invoice.pdf",
+        "headers": [{ "name": "Content-Type", "value": "application/pdf; name=\"invoice.pdf\"" }],
+        "body": {
+          "attachmentId": "ANGjdJ8fake-attachment-id",
+          "size": 45678
+        }
+      }
+    ]
+  }
+}

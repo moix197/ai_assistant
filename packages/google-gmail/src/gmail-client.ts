@@ -1,4 +1,5 @@
 import { withHttpRetry } from "@hermes/core";
+import type { GmailMessagePart } from "./mime";
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -146,6 +147,31 @@ export interface GmailMessageMetadata {
   threadId: string;
   labelIds: string[];
   headers: Record<string, string>;
+  /** Gmail's short auto-generated preview, present on `format: "metadata"` responses too — backs `gmail_search`'s per-result `snippet`. */
+  snippet: string;
+}
+
+export interface GmailMessageFull {
+  id: string;
+  threadId: string;
+  labelIds: string[];
+  payload: GmailMessagePart;
+}
+
+/**
+ * A thread's message list as needed to sort newest-first and cap the count
+ * **before** fetching any body — `internalDate` (epoch milliseconds, as a
+ * string, per Gmail's own wire format) is present regardless of the
+ * per-message body content, so this stays cheap to sort on.
+ */
+export interface GmailThreadMessageRef {
+  id: string;
+  internalDate: string;
+}
+
+export interface GmailThread {
+  id: string;
+  messages: GmailThreadMessageRef[];
 }
 
 export interface GmailClient {
@@ -167,6 +193,22 @@ export interface GmailClient {
     id: string,
     signal?: AbortSignal,
   ): Promise<GmailMessageMetadata>;
+  /**
+   * `GET /messages/{id}?format=full` — full MIME structure (`payload`,
+   * recursively, with each part's own `body.data`) for one message. Backs
+   * `gmail_read_thread`'s per-message body extraction, called only for the
+   * messages the per-thread cap actually keeps (Dependencies & Risks:
+   * `gmail_read_thread` fans out over several `messages.get` calls, capped
+   * *before* issuing them, not after).
+   */
+  getMessageFull(accessToken: string, id: string, signal?: AbortSignal): Promise<GmailMessageFull>;
+  /**
+   * `GET /threads/{id}?format=full` — backs `gmail_read_thread`. Only
+   * `id`/`internalDate` are read off each returned message (enough to sort
+   * newest-first and cap the count); the per-message body is fetched
+   * separately, only for the capped subset, via `getMessageFull`.
+   */
+  getThread(accessToken: string, threadId: string, signal?: AbortSignal): Promise<GmailThread>;
 }
 
 export interface CreateGmailClientOptions {
@@ -187,7 +229,25 @@ interface RawMessageResponse {
   id: string;
   threadId: string;
   labelIds?: string[];
+  snippet?: string;
   payload?: { headers?: RawMessageHeader[] };
+}
+
+interface RawMessageFullResponse {
+  id: string;
+  threadId: string;
+  labelIds?: string[];
+  payload?: GmailMessagePart;
+}
+
+interface RawThreadMessage {
+  id: string;
+  internalDate?: string;
+}
+
+interface RawThreadResponse {
+  id: string;
+  messages?: RawThreadMessage[];
 }
 
 function extractHeaders(rawHeaders: RawMessageHeader[] | undefined): Record<string, string> {
@@ -237,6 +297,33 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
         threadId: result.threadId,
         labelIds: result.labelIds ?? [],
         headers: extractHeaders(result.payload?.headers),
+        snippet: result.snippet ?? "",
+      };
+    },
+    async getMessageFull(accessToken, id, signal) {
+      const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}?format=full`;
+      const result = (await getWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        signal,
+      )) as RawMessageFullResponse;
+      return {
+        id: result.id,
+        threadId: result.threadId,
+        labelIds: result.labelIds ?? [],
+        payload: result.payload ?? {},
+      };
+    },
+    async getThread(accessToken, threadId, signal) {
+      const url = `${GMAIL_API_BASE}/threads/${encodeURIComponent(threadId)}?format=full`;
+      const result = (await getWithRetry(fetchImpl, url, accessToken, signal)) as RawThreadResponse;
+      return {
+        id: result.id,
+        messages: (result.messages ?? []).map((message) => ({
+          id: message.id,
+          internalDate: message.internalDate ?? "0",
+        })),
       };
     },
   };

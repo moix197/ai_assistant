@@ -1,0 +1,19 @@
+{
+  "id": "msg-latin1-1",
+  "threadId": "thread-latin1-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      { "name": "From", "value": "Legacy Sender <legacy@example.com>" },
+      { "name": "To", "value": "Alex <alex@example.com>" },
+      { "name": "Subject", "value": "Reunion" },
+      { "name": "Date", "value": "Thu, 3 Sep 2026 08:00:00 +0000" },
+      { "name": "Content-Type", "value": "text/plain; charset=ISO-8859-1" }
+    ],
+    "body": {
+      "size": 35,
+      "data": "Q2Fm6SBjb24gbGVjaGUsIG1h8WFuYSBhIGxhcyBkaWV6Lg"
+    }
+  }
+}

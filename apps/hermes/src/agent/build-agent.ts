@@ -18,6 +18,7 @@ import { createCalendarRescheduleEventTool } from "@hermes/google-calendar";
 import { createCalendarCancelEventTool } from "@hermes/google-calendar";
 import type { GmailToolDeps } from "@hermes/google-gmail";
 import { createGmailListUnreadTool } from "@hermes/google-gmail";
+import { createGmailReadThreadTool, createGmailSearchTool } from "@hermes/google-gmail";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -232,6 +233,16 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("gmail_list_unread"),
   })(createGmailListUnreadTool(gmailDeps));
 
+  const gmailSearchTool = withRequiredScopes("gmail_search", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("gmail_search"),
+  })(createGmailSearchTool(gmailDeps));
+
+  const gmailReadThreadTool = withRequiredScopes("gmail_read_thread", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("gmail_read_thread"),
+  })(createGmailReadThreadTool(gmailDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -250,6 +261,8 @@ export function buildAgent(
       rescheduleEventTool,
       cancelEventTool,
       gmailListUnreadTool,
+      gmailSearchTool,
+      gmailReadThreadTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

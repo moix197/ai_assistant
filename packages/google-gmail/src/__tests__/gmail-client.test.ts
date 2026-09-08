@@ -77,6 +77,7 @@ describe("createGmailClient", () => {
         id: "msg-1",
         threadId: "thread-1",
         labelIds: ["UNREAD", "INBOX"],
+        snippet: "Hello there...",
         payload: {
           headers: [
             { name: "From", value: "sender@example.com" },
@@ -99,10 +100,11 @@ describe("createGmailClient", () => {
       threadId: "thread-1",
       labelIds: ["UNREAD", "INBOX"],
       headers: { From: "sender@example.com", Subject: "Hello" },
+      snippet: "Hello there...",
     });
   });
 
-  it("getMessageMetadata returns empty labelIds/headers (never undefined) when the API response omits them", async () => {
+  it("getMessageMetadata returns empty labelIds/headers/snippet (never undefined) when the API response omits them", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, { id: "msg-1", threadId: "thread-1" }));
@@ -110,7 +112,13 @@ describe("createGmailClient", () => {
 
     const result = await client.getMessageMetadata("token", "msg-1");
 
-    expect(result).toEqual({ id: "msg-1", threadId: "thread-1", labelIds: [], headers: {} });
+    expect(result).toEqual({
+      id: "msg-1",
+      threadId: "thread-1",
+      labelIds: [],
+      headers: {},
+      snippet: "",
+    });
   });
 
   it("a 429 is classified as rate-limited and retried, honoring the server's Retry-After header", async () => {

@@ -1,0 +1,19 @@
+{
+  "id": "msg-newsletter-1",
+  "threadId": "thread-newsletter-1",
+  "labelIds": ["INBOX", "CATEGORY_PROMOTIONS"],
+  "payload": {
+    "mimeType": "text/html",
+    "headers": [
+      { "name": "From", "value": "Deals <deals@shop.example.com>" },
+      { "name": "To", "value": "Alex <alex@example.com>" },
+      { "name": "Subject", "value": "Weekly Deals & Offers" },
+      { "name": "Date", "value": "Mon, 31 Aug 2026 08:00:00 +0000" },
+      { "name": "Content-Type", "value": "text/html; charset=UTF-8" }
+    ],
+    "body": {
+      "size": 320,
+      "data": "PGh0bWw-PGhlYWQ-PHN0eWxlPi5wcm9tb3tjb2xvcjpyZWR9PC9zdHlsZT48L2hlYWQ-PGJvZHk-PGgxPldlZWtseSBEZWFscyAmYW1wOyBPZmZlcnM8L2gxPjxzY3JpcHQ-dHJhY2tPcGVuKCk7PC9zY3JpcHQ-PHA-U2F2ZSAyMCUgdGhpcyB3ZWVrIG9ubHkuPC9wPjxicj48cD5TZWUgeW91IHNvb24hPC9wPjwvYm9keT48L2h0bWw-"
+    }
+  }
+}

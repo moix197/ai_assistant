@@ -1,0 +1,25 @@
+{
+  "id": "msg-attachment-only-1",
+  "threadId": "thread-attachment-only-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "multipart/mixed",
+    "headers": [
+      { "name": "From", "value": "Sender <sender@example.com>" },
+      { "name": "To", "value": "Alex <alex@example.com>" },
+      { "name": "Subject", "value": "Scanned document" },
+      { "name": "Date", "value": "Fri, 4 Sep 2026 15:00:00 +0000" }
+    ],
+    "parts": [
+      {
+        "mimeType": "application/pdf",
+        "filename": "scan.pdf",
+        "headers": [{ "name": "Content-Type", "value": "application/pdf; name=\"scan.pdf\"" }],
+        "body": {
+          "attachmentId": "ANGjdJ8another-fake-id",
+          "size": 98765
+        }
+      }
+    ]
+  }
+}

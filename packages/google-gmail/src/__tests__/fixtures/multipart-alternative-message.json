@@ -1,0 +1,32 @@
+{
+  "id": "msg-alt-1",
+  "threadId": "thread-alt-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "multipart/alternative",
+    "headers": [
+      { "name": "From", "value": "Sarah <sarah@example.com>" },
+      { "name": "To", "value": "team@example.com" },
+      { "name": "Subject", "value": "Deploy complete" },
+      { "name": "Date", "value": "Fri, 4 Sep 2026 12:05:00 +0000" }
+    ],
+    "parts": [
+      {
+        "mimeType": "text/plain",
+        "headers": [{ "name": "Content-Type", "value": "text/plain; charset=UTF-8" }],
+        "body": {
+          "size": 60,
+          "data": "SGV5IHRlYW0sCgpUaGUgZGVwbG95IHdlbnQgb3V0IGF0IG5vb24sIGFsbCBncmVlbi4KCi0gU2FyYWg"
+        }
+      },
+      {
+        "mimeType": "text/html",
+        "headers": [{ "name": "Content-Type", "value": "text/html; charset=UTF-8" }],
+        "body": {
+          "size": 120,
+          "data": "PGh0bWw-PGJvZHk-PHA-SGV5IHRlYW0sPC9wPjxwPlRoZSBkZXBsb3kgd2VudCBvdXQgYXQgPGI-bm9vbjwvYj4sIGFsbCBncmVlbi48L3A-PHA-LSBTYXJhaDwvcD48L2JvZHk-PC9odG1sPg"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "msg-chain-1",
+  "threadId": "thread-chain-1",
+  "labelIds": ["INBOX"],
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      { "name": "From", "value": "Alex <alex@example.com>" },
+      { "name": "To", "value": "Sarah <sarah@example.com>" },
+      { "name": "Subject", "value": "Re: Friday sync" },
+      { "name": "Date", "value": "Thu, 4 Sep 2026 11:00:00 +0000" },
+      { "name": "Content-Type", "value": "text/plain; charset=UTF-8" }
+    ],
+    "body": {
+      "size": 420,
+      "data": "U291bmRzIGdvb2QsIHNlZSB5b3UgYXQgM3BtLgoKT24gVGh1LCBTZXAgNCwgMjAyNiBhdCAxMDowMCBBTSwgU2FyYWggPHNhcmFoQGV4YW1wbGUuY29tPiB3cm90ZToKPiBDYW4gd2Ugc3luYyBhdCAzcG0gRnJpZGF5Pwo-Cj4gT24gV2VkLCBTZXAgMywgMjAyNiBhdCA5OjAwIEFNLCBBbGV4IDxhbGV4QGV4YW1wbGUuY29tPiB3cm90ZToKPj4gV29ya3MgZm9yIG1lLCB3aGF0IHRpbWU_Cj4-Cj4-IE9uIFR1ZSwgU2VwIDIsIDIwMjYsIFNhcmFoIHdyb3RlOgo-Pj4gTGV0J3MgcGxhbiB0aGUgRnJpZGF5IHN5bmMu"
+    }
+  }
+}
