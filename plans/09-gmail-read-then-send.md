@@ -974,22 +974,24 @@ registered, so this phase adds no new scope tier of its own (see its
 
 **Steps:**
 
-- [ ] Compose the `raw` message **inside `prepare`** and thread it to the
+- [x] Compose the `raw` message **inside `prepare`** and thread it to the
       handler on `ctx.plan` — this is the load-bearing detail of the whole
       phase: it makes "the human approved exactly these bytes" structurally
       true rather than a convention, exactly as
-      `.ai/decisions/tool-prepare-hook.md` intends
-- [ ] Test the accented-subject path explicitly (`Re: Confirmación`) — assert
+      `.ai/decisions/tool-prepare-hook.md` intends (code-review confirmed:
+      handler never recomposes, posts `ctx.plan.raw` verbatim, byte-identity
+      asserted)
+- [x] Test the accented-subject path explicitly (`Re: Confirmación`) — assert
       the encoded-word form, and decode it back in the test
-- [ ] Test header injection: a body or subject containing `\r\n` must not
+- [x] Test header injection: a body or subject containing `\r\n` must not
       produce extra headers
-- [ ] Assert both threading mechanisms are present: the `threadId` field on
+- [x] Assert both threading mechanisms are present: the `threadId` field on
       the draft resource **and** `In-Reply-To`/`References` headers
-- [ ] Assert the update path targets the same `draftId` and does **not**
+- [x] Assert the update path targets the same `draftId` and does **not**
       create a second draft (client mock: `createDraft` called zero times)
-- [ ] Confirm the approval prompt shows the body text through the generic
+- [x] Confirm the approval prompt shows the body text through the generic
       renderer's `items` mechanism with no renderer change
-- [ ] Confirm the tool cannot send: grep the finished file for `drafts.send`
+- [x] Confirm the tool cannot send: grep the finished file for `drafts.send`
       / `messages.send` and assert none appears (a cheap, honest guard for
       the phase whose whole claim is "still not irreversible")
 
@@ -1011,9 +1013,10 @@ which any fixture can prove. **No mail leaves the account in this phase.**
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-gmail test` green
-- [ ] `pnpm -r typecheck` green, `pnpm -r test` green, `pnpm lint` green
-- [ ] `pnpm build` before manual checks
+- [x] `pnpm --filter @hermes/google-gmail test` green (122/122)
+- [x] `pnpm -r typecheck` green, `pnpm -r test` green (non-DB suites; still
+      blocked on no local Postgres, pre-existing, unrelated), `pnpm lint` green
+- [x] `pnpm build` before manual checks
 - [ ] Manual: "respondele a <un hilo real> que el viernes me sirve" → prompt
       shows the recipient, subject and body → **Aprobar** → open Gmail and
       confirm the draft exists, is threaded correctly, and reads correctly
@@ -1027,14 +1030,15 @@ which any fixture can prove. **No mail leaves the account in this phase.**
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+      (the four manual live-mailbox checks remain open — see Verification)
+- [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
+      subagent dispatch, superseding this template's manual clear-context
+      handoff protocol) — verdict: green, nits only
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits noted, no changes required)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate`
+- [x] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate`
 - [ ] Phase marked complete
 
 ---
