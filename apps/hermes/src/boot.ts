@@ -22,7 +22,7 @@ import {
   decryptTokenEnvelope,
 } from "@hermes/google-auth";
 import { type CalendarToolDeps, createCalendarClient } from "@hermes/google-calendar";
-import { type GmailToolDeps, createGmailClient } from "@hermes/google-gmail";
+import { type GmailSendLogPort, type GmailToolDeps, createGmailClient } from "@hermes/google-gmail";
 import {
   type SheetWriteLogPort,
   type SheetsToolDeps,
@@ -35,14 +35,19 @@ import {
   type Pool,
   acquireInstanceLock,
   claim as claimDedupe,
+  claimGmailSend,
   claimSheetWrite,
   complete as completeDedupe,
+  completeGmailSend,
   completeSheetWrite,
   createPool,
+  findLatestGmailSendIntent,
   getDefaultMigrationsDir,
   getOffset,
   listAccountsExpiringBefore,
   markDisconnected,
+  recordGmailSendIntent,
+  releaseGmailSend,
   releaseSheetWrite,
   runMigrations,
   setOffset,
@@ -547,7 +552,9 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     buildSheetWriteLogRepo(pool),
     calendarDeps,
     gmailDeps,
+    buildGmailSendLogRepo(pool),
     logger,
+    describeExpiredGmailSend(pool),
   );
 
   return {
@@ -848,6 +855,74 @@ function buildSheetWriteLogRepo(pool: Pool): SheetWriteLogPort {
     claim: (dedupeKey, input) => claimSheetWrite(pool, dedupeKey, input),
     complete: (dedupeKey, outcome) => completeSheetWrite(pool, dedupeKey, outcome),
     release: (dedupeKey) => releaseSheetWrite(pool, dedupeKey),
+  };
+}
+
+/**
+ * Wires `@hermes/google-gmail`'s injected `GmailSendLogPort` to
+ * `@hermes/store`'s real `recordGmailSendIntent`/`claimGmailSend`/
+ * `completeGmailSend`/`releaseGmailSend` — the direct twin of
+ * `buildSheetWriteLogRepo` above, widened with `recordIntent` for the
+ * `awaiting_approval` state `gmail_send_draft`'s `prepare` writes that
+ * `sheets_write` has no equivalent of (`09-gmail-read-then-send` Phase 5).
+ */
+function buildGmailSendLogRepo(pool: Pool): GmailSendLogPort {
+  return {
+    recordIntent: (dedupeKey, input) => recordGmailSendIntent(pool, dedupeKey, input),
+    claim: (dedupeKey, input) => claimGmailSend(pool, dedupeKey, input),
+    complete: (dedupeKey, outcome) => completeGmailSend(pool, dedupeKey, outcome),
+    release: (dedupeKey) => releaseGmailSend(pool, dedupeKey),
+  };
+}
+
+/**
+ * How far back `describeExpiredGmailSend` (below) looks for an intent row —
+ * generous enough that a legitimately stale tap (the whole point of this
+ * seam) is never missed, bounded so a years-old row from an unrelated past
+ * conversation can never surface. `findLatestGmailSendIntent` only ever
+ * returns the single newest row in the window, and this describer only ever
+ * speaks for a **still-`awaiting_approval`** row (below) — a `complete` or
+ * `pending` row past this window falls back to the generic expiry text,
+ * which stays true (if uninformative) either way.
+ */
+const EXPIRED_GMAIL_SEND_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The definite Spanish sentence a restart-then-tap deserves, rather than the
+ * generic "esta aprobación ya expiró" — see `TelegramApprovalGate`'s
+ * `describeExpiredApproval` and `.ai/decisions/gmail-send-intent-log.md`
+ * (Phase 6). True precisely because a row still `awaiting_approval` proves
+ * `claim()` was never called: `gmail_send_draft`'s handler is the only place
+ * that ever calls `sendDraft`, and it never runs before a claim.
+ */
+const GMAIL_SEND_NOT_SENT_TEXT =
+  "no se envió nada, el borrador sigue guardado — pedime «envialo» de nuevo";
+
+/**
+ * Binds `TelegramApprovalGate`'s optional `describeExpiredApproval` to
+ * `findLatestGmailSendIntent` — read-only, purely descriptive: it never
+ * resolves a pending approval, never touches the approval gate's own
+ * `pending` map, and never calls a tool or the Gmail client. Answers only
+ * when the newest matching row is still `awaiting_approval` (the process
+ * crashed or restarted before a human ever tapped a button, so `claim()` —
+ * the handler's own first call — provably never ran); any other status
+ * (`pending`, mid-send at the moment of a crash, or `complete`, already
+ * resolved one way or another) returns `undefined`, falling back to the
+ * gate's generic expiry text rather than asserting something this function
+ * cannot actually prove.
+ */
+function describeExpiredGmailSend(
+  pool: Pool,
+): (channel: string, channelUserId: string) => Promise<string | undefined> {
+  return async (channel, channelUserId) => {
+    const intent = await findLatestGmailSendIntent(
+      pool,
+      channel,
+      channelUserId,
+      Date.now() - EXPIRED_GMAIL_SEND_LOOKBACK_MS,
+    );
+    if (intent?.status !== "awaiting_approval") return undefined;
+    return GMAIL_SEND_NOT_SENT_TEXT;
   };
 }
 

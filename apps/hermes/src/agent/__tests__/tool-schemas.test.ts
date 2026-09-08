@@ -8,6 +8,7 @@ import type {
 import type {
   AccessTokenPort as GmailAccessTokenPort,
   GmailClient,
+  GmailSendLogPort,
   GmailToolDeps,
 } from "@hermes/google-gmail";
 import type {
@@ -89,8 +90,14 @@ function createFakeGmailDeps(): GmailToolDeps {
     createDraft: vi.fn(),
     updateDraft: vi.fn(),
     getDraft: vi.fn(),
+    sendDraft: vi.fn(),
   };
   return { accessTokenPort, gmailClient };
+}
+
+/** Never exercised by this test (no gmail_send_draft tool call is triggered) — just needs to satisfy the type. */
+function createFakeGmailSendLogRepo(): GmailSendLogPort {
+  return { recordIntent: vi.fn(), claim: vi.fn(), complete: vi.fn() };
 }
 
 function createMockChannel(): TelegramPoller {
@@ -125,6 +132,7 @@ describe("tool schemas — LLM wire-format regression", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
 
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];

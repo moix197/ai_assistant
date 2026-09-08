@@ -8,6 +8,7 @@ import type {
 import type {
   AccessTokenPort as GmailAccessTokenPort,
   GmailClient,
+  GmailSendLogPort,
   GmailToolDeps,
 } from "@hermes/google-gmail";
 import type {
@@ -93,8 +94,14 @@ function createFakeGmailDeps(): GmailToolDeps {
     createDraft: vi.fn(),
     updateDraft: vi.fn(),
     getDraft: vi.fn(),
+    sendDraft: vi.fn(),
   };
   return { accessTokenPort, gmailClient };
+}
+
+/** Never exercised by these tests (no gmail_send_draft tool call is triggered) — just needs to satisfy the type. */
+function createFakeGmailSendLogRepo(): GmailSendLogPort {
+  return { recordIntent: vi.fn(), claim: vi.fn(), complete: vi.fn() };
 }
 
 /** Never exercised by these tests (no gated tool call is triggered) — just needs to satisfy the type. */
@@ -136,6 +143,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     const reply = await agent.handleMessage("telegram", "555", "111", "hello");
 
@@ -159,7 +167,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event, reschedule_event, cancel_event, gmail_list_unread, gmail_search, gmail_read_thread, gmail_archive, gmail_label, gmail_draft_reply) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event, reschedule_event, cancel_event, gmail_list_unread, gmail_search, gmail_read_thread, gmail_archive, gmail_label, gmail_draft_reply, gmail_send_draft) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -183,6 +191,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "999", "111", "hi");
 
@@ -196,9 +205,9 @@ describe("buildAgent — wiring", () => {
         // "gmail_archive" precedes "gmail_draft_reply" precedes
         // "gmail_label" precedes "gmail_list_unread" precedes
         // "gmail_read_thread" precedes "gmail_search" precedes
-        // "list_events" precedes "reschedule_event" precedes
-        // "sheets_inspect" precedes "sheets_read" precedes "sheets_write"
-        // precedes "whoami".
+        // "gmail_send_draft" precedes "list_events" precedes
+        // "reschedule_event" precedes "sheets_inspect" precedes
+        // "sheets_read" precedes "sheets_write" precedes "whoami".
         // The existing prefix (echo, get_current_time, whoami) is
         // byte-stable — 05-google-sheets Phase 4 inserted the two read
         // entries, Phase 5 inserts sheets_write, 08-calendar Phase 2 inserts
@@ -207,7 +216,7 @@ describe("buildAgent — wiring", () => {
         // Phase 6 inserts cancel_event, 09-gmail-read-then-send Phase 1
         // inserts gmail_list_unread, Phase 2 inserts gmail_search/
         // gmail_read_thread, Phase 3 inserts gmail_archive/gmail_label,
-        // Phase 4 inserts gmail_draft_reply.
+        // Phase 4 inserts gmail_draft_reply, Phase 5 inserts gmail_send_draft.
         tools: [
           expect.objectContaining({ name: "cancel_event" }),
           expect.objectContaining({ name: "check_availability" }),
@@ -221,6 +230,7 @@ describe("buildAgent — wiring", () => {
           expect.objectContaining({ name: "gmail_list_unread" }),
           expect.objectContaining({ name: "gmail_read_thread" }),
           expect.objectContaining({ name: "gmail_search" }),
+          expect.objectContaining({ name: "gmail_send_draft" }),
           expect.objectContaining({ name: "list_events" }),
           expect.objectContaining({ name: "reschedule_event" }),
           expect.objectContaining({ name: "sheets_inspect" }),
@@ -258,6 +268,7 @@ describe("buildAgent — wiring", () => {
     const sheetWriteLogRepo = createFakeSheetWriteLogRepo();
     const calendarDeps = createFakeCalendarDeps();
     const gmailDeps = createFakeGmailDeps();
+    const gmailSendLogRepo = createFakeGmailSendLogRepo();
 
     const { agent } = buildAgent(
       pool,
@@ -270,6 +281,7 @@ describe("buildAgent — wiring", () => {
       sheetWriteLogRepo,
       calendarDeps,
       gmailDeps,
+      gmailSendLogRepo,
     );
     await agent.handleMessage("telegram", "888", "111", "hi");
 
@@ -286,6 +298,7 @@ describe("buildAgent — wiring", () => {
     expect(calendarDeps.calendarClient.listEvents).not.toHaveBeenCalled();
     expect(gmailDeps.accessTokenPort.getAccessToken).not.toHaveBeenCalled();
     expect(gmailDeps.gmailClient.listMessages).not.toHaveBeenCalled();
+    expect(gmailSendLogRepo.claim).not.toHaveBeenCalled();
   });
 
   it("passes list_events (08-calendar Phase 2) in the tools array, ungated (requiresApproval: false)", async () => {
@@ -312,6 +325,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "777", "111", "hi");
 
@@ -350,6 +364,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "666", "111", "hi");
 
@@ -389,6 +404,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "555", "111", "hi");
 
@@ -423,6 +439,7 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "444", "111", "hi");
 
@@ -430,8 +447,8 @@ describe("buildAgent — wiring", () => {
     // wiring, not just presence: ROADMAP invariant 6 requires the existing
     // prefix bytes stay untouched, with any new tool appended at the end.
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
-    expect(definitionArg?.tools.at(-5)?.name).toBe("gmail_search");
-    expect(definitionArg?.tools.at(-4)?.name).toBe("gmail_read_thread");
+    expect(definitionArg?.tools.at(-6)?.name).toBe("gmail_search");
+    expect(definitionArg?.tools.at(-5)?.name).toBe("gmail_read_thread");
 
     const gmailSearchTool = definitionArg?.tools.find((tool) => tool.name === "gmail_search");
     const gmailReadThreadTool = definitionArg?.tools.find(
@@ -465,12 +482,13 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "333", "111", "hi");
 
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
-    expect(definitionArg?.tools.at(-3)?.name).toBe("gmail_archive");
-    expect(definitionArg?.tools.at(-2)?.name).toBe("gmail_label");
+    expect(definitionArg?.tools.at(-4)?.name).toBe("gmail_archive");
+    expect(definitionArg?.tools.at(-3)?.name).toBe("gmail_label");
 
     const gmailArchiveTool = definitionArg?.tools.find((tool) => tool.name === "gmail_archive");
     const gmailLabelTool = definitionArg?.tools.find((tool) => tool.name === "gmail_label");
@@ -480,7 +498,7 @@ describe("buildAgent — wiring", () => {
     expect(typeof gmailLabelTool?.prepare).toBe("function");
   });
 
-  it("passes gmail_draft_reply (09-gmail-read-then-send Phase 4) appended last in the raw tools array, gated (requiresApproval: true) with a prepare hook", async () => {
+  it("passes gmail_draft_reply (09-gmail-read-then-send Phase 4) appended immediately before Phase 5's gmail_send_draft, gated (requiresApproval: true) with a prepare hook", async () => {
     const pool = createMockPool([
       { id: "thread-9", channel: "telegram", chat_id: "222", messages: [] },
     ]);
@@ -504,19 +522,61 @@ describe("buildAgent — wiring", () => {
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
       createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
     );
     await agent.handleMessage("telegram", "222", "111", "hi");
 
     // The raw (pre-sort) AgentDefinition.tools array — proves append-only
     // wiring, not just presence: ROADMAP invariant 6 requires the existing
-    // prefix bytes stay untouched, with the new tool appended at the end.
+    // prefix bytes stay untouched, with each new tool appended at the end.
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
-    expect(definitionArg?.tools.at(-1)?.name).toBe("gmail_draft_reply");
+    expect(definitionArg?.tools.at(-2)?.name).toBe("gmail_draft_reply");
 
     const gmailDraftReplyTool = definitionArg?.tools.find(
       (tool) => tool.name === "gmail_draft_reply",
     );
     expect(gmailDraftReplyTool?.requiresApproval).toBe(true);
     expect(typeof gmailDraftReplyTool?.prepare).toBe("function");
+  });
+
+  it("passes gmail_send_draft (09-gmail-read-then-send Phase 5) appended last in the raw tools array, gated (requiresApproval: true) with a prepare hook", async () => {
+    const pool = createMockPool([
+      { id: "thread-10", channel: "telegram", chat_id: "111", messages: [] },
+    ]);
+    const complete = vi.fn().mockResolvedValue({
+      text: "ok",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
+      finishReason: "stop",
+      costUsd: 0,
+    });
+    const llmProvider: LlmProvider = { complete };
+
+    const { agent } = buildAgent(
+      pool,
+      llmProvider,
+      "some-model",
+      createMockRecorder(),
+      new AbortController().signal,
+      createMockChannel(),
+      createFakeSheetsDeps(),
+      createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
+      createFakeGmailDeps(),
+      createFakeGmailSendLogRepo(),
+    );
+    await agent.handleMessage("telegram", "111", "111", "hi");
+
+    // The raw (pre-sort) AgentDefinition.tools array — proves append-only
+    // wiring, not just presence: ROADMAP invariant 6 requires the existing
+    // prefix bytes stay untouched, with the new tool appended at the end.
+    const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
+    expect(definitionArg?.tools.at(-1)?.name).toBe("gmail_send_draft");
+
+    const gmailSendDraftTool = definitionArg?.tools.find(
+      (tool) => tool.name === "gmail_send_draft",
+    );
+    expect(gmailSendDraftTool?.requiresApproval).toBe(true);
+    expect(typeof gmailSendDraftTool?.prepare).toBe("function");
   });
 });

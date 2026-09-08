@@ -6,11 +6,22 @@ import { formatBatchPrompt, formatResolvedText } from "./approval-prompt-rendere
 /** An unanswered approval resolves as a denial after this long (settled decision 7). */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** The identical reply for an unknown, already-resolved, or post-restart callback id — one branch, three causes (settled decision 7). Spanish tuteo, matching this plan's other user-facing copy (e.g. `sheets-write.ts`'s approval-prompt text). */
+/** The identical reply for an unknown, already-resolved, or post-restart callback id — one branch, three causes (settled decision 7). Spanish tuteo, matching this plan's other user-facing copy (e.g. `sheets-write.ts`'s approval-prompt text). Still the fallback used whenever `describeExpiredApproval` (below) is absent, returns `undefined`, or throws. */
 const EXPIRED_CALLBACK_TEXT = "esta aprobación ya expiró, pídelo de nuevo";
 
 const APPROVE_LABEL = "Aprobar";
 const DENY_LABEL = "Rechazar";
+
+/**
+ * This gate is Telegram-only by construction (`createTelegramApprovalGate`'s
+ * one `TelegramPoller` argument), so the `channel` string
+ * `describeExpiredApproval` (below) receives is this fixed literal — the
+ * same raw string `apps/hermes/src/agent/build-agent.ts`'s own
+ * `CHANNEL_TELEGRAM` already spells out for the identical dedupe-key
+ * convention, duplicated here rather than imported to avoid a dependency
+ * from this file back onto `build-agent.ts`.
+ */
+const TELEGRAM_CHANNEL = "telegram";
 
 export interface TelegramApprovalGate extends ApprovalGate {
   /** Resolves a tapped Approve/Deny button — wire this into the channel's callback inbound kind (`subscribeCallback`) in `boot.ts`. */
@@ -81,8 +92,31 @@ export function createTelegramApprovalGate(
   targetResolver: (threadId: string) => string,
   logger: Logger,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  /**
+   * `09-gmail-read-then-send` Phase 5 — an optional, purely-descriptive
+   * lookup consulted only on the `pending.get()` miss branch below (unknown,
+   * already-resolved, or post-restart callback id). Never executes a tool,
+   * never resolves a pending approval, never touches `pending` — it only
+   * reads a durable log (e.g. `gmail_send_log` via
+   * `findLatestGmailSendIntent`) to report what did or didn't happen. A
+   * thrown error or a DB genuinely being down must never break the tap
+   * handler, so it is always awaited inside a `try`/`catch` that falls back
+   * to `EXPIRED_CALLBACK_TEXT` byte-identically, the same as an absent
+   * callback or one resolving to `undefined`.
+   */
+  describeExpiredApproval?: (channel: string, channelUserId: string) => Promise<string | undefined>,
 ): TelegramApprovalGate {
   const pending = new Map<string, PendingApproval>();
+
+  async function resolveExpiredText(channelUserId: string): Promise<string> {
+    if (!describeExpiredApproval) return EXPIRED_CALLBACK_TEXT;
+    try {
+      const described = await describeExpiredApproval(TELEGRAM_CHANNEL, channelUserId);
+      return described ?? EXPIRED_CALLBACK_TEXT;
+    } catch {
+      return EXPIRED_CALLBACK_TEXT;
+    }
+  }
 
   async function requestApproval(
     batch: ApprovalRequest[],
@@ -153,7 +187,8 @@ export function createTelegramApprovalGate(
     const entry = pending.get(approvalId);
 
     if (!entry) {
-      await channel.answerCallback(callback.callbackId, EXPIRED_CALLBACK_TEXT).catch(() => {});
+      const text = await resolveExpiredText(callback.channelUserId);
+      await channel.answerCallback(callback.callbackId, text).catch(() => {});
       return;
     }
 

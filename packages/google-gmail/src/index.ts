@@ -1,6 +1,7 @@
 export type { AccessTokenPort } from "./access-token-port";
 export {
   createGmailClient,
+  GmailAmbiguousSendError,
   GmailApiError,
   type CreateGmailClientOptions,
   type GmailClient,
@@ -11,6 +12,7 @@ export {
   type GmailMessageFull,
   type GmailMessageMetadata,
   type GmailMessageRef,
+  type GmailSendResult,
   type GmailThread,
   type GmailThreadMessageRef,
 } from "./gmail-client";
@@ -73,3 +75,12 @@ export {
   type CreateGmailDraftReplyToolDeps,
   type GmailDraftReplyPlan,
 } from "./tools/gmail-draft-reply";
+export {
+  createGmailSendDraftTool,
+  type AmbiguousSendResult,
+  type CreateGmailSendDraftToolDeps,
+  type DraftNotFoundResult,
+  type GmailSendDraftPlan,
+  type GmailSendLogClaimInput,
+  type GmailSendLogPort,
+} from "./tools/gmail-send-draft";

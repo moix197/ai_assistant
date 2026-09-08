@@ -20,12 +20,15 @@ import type {
   GmailArchivePlan,
   GmailDraftReplyPlan,
   GmailLabelPlan,
+  GmailSendDraftPlan,
+  GmailSendLogPort,
   GmailToolDeps,
 } from "@hermes/google-gmail";
 import { createGmailListUnreadTool } from "@hermes/google-gmail";
 import { createGmailReadThreadTool, createGmailSearchTool } from "@hermes/google-gmail";
 import { createGmailArchiveTool, createGmailLabelTool } from "@hermes/google-gmail";
 import { createGmailDraftReplyTool } from "@hermes/google-gmail";
+import { createGmailSendDraftTool } from "@hermes/google-gmail";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -176,6 +179,15 @@ export function buildAgent(
    */
   gmailDeps: GmailToolDeps,
   /**
+   * `09-gmail-read-then-send` Phase 5 — the claim/complete/release port over
+   * `gmail_send_log`, constructed and wired in `boot.ts`'s
+   * `buildGmailSendLogRepo` the same inline-object-over-`pool` shape
+   * `sheetWriteLogRepo` above uses. Kept out of `GmailToolDeps` for the same
+   * reason `sheetWriteLogRepo` sits outside `SheetsToolDeps`: no other Gmail
+   * tool needs it.
+   */
+  gmailSendLogRepo: GmailSendLogPort,
+  /**
    * `06-legible-approvals-bounded-reads` Phase 3 — `createTelegramApprovalGate`
    * logs each ready call's raw args/resolved plan at debug level right
    * before sending its prompt. `boot.ts` wires its own config-aware `logger`
@@ -186,9 +198,23 @@ export function buildAgent(
    * explicitly.
    */
   logger: Logger = createLogger(),
+  /**
+   * `09-gmail-read-then-send` Phase 5 — threaded straight into
+   * `createTelegramApprovalGate`'s own optional last parameter; see that
+   * function's doc comment for the full contract. `boot.ts` binds this to
+   * `findLatestGmailSendIntent`; omitted (the default) for every test call
+   * site, which falls back to the gate's existing generic expiry text.
+   */
+  describeExpiredApproval?: (channel: string, channelUserId: string) => Promise<string | undefined>,
 ): BuiltAgent {
   const { threadRepo, resolveChatId } = createThreadRepoWithChatIndex(pool);
-  const approvalGate = createTelegramApprovalGate(channel, resolveChatId, logger);
+  const approvalGate = createTelegramApprovalGate(
+    channel,
+    resolveChatId,
+    logger,
+    undefined,
+    describeExpiredApproval,
+  );
   const googleAccountRepo = buildGoogleAccountRepo(pool);
   const whoamiTool = createWhoamiTool(googleAccountRepo);
 
@@ -265,6 +291,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("gmail_draft_reply"),
   })(createGmailDraftReplyTool(gmailDeps));
 
+  const gmailSendDraftTool = withRequiredScopes<GmailSendDraftPlan>("gmail_send_draft", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("gmail_send_draft"),
+  })(createGmailSendDraftTool({ ...gmailDeps, sendLogRepo: gmailSendLogRepo }));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -288,6 +319,7 @@ export function buildAgent(
       gmailArchiveTool,
       gmailLabelTool,
       gmailDraftReplyTool,
+      gmailSendDraftTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

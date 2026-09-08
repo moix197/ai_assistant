@@ -101,4 +101,8 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   // per-method scope table — the write tier already grants it, so this adds
   // no new connect-tier scope (Phase 4 file-changes row).
   ["gmail_draft_reply", [GMAIL_MODIFY_SCOPE]],
+  // `drafts.send` requires `gmail.send` specifically — unlike
+  // `gmail_draft_reply`, `gmail.modify` alone does not cover it (Phase 5
+  // file-changes row).
+  ["gmail_send_draft", [GMAIL_SEND_SCOPE]],
 ]);

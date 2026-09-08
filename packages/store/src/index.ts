@@ -36,4 +36,14 @@ export {
   type SheetWriteLogClaimInput,
   type SheetWriteLogClaimResult,
 } from "./sheet-write-log-repo";
+export {
+  claim as claimGmailSend,
+  complete as completeGmailSend,
+  findLatestIntent as findLatestGmailSendIntent,
+  recordIntent as recordGmailSendIntent,
+  release as releaseGmailSend,
+  type GmailSendLogClaimInput,
+  type GmailSendLogClaimResult,
+  type GmailSendLogIntent,
+} from "./gmail-send-log-repo";
 export type { Pool } from "pg";

@@ -1,18 +1,22 @@
 # @hermes/google-gmail
 
-The generic Gmail capability: read (and, in a later phase, send) mail on the
-connected account. Nothing trading-specific lives here — see
-`plans/09-gmail-read-then-send.md`'s Context. Phase 1 ships
-`gmail_list_unread` (read-only) alongside the package scaffold itself. Phase
-2 ships `gmail_search` and `gmail_read_thread` — the first tools that put
-actual mail body text into context, bounded (see "Body pipeline" below).
-Phase 3 ships the write tier's first two tools, `gmail_archive` and
-`gmail_label` — both approval-gated, both reversible, proving the whole
-`prepare` → `ApprovalSummary` → Telegram prompt → tap → handler → Gmail path
-before Phase 5's irreversible `gmail_send_draft` ever exists. Phase 4 ships
-`gmail_draft_reply` — a real, threaded Gmail draft the human reads in full
-before it exists, still reversible (a draft, never a send) but the first
-tool to compose its own outbound MIME content.
+The generic Gmail capability: read and send mail on the connected account.
+Nothing trading-specific lives here — see `plans/09-gmail-read-then-send.md`'s
+Context. Phase 1 ships `gmail_list_unread` (read-only) alongside the package
+scaffold itself. Phase 2 ships `gmail_search` and `gmail_read_thread` — the
+first tools that put actual mail body text into context, bounded (see "Body
+pipeline" below). Phase 3 ships the write tier's first two tools,
+`gmail_archive` and `gmail_label` — both approval-gated, both reversible,
+proving the whole `prepare` → `ApprovalSummary` → Telegram prompt → tap →
+handler → Gmail path before Phase 5's irreversible `gmail_send_draft` ever
+exists. Phase 4 ships `gmail_draft_reply` — a real, threaded Gmail draft the
+human reads in full before it exists, still reversible (a draft, never a
+send) but the first tool to compose its own outbound MIME content. Phase 5
+ships `gmail_send_draft` — the one irreversible tool in this package, backed
+by a durable `gmail_send_log` claim/complete/release dance
+(`@hermes/store`'s `gmail-send-log-repo.ts`) rather than the reversible
+tools' no-log posture (see "No durable write log" below, and its own section
+further down).
 
 ## Ports
 
@@ -96,8 +100,8 @@ existing call site changes):
   this client makes. Backs `gmail_draft_reply`'s update path — same draft id
   in, same draft id out.
 - `getDraft(accessToken, draftId, signal?)` — `GET /users/me/drafts/{draftId}`
-  (`users.drafts.get`). Not called by `gmail_draft_reply`; exists for Phase
-  5's `gmail_send_draft` existence check before sending.
+  (`users.drafts.get`). Not called by `gmail_draft_reply`; backs Phase 5's
+  `gmail_send_draft` existence check before sending.
 
 Own `classify` (429 → `rateLimit`, honoring `Retry-After`; 5xx →
 `transient`; anything else — **notably 401/403** — fatal, thrown directly,
@@ -107,6 +111,29 @@ per its own contract. Every `GET` this client makes is naturally idempotent,
 and the one `POST` (`modifyMessage`) is idempotent by Gmail's own semantics
 too, so both retry freely within the tool's own timeout budget with no
 method-specific special-casing.
+
+Phase 5 adds the one irreversible call:
+
+- `sendDraft(accessToken, draftId, signal?)` — `POST /users/me/drafts/send`
+  (`users.drafts.send`). Sends `draftId` as-is and deletes the draft
+  resource; Google returns the resulting **sent message**
+  (`GmailSendResult { id, threadId }`), never the now-gone draft. Backed by
+  its own `classifySend` (a package-local mirror of
+  `packages/google-sheets/src/sheets-client.ts`'s `classifyWrite`, not
+  reused across packages for the same reason `truncate.ts`/
+  `canonical-args.ts` aren't): a 429 is safe to retry (rejected before
+  applying); a network failure provably pre-send (`ECONNREFUSED`/
+  `ENOTFOUND`/`EAI_AGAIN`, via `isPreSendNetworkFailure`) retries too; **any**
+  other failure — a 5xx after the request left, this client's own timeout
+  abort, or an unrecognized network error that cannot be proven pre-send —
+  is `postSendAmbiguous` and is **never retried** (`maxAttempts: 0`), instead
+  throwing `GmailAmbiguousSendError` on the very first such failure. A
+  non-429 4xx (rejected outright) or an exhausted 429 throws the underlying
+  `GmailApiError` directly, never wrapped — `gmail-send-draft.ts`'s handler
+  distinguishes the two by type: a `GmailApiError` means the send provably
+  never landed (release the pending claim); a `GmailAmbiguousSendError`
+  means it might have (keep the claim, hedge instead of retrying — the
+  recovery for a false "it failed" is a duplicate email to a real human).
 
 ## `insufficient-scope.ts`
 
@@ -305,7 +332,65 @@ no `SheetWriteLogPort`-style claim/complete dance here; see Phase 6's
   `drafts.send`/`messages.send` anywhere** — a draft is reversible, a send
   is Phase 5's problem.
 
-All six are base `ToolSpec`s — `apps/hermes/src/agent/build-agent.ts` wraps
+## `gmail_send_draft` (Phase 5) — the one irreversible tool
+
+`gmail_send_draft { draftId }` — approval-gated, `requiresApproval: true`,
+backed by `@hermes/store`'s `gmail_send_log` (see that package's README for
+the table's own shape) via an injected `GmailSendLogPort`
+(`CreateGmailSendDraftToolDeps.sendLogRepo`, following the same
+consumer-declares-its-port convention `SheetWriteLogPort` does) — the only
+Gmail tool that carries one.
+
+- **`prepare`** fetches the draft (`getDraft`) and refuses pre-prompt —
+  **before any intent row is ever written** — with
+  `{ ok: false, reason: "draft_not_found" }` if it no longer exists (already
+  sent, deleted, or never existed). It then reads the draft's own
+  `to`/`subject`/body preview via `getMessageFull` and the same
+  `findBodyPart`/`decodePart`/`htmlToText` pipeline `gmail_read_thread` uses
+  (minus `stripQuotedReply` — irrelevant for our own composed outbound
+  draft), builds the summary (`"¿Enviar este correo?"`, target
+  `"Para: <to> — <subject>"`, the body preview as `items`, effects
+  `["Se envía de verdad. Esto no se puede deshacer."]`), and only *then*
+  calls `sendLogRepo.recordIntent` — writing an `awaiting_approval` row. This
+  is a deliberate divergence from `sheets_write`'s `prepare`, which claims
+  nothing before approval: it is an **intent, never a claim and never a
+  grant** — see `packages/store/README.md`'s "Gmail send log" section for the
+  full three-state lifecycle and why Gmail needs this extra state and Sheets
+  doesn't. A throw here (e.g. the database is unreachable) propagates out of
+  `prepare`, which the generic `.ai/decisions/tool-prepare-hook.md` contract
+  already turns into `{ ok: false, reason: "prepare_failed" }` with no prompt
+  ever shown — fail-closed, no new mechanism needed.
+- **`handler`** claims the same dedupe key `prepare` computed
+  (`(channel, channelUserId, turnId, tool, { draftId })`, via this package's
+  own `canonical-args.ts`) and resolves one of three ways, mirroring
+  `sheets_write`'s dedupe exactly: `"claimed"` proceeds to call `sendDraft`;
+  `alreadyComplete` returns the stored outcome with **zero** further Gmail
+  calls (not even a token fetch); `alreadyPending` returns
+  `{ ok: false, reason: "ambiguous_send", message: "puede que ya se haya
+  enviado — revisá Enviados antes de reintentar" }` and writes nothing. On a
+  successful send, `complete()` stores the **sent message id** (`sendDraft`
+  deletes the draft it sends, so the id it returns is a message, not the
+  gone draft) and the handler returns
+  `{ ok: true, messageId, threadId, to, subject }`. The
+  definitive-vs-ambiguous split mirrors `sheets-write.ts`'s `performWrite`:
+  a caught `GmailAmbiguousSendError` records and returns the `ambiguous_send`
+  hedge via `complete()` (the pending row is **never** released — a same-turn
+  duplicate claim then returns that same hedge without a second Gmail call);
+  a caught `GmailApiError` (only ever a non-429 4xx or an exhausted 429 per
+  `classifySend`) releases the still-pending claim first, then either
+  returns the structured `insufficient_scope` refusal (a 401/403) or
+  rethrows as a genuine fatal error — never both. Any other thrown error
+  propagates with the claim left pending, the fail-safe default.
+- **Never a code path from a stored row to a send.** The `awaiting_approval`
+  row `prepare` writes is read-only for reporting: `claim` only ever
+  transitions a row *out of* that state (or inserts fresh), and nothing
+  anywhere treats a row's presence, status, or content as authorization.
+  `apps/hermes/src/agent/telegram-approval-gate.ts`'s optional
+  `describeExpiredApproval` reads the log purely to answer a stale tap after
+  a restart ("no se envió nada, el borrador sigue guardado…") — it never
+  executes this tool, the client, or `claim`.
+
+All seven gated/ungated tools are base `ToolSpec`s — `apps/hermes/src/agent/build-agent.ts` wraps
 each in `withRequiredScopes(name, { googleAccountRepo, requiredScopes })`,
 the same split `whoami`/the Sheets/Calendar tools use: the capability lives
 in this package, the scope gate lives in `apps/hermes`. `requiredScopes` is
@@ -313,7 +398,9 @@ read from `@hermes/google-auth`'s `TOOL_REQUIRED_SCOPES` map
 (`GMAIL_READ_SCOPES` for the three read tools; **`gmail.modify` only** — not
 the whole `GMAIL_WRITE_SCOPES` tier — for `gmail_archive`/`gmail_label`/
 `gmail_draft_reply`, so each tool's declared requirement stays the minimum
-it actually needs) rather than hardcoded at the wiring site. `gmail_draft_reply`
+it actually needs; **`gmail.send` only** for `gmail_send_draft` — unlike
+`gmail_draft_reply`, `drafts.send` is not covered by `gmail.modify` alone)
+rather than hardcoded at the wiring site. `gmail_draft_reply`
 adds no new connect-tier scope of its own: `drafts.create`/`drafts.update`
 accept `gmail.modify` per Google's per-method scope table, so it rides the
 write tier `/connect google gmail-send` already grants (Phase 3) — see the

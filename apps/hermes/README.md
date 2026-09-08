@@ -291,6 +291,17 @@ right before sending, off by default in production.
 google-oauth-flow.md`'s settled decision 3). It makes no live Google API
 call: it projects `google_email` off the stored `google_accounts` row.
 
+`createTelegramApprovalGate` gained an optional last parameter,
+`describeExpiredApproval` (`09-gmail-read-then-send` Phase 5): a
+`(channel, channelUserId) => Promise<string | undefined>` consulted only on
+the `handleCallback` miss branch (an unknown, already-resolved, or
+post-restart callback id) — never anywhere else, and never anything that
+resolves a pending approval or executes a tool. Always awaited inside a
+`try`/`catch` so a throw (or the describer's own `undefined`) falls back to
+the existing `EXPIRED_CALLBACK_TEXT` byte-identically; every call site
+except `boot.ts`'s real wiring (see "Google Gmail send tool" below) omits
+it, so every other gated tool's expiry behavior is unchanged.
+
 ## Scope-gated tools (`withRequiredScopes`)
 
 `src/agent/with-required-scopes.ts` (`05-google-sheets` Phase 2) is the one
@@ -611,6 +622,59 @@ Phase 5's irreversible `gmail_send_draft`:
   genuinely idempotent (re-archiving an archived thread, re-adding a
   present label are harmless no-ops), so a crashed process or an ambiguous
   response is safe to retry outright.
+
+## Google Gmail send tool (`09-gmail-read-then-send` Phase 5)
+
+`gmail_send_draft { draftId }` — the one irreversible tool this codebase
+ships, gated the same way `gmail_archive`/`gmail_label` are
+(`withRequiredScopes<GmailSendDraftPlan>("gmail_send_draft", …)`) **and**
+behind the approval gate (`requiresApproval: true`). Full design lives in
+`@hermes/google-gmail`'s own README (`gmail_send_draft` section) and
+`packages/store/README.md`'s "Gmail send log" section; this section covers
+only what's wired here in `apps/hermes`.
+
+- **`buildGmailSendLogRepo(pool)` is wired inline in `boot.ts`**, the direct
+  twin of `buildSheetWriteLogRepo` above, widened with `recordIntent` for the
+  `awaiting_approval` state `sheet_write_log` has no equivalent of. Threaded
+  into `buildAgent` as its own parameter (`gmailSendLogRepo`), the same
+  "kept out of the shared `*ToolDeps` type since no other tool needs it"
+  rationale `sheetWriteLogRepo` follows — `build-agent.ts` passes
+  `{ ...gmailDeps, sendLogRepo: gmailSendLogRepo }` into
+  `createGmailSendDraftTool`.
+- **`TOOL_REQUIRED_SCOPES` gains `gmail_send_draft` -> `[gmail.send]`**
+  (`@hermes/google-auth`) — not the whole write tier, and notably **not**
+  `gmail.modify` (unlike `gmail_archive`/`gmail_label`/`gmail_draft_reply`):
+  `drafts.send` needs `gmail.send` specifically.
+- **`describeExpiredApproval` — the post-restart reporting seam.**
+  `boot.ts`'s `describeExpiredGmailSend(pool)` binds
+  `findLatestGmailSendIntent` into the shape
+  `createTelegramApprovalGate`'s new optional last parameter expects, and
+  `build-agent.ts` threads it straight through. It answers only when the
+  newest matching row is still `awaiting_approval` — proof that `claim()`
+  (the handler's own first call) never ran, so the mail provably never
+  sent — with the definite Spanish sentence "no se envió nada, el borrador
+  sigue guardado — pedime «envialo» de nuevo"; any other row status, or no
+  row at all, falls back to `TelegramApprovalGate`'s existing generic expiry
+  text (`"esta aprobación ya expiró, pídelo de nuevo"`), byte-identical, via
+  a `try`/`catch` inside the gate itself that a thrown error (DB down)
+  cannot break. This function is **strictly read-only** — it calls
+  `findLatestGmailSendIntent` and nothing else, never a tool, the Gmail
+  client, or `claim`/`recordIntent`/`complete`/`release`.
+- **No "always allow" affordance, anywhere.** A denied approval, a timed-out
+  prompt, or a restart before a tap all leave the `awaiting_approval` row
+  exactly as `prepare` wrote it and send nothing — `claim` only ever
+  transitions a row *out of* that state, and nothing reads a row's presence
+  to decide whether a later call may proceed. A later, genuinely repeated
+  "envialo" is a fresh turn with a fresh `turnId`, hashing to a fresh dedupe
+  key — never a lookup against an old row.
+- **Manual verification** (this phase's the one HIL-required phase in the
+  whole plan — see the plan's own Verification list): draft a reply to the
+  user's own address, "envialo", **Rechazar** — confirm nothing in Sent,
+  draft still in Drafts; repeat, **Aprobar** — confirm the mail arrives and
+  appears in Sent; draft again, "envialo", restart the process before
+  tapping, then tap — confirm the definite Spanish sentence, nothing sent,
+  draft still in Drafts; ask to send an already-sent/deleted `draftId` —
+  confirm no prompt at all and a legible refusal.
 
 ## Handlers
 

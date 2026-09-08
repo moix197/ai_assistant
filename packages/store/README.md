@@ -75,9 +75,9 @@ their connection closes, crash or not.
 `002_llm_usage.sql`, `003_llm_dedupe.sql`, `004_telemetry_events.sql`,
 `005_telemetry_event_total_cost.sql`, `006_threads.sql`,
 `007_google_accounts.sql`, `008_sheet_registry.sql`,
-`009_sheet_write_log.sql`. A new migration is numbered one past whatever is
-actually highest in the directory — re-list it rather than trusting an
-assumed number.
+`009_sheet_write_log.sql`, `010_gmail_send_log.sql`. A new migration is
+numbered one past whatever is actually highest in the directory — re-list it
+rather than trusting an assumed number.
 
 ## LLM usage accounting
 
@@ -478,6 +478,85 @@ This table is also this plan's durable write audit: every claimed
 was asked (`canonical_args`) and what happened (`outcome`), whether or not
 the write itself ever completes.
 
+## Gmail send log
+
+`src/migrations/010_gmail_send_log.sql` creates `gmail_send_log` (`dedupe_key
+text primary key, channel text not null, channel_user_id text not null,
+turn_id text not null, tool text not null, canonical_args jsonb not null,
+draft_id text not null, status text not null check (status in
+('awaiting_approval', 'pending', 'complete')), outcome jsonb, created_at
+timestamptz not null default now(), completed_at timestamptz`), plus an index
+on `(channel, channel_user_id, created_at desc)` for the post-restart lookup
+below. One row per dedupe key `gmail_send_draft` (`@hermes/google-gmail`,
+`09-gmail-read-then-send` Phase 5) has recorded — the durable send audit
+`gmail_send_draft`'s irreversibility needs, on the same `sheet_write_log`
+model widened by one extra state.
+
+**A row is an intent record, and never a grant.** Unlike `sheet_write_log`
+(which writes nothing before approval), this table gains a state *ahead* of
+the claim: `awaiting_approval`, written by the tool's `prepare` — before any
+human has seen a prompt, carrying no consent — so that a crash mid-approval
+still leaves something durable to *report* against ("did it send?"). No code
+anywhere may treat this row's presence, status, or content as authorization
+to call Gmail; the row is read for exactly two purposes: the claim/complete
+dance a human-approved handler call performs against its own key, and a
+post-restart report to a human. `dedupe_key` is a hash of `(channel,
+channelUserId, turnId, tool, canonical args JSON)` — computed by
+`@hermes/google-gmail`'s own `canonical-args.ts`, never by this package —
+with the same same-turn-retry-guard-not-permanent-block rationale
+`sheet_write_log`'s `turn_id` inclusion documents above.
+
+- `recordGmailSendIntent(pool, dedupeKey, { channel, channelUserId, turnId,
+  tool, canonicalArgs, draftId })` (exported as `recordIntent` from
+  `gmail-send-log-repo.ts`) — `INSERT ... ON CONFLICT (dedupe_key) DO
+  NOTHING`, status `awaiting_approval`. Atomic, so a throw mid-call leaves
+  either a clean insert or no row at all, never a half-written row a later
+  `claimGmailSend` could misread. A repeat call for an identical same-turn
+  key (e.g. `prepare` running twice before either is approved) is a no-op.
+- `claimGmailSend(pool, dedupeKey, input)` (exported as `claim`) — run only
+  **after** approval, by the handler, immediately before it calls Gmail:
+  `UPDATE ... SET status = 'pending' WHERE dedupe_key = $1 AND status =
+  'awaiting_approval' RETURNING`. The same three outcomes
+  `claimSheetWrite` returns: the transition wins -> `"claimed"`; the row is
+  `complete` -> `{alreadyComplete: true, outcome}`, so the tool makes **zero**
+  further Gmail calls; the row is still `pending` -> `{alreadyPending: true}`,
+  not fail-open, for the same reason `sheet_write_log`'s `alreadyPending`
+  isn't. An `awaiting_approval` row is never itself a short-circuit for
+  anything — only the transition out of it means a send is about to be
+  attempted. A row missing entirely (no `recordIntent` ever ran for this key)
+  defensively inserts fresh as `pending` and claims, so the key always
+  resolves to a definite state; Postgres's own primary-key constraint, not
+  application check-then-insert, is what keeps this race-free.
+- `completeGmailSend(pool, dedupeKey, outcome)` (exported as `complete`) —
+  marks the row `complete` and stores `outcome`. Because `drafts.send`
+  deletes the draft it sends, `outcome` stores the resulting **sent message
+  id**, never the now-gone `draftId` — an `alreadyComplete` replay hands that
+  back without a second `getDraft`/`sendDraft` call against an id that no
+  longer resolves.
+- `releaseGmailSend(pool, dedupeKey)` (exported as `release`) — `DELETE ...
+  WHERE dedupe_key = $1 AND status = 'pending'`. Used by `gmail-send-draft.ts`
+  only after a *provably-definitive* send failure (a non-429 4xx, or an
+  exhausted 429 that never got applied) — the same discipline
+  `releaseSheetWrite` documents above. Never called for a genuinely ambiguous
+  failure (a post-send timeout, a 5xx after the request left, a malformed
+  body after a 2xx) — those keep the row `pending` so a same-turn retry gets
+  the fail-closed `ambiguous_send` hedge instead of a resend.
+- `findLatestGmailSendIntent(pool, channel, channelUserId, sinceMs)`
+  (exported as `findLatestIntent`) — the newest row for that
+  `(channel, channelUserId)` created at or after `sinceMs`, or `undefined`.
+  The post-restart reporting seam: `apps/hermes/src/boot.ts` binds this to
+  `TelegramApprovalGate`'s `describeExpiredApproval`, so a tap on a now-dead
+  approval button answers definitively — "no se envió nada, el borrador sigue
+  guardado" — instead of the generic "esta aprobación ya expiró". Strictly
+  read-only: this function's result never causes a send, only a description
+  of one.
+
+This table is this plan's durable send audit, on the model
+`sheet_write_log`'s own section above already establishes: every claimed
+`gmail_send_draft` call leaves a `psql`-inspectable row recording exactly
+what was asked (`canonical_args`, `draft_id`) and what happened (`outcome`),
+whether or not the send itself ever completes.
+
 ## Row validation
 
 `src/validate-row.ts` exports `parseValidatedJson(schema, value, context)` —
@@ -601,6 +680,20 @@ same way: `claim` on a fresh key returns `"claimed"`; a repeat `claim` on the
 same key before `complete()` also returns `"claimed"` (the pending fail-open
 case); after `complete()`, a further `claim` returns `{alreadyComplete: true,
 outcome}` with the stored outcome.
+
+`src/__tests__/gmail-send-log-repo.test.ts` is integration-only, gated the
+same way: `recordIntent` is idempotent on repeat and writes `awaiting_approval`;
+`claim` transitions an `awaiting_approval` row to `pending` and returns
+`"claimed"`; a second claim on the same still-`pending` key returns
+`{alreadyPending: true}`, **not** fail-open (the opposite of
+`sheet_write_log`'s own pending case above); after `complete()`, a further
+claim returns `{alreadyComplete: true, outcome}`; a claim against a row that
+was never `recordIntent`-ed defensively inserts as `pending` and claims;
+`release` deletes a still-`pending` row and refuses to delete a `complete` or
+still-`awaiting_approval` one; `findLatestIntent` returns the newest row
+within the given time window and channel/user scope, and nothing outside
+either; a raw duplicate `INSERT` on the same `dedupe_key` is rejected by the
+primary-key constraint itself.
 
 `src/__tests__/sheets-cli.test.ts` is a plain unit-test file (no database,
 always runs): `parseArgs` for `add`/`list`/`remove`, including the

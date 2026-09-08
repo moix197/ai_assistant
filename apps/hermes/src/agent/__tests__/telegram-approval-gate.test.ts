@@ -283,6 +283,110 @@ describe("createTelegramApprovalGate — prepared-batch debug logging (06-legibl
   });
 });
 
+describe("createTelegramApprovalGate — post-restart describer (09-gmail-read-then-send Phase 5)", () => {
+  it("an unknown callback id with a describer returning a string answers that string instead of the generic expiry text", async () => {
+    const channel = fakeChannel();
+    const describeExpiredApproval = vi
+      .fn()
+      .mockResolvedValue(
+        "no se envió nada, el borrador sigue guardado — pedime «envialo» de nuevo",
+      );
+    const gate = createTelegramApprovalGate(
+      channel,
+      () => "555",
+      fakeLogger(),
+      undefined,
+      describeExpiredApproval,
+    );
+
+    await gate.handleCallback(makeCallback("no-such-id", "approve"));
+
+    expect(describeExpiredApproval).toHaveBeenCalledWith("telegram", "111");
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      "no se envió nada, el borrador sigue guardado — pedime «envialo» de nuevo",
+    );
+  });
+
+  it("no describer given answers the existing EXPIRED_CALLBACK_TEXT byte-identically", async () => {
+    const channel = fakeChannel();
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
+
+    await gate.handleCallback(makeCallback("no-such-id", "approve"));
+
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+  });
+
+  it("a describer resolving to undefined (no matching intent found) falls back to EXPIRED_CALLBACK_TEXT byte-identically", async () => {
+    const channel = fakeChannel();
+    const describeExpiredApproval = vi.fn().mockResolvedValue(undefined);
+    const gate = createTelegramApprovalGate(
+      channel,
+      () => "555",
+      fakeLogger(),
+      undefined,
+      describeExpiredApproval,
+    );
+
+    await gate.handleCallback(makeCallback("no-such-id", "approve"));
+
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+  });
+
+  it("a describer that throws (e.g. the DB is down) falls back to EXPIRED_CALLBACK_TEXT and never breaks the tap handler", async () => {
+    const channel = fakeChannel();
+    const describeExpiredApproval = vi.fn().mockRejectedValue(new Error("connection refused"));
+    const gate = createTelegramApprovalGate(
+      channel,
+      () => "555",
+      fakeLogger(),
+      undefined,
+      describeExpiredApproval,
+    );
+
+    await expect(
+      gate.handleCallback(makeCallback("no-such-id", "approve")),
+    ).resolves.toBeUndefined();
+
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+  });
+
+  it("the describer's presence never causes a tool invocation or resolves a genuinely pending approval — it only answers the stale callback", async () => {
+    const channel = fakeChannel();
+    const describeExpiredApproval = vi.fn().mockResolvedValue("described text");
+    const gate = createTelegramApprovalGate(
+      channel,
+      () => "555",
+      fakeLogger(),
+      undefined,
+      describeExpiredApproval,
+    );
+    const decisionPromise = gate.requestApproval(BATCH, CONTEXT, new AbortController().signal);
+    await waitForPromptSent(channel);
+    const approvalId = extractApprovalId(channel.send);
+
+    // A stale, unrelated callback id arrives while a real approval is still
+    // genuinely pending — the describer must not touch that pending entry.
+    await gate.handleCallback(makeCallback("some-other-id", "approve"));
+
+    expect(describeExpiredApproval).toHaveBeenCalledTimes(1);
+    expect(channel.answerCallback).toHaveBeenCalledWith("cbq-1", "described text");
+
+    // The real pending approval is untouched — it still resolves normally.
+    await gate.handleCallback(makeCallback(approvalId, "approve"));
+    expect(await decisionPromise).toBe("approved");
+  });
+});
+
 describe("createTelegramApprovalGate — abort mid-wait", () => {
   it("resolves 'denied' immediately when the signal aborts, without advancing fake timers, and skips the edit", async () => {
     vi.useFakeTimers();

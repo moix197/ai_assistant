@@ -147,6 +147,113 @@ async function requestWithRetry(
   });
 }
 
+/**
+ * Thrown by `sendDraft` when a post-send failure (timeout after send, or a
+ * 5xx necessarily received after the request reached Google) leaves the
+ * send's outcome genuinely unknown, and — like `sheets-client.ts`'s
+ * `SheetsAmbiguousWriteError` for `appendValues` — is never retried by this
+ * client: `POST :send` is not idempotent, and the recovery for a false "it
+ * failed" is a duplicate email to a real human. `gmail-send-draft.ts` catches
+ * this specific type to surface the "may or may not have landed, check Sent"
+ * hedge instead of a bare fatal error, and to know **not** to release the
+ * pending `gmail_send_log` claim.
+ */
+export class GmailAmbiguousSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GmailAmbiguousSendError";
+  }
+}
+
+type GmailSendRetryClass = "rateLimit" | "preSendNetwork" | "postSendAmbiguous";
+
+/**
+ * Node/undici error codes that provably mean the request never left this
+ * process — the connection itself could not be established. Anything else
+ * (a reset, a premature close, "terminated", or no discoverable code at all)
+ * happens on a connection that may already have carried the request to
+ * Google, so it cannot be assumed pre-send. Mirrors
+ * `sheets-client.ts`'s identically-named constant/function pair exactly.
+ */
+const PRE_SEND_NETWORK_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+
+function isPreSendNetworkFailure(error: Error): boolean {
+  const cause = error.cause;
+  const code =
+    cause !== null && typeof cause === "object" && "code" in cause
+      ? (cause as { code?: unknown }).code
+      : undefined;
+  return typeof code === "string" && PRE_SEND_NETWORK_CODES.has(code);
+}
+
+/**
+ * The same 429/5xx split `classify` (above) draws, but a fetch-level throw
+ * that isn't this client's own timeout abort is classified `preSendNetwork`
+ * only when `isPreSendNetworkFailure` can prove the request never left
+ * (connection refused, DNS failure, ...); everything else — including a bare
+ * `TypeError: fetch failed` with an unrecognized or absent `cause` — is
+ * `postSendAmbiguous`. A send that definitely reached Google and was
+ * rejected outright (a non-429 4xx) or exhausted its 429 retries (never got
+ * past quota enforcement) is thrown directly, never returned — the
+ * definitive branch `gmail-send-draft.ts`'s handler releases its pending
+ * claim for. Mirrors `sheets-client.ts`'s `classifyWrite` exactly.
+ */
+function classifySend(error: unknown): { class: GmailSendRetryClass; retryAfterMs?: number } {
+  if (error instanceof GmailApiError) {
+    if (error.status === 429) {
+      return {
+        class: "rateLimit",
+        retryAfterMs: error.retryAfter !== undefined ? error.retryAfter * 1000 : undefined,
+      };
+    }
+    if (error.status >= 500) return { class: "postSendAmbiguous" };
+    throw error;
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    return { class: "postSendAmbiguous" };
+  }
+  if (error instanceof Error && isPreSendNetworkFailure(error)) {
+    return { class: "preSendNetwork" };
+  }
+  return { class: "postSendAmbiguous" };
+}
+
+/**
+ * `POST /users/me/drafts/send` (`users.drafts.send`) — never retried on
+ * `postSendAmbiguous` (`maxAttempts: 0`, mirroring `sheets-client.ts`'s
+ * `appendValues`): a resend after a genuinely ambiguous failure risks
+ * sending the mail twice, which is never an acceptable trade against "the
+ * tool reports a hedge instead". `buildExhaustedError` turns the very first
+ * ambiguous failure into a `GmailAmbiguousSendError`; a `rateLimit`/
+ * `preSendNetwork` failure retries as usual, since Google rejected (or never
+ * received) the request before ever applying it.
+ */
+async function sendDraftWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  accessToken: string,
+  draftId: string,
+  externalSignal: AbortSignal | undefined,
+): Promise<unknown> {
+  return withHttpRetry<unknown, GmailSendRetryClass>({
+    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal, { id: draftId }),
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    externalSignal,
+    classes: {
+      rateLimit: { maxAttempts: MAX_RATE_LIMIT_RETRIES },
+      preSendNetwork: { maxAttempts: MAX_TRANSIENT_RETRIES },
+      postSendAmbiguous: {
+        maxAttempts: 0,
+        buildExhaustedError: () =>
+          new GmailAmbiguousSendError(
+            "Gmail send may or may not have landed: the request timed out or Google returned a server error after it was sent, and a resend is not safe (it could send the mail twice) — check Sent before retrying.",
+          ),
+      },
+    },
+    classify: classifySend,
+  });
+}
+
 export interface GmailMessageRef {
   id: string;
   threadId: string;
@@ -222,6 +329,12 @@ export interface GmailDraftRequest {
 export interface GmailDraft {
   id: string;
   message: { id: string; threadId: string };
+}
+
+/** The sent **message** `drafts.send` returns — `id` is the new sent message's id, never the draft's (the draft resource no longer exists once sent). */
+export interface GmailSendResult {
+  id: string;
+  threadId: string;
 }
 
 export interface GmailClient {
@@ -300,6 +413,14 @@ export interface GmailClient {
   ): Promise<GmailDraft>;
   /** `GET /drafts/{draftId}` (`users.drafts.get`) — fetches one draft by id. Not called by `gmail_draft_reply`; exists for Phase 5's `gmail_send_draft` existence check before sending. */
   getDraft(accessToken: string, draftId: string, signal?: AbortSignal): Promise<GmailDraft>;
+  /**
+   * `POST /drafts/send` (`users.drafts.send`) — sends `draftId` as-is and
+   * deletes the draft resource; Google returns the resulting **sent
+   * message**, not the (now-gone) draft. Backs `gmail_send_draft`'s one
+   * irreversible call. Never retried on a post-send-ambiguous failure — see
+   * `classifySend`/`GmailAmbiguousSendError` above.
+   */
+  sendDraft(accessToken: string, draftId: string, signal?: AbortSignal): Promise<GmailSendResult>;
 }
 
 export interface CreateGmailClientOptions {
@@ -348,6 +469,11 @@ interface RawLabelsListResponse {
 interface RawDraftResponse {
   id: string;
   message: { id: string; threadId: string };
+}
+
+interface RawSendResponse {
+  id: string;
+  threadId: string;
 }
 
 function extractHeaders(rawHeaders: RawMessageHeader[] | undefined): Record<string, string> {
@@ -482,6 +608,17 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
         id: result.id,
         message: { id: result.message.id, threadId: result.message.threadId },
       };
+    },
+    async sendDraft(accessToken, draftId, signal) {
+      const url = `${GMAIL_API_BASE}/drafts/send`;
+      const result = (await sendDraftWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        draftId,
+        signal,
+      )) as RawSendResponse;
+      return { id: result.id, threadId: result.threadId };
     },
   };
 }
