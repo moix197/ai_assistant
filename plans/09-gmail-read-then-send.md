@@ -727,11 +727,11 @@ context.
 
 **Steps:**
 
-- [ ] Build the body pipeline as **four separately-testable pure functions**
+- [x] Build the body pipeline as **four separately-testable pure functions**
       composed in the tool, never one `parseMessage` blob — each is
       independently unit-testable against fixtures and independently
       wrong-able (CLAUDE.md: small focused functions, separation of concerns)
-- [ ] Collect real fixture payloads first: a `text/plain`-only message, a
+- [x] Collect real fixture payloads first: a `text/plain`-only message, a
       `multipart/alternative` with both parts, an HTML-only newsletter, a
       `multipart/mixed` with an attachment part alongside the text, a
       quoted-printable-encoded body, a 10-deep reply chain, and a
@@ -739,26 +739,26 @@ context.
       `windows-1252`, common on older or auto-forwarded mail). Save them as
       JSON fixtures under `src/__tests__/fixtures/` — **redact real addresses
       and any personal content before committing**
-- [ ] `decodePartText` must never throw on a malformed or unrecognized
+- [x] `decodePartText` must never throw on a malformed or unrecognized
       `charset=` value — construct `TextDecoder` inside a `try`/`catch` and
       fall back to UTF-8, then assert this against a fixture with a bogus
       charset string, not only a missing one
-- [ ] Apply the per-message cap **after** HTML→text and quote-stripping, not
+- [x] Apply the per-message cap **after** HTML→text and quote-stripping, not
       before — capping raw HTML would spend the whole budget on markup and
       is the single most likely way to get this wrong
-- [ ] Apply the per-thread message cap **before** issuing per-message work,
+- [x] Apply the per-thread message cap **before** issuing per-message work,
       and confirm with a test that a 100-message thread performs bounded
       work, not 100 messages' worth of parsing
-- [ ] `stripQuotedReply` must never return empty: write the adversarial test
+- [x] `stripQuotedReply` must never return empty: write the adversarial test
       (a message whose *first* line matches a quote-boundary pattern) and
       assert the first paragraph survives
-- [ ] Confirm the untruncated shape is byte-identical to the un-capped one —
+- [x] Confirm the untruncated shape is byte-identical to the un-capped one —
       no `truncated` key at all when nothing was dropped
-- [ ] Confirm the `note` only promises a remedy the tool can honor
+- [x] Confirm the `note` only promises a remedy the tool can honor
       (`.ai/decisions/bounded-tool-results.md`): if `gmail_read_thread` takes
       no offset argument, the note says what was omitted and does not invite
       the model to ask for "the rest"
-- [ ] Grep the finished tools to confirm **no LLM call and no summarization**
+- [x] Grep the finished tools to confirm **no LLM call and no summarization**
       happens anywhere inside them (settled decision 5)
 
 **Tests:**
@@ -783,11 +783,12 @@ coherent and does not visibly contain quoted history or HTML fragments.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-gmail test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
-- [ ] `pnpm build` before manual checks
+- [x] `pnpm --filter @hermes/google-gmail test` green (86/86)
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green (non-DB suites; DB-backed suites still blocked on no
+      local Postgres, pre-existing environment gap, unrelated to this phase)
+- [x] `pnpm lint` green
+- [x] `pnpm build` before manual checks
 - [ ] Manual: ask about a real recent thread and confirm the answer reflects
       body content, not just the subject line
 - [ ] Manual: ask about the HTML-only newsletter and confirm the reply
@@ -801,14 +802,15 @@ coherent and does not visibly contain quoted history or HTML fragments.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+      (the four manual live-mailbox checks remain open — see Verification)
+- [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
+      subagent dispatch, superseding this template's manual clear-context
+      handoff protocol) — verdict: green, nits only
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits noted, no changes required)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: gmail_search and gmail_read_thread with own MIME, HTML-to-text, quoted-reply stripping and body bounds`
+- [x] Changes committed: `feat: gmail_search and gmail_read_thread with own MIME, HTML-to-text, quoted-reply stripping and body bounds`
 - [ ] Phase marked complete
 
 ---
