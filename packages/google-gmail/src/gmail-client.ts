@@ -45,9 +45,11 @@ type GmailRetryClass = "rateLimit" | "transient";
 /**
  * A 429 means Google rejected the request before applying it — safe to
  * retry, honoring the server-supplied `Retry-After` when present. Any 5xx
- * (necessarily *after* the request was sent) is "transient" — every request
- * this client makes is a read (`GET`), naturally idempotent, so retrying one
- * freely within the tool's own timeout budget carries no risk. Any other
+ * (necessarily *after* the request was sent) is "transient" — every `GET`
+ * this client makes is naturally idempotent, and the one `POST`
+ * (`modifyMessage`) is idempotent by Gmail's own label semantics (Phase 3),
+ * so retrying either freely within the tool's own timeout budget carries no
+ * risk. Any other
  * status is fatal — thrown directly, never returned, per `@hermes/core`'s
  * `withHttpRetry` contract. This notably includes 401/403: an expired token
  * or a revoked/insufficient scope must never be retried — `insufficient-
@@ -73,11 +75,17 @@ async function requestJson(
   url: string,
   accessToken: string,
   signal: AbortSignal,
+  body?: unknown,
 ): Promise<unknown> {
   let response: Response;
   try {
     response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      method: body !== undefined ? "POST" : "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(body !== undefined && { "Content-Type": "application/json" }),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       signal,
     });
   } catch (error) {
@@ -104,15 +112,25 @@ async function requestJson(
   }
 }
 
-/** Retries `requestJson` via `@hermes/core`'s shared `withHttpRetry` — the same mechanism `packages/google-sheets`'/`packages/google-calendar`'s clients use. */
-async function getWithRetry(
+/**
+ * Retries `requestJson` via `@hermes/core`'s shared `withHttpRetry` — the
+ * same mechanism `packages/google-sheets`'/`packages/google-calendar`'s
+ * clients use. Shared by every `GET` and `POST` call this client makes: a
+ * `GET` is naturally idempotent, and the one `POST` (`modifyMessage`,
+ * `users.messages.modify`) is idempotent by Gmail's own semantics too
+ * (adding an already-present label, or removing an already-absent one, is a
+ * harmless no-op) — so both retry under the same rules with no special-casing
+ * by method.
+ */
+async function requestWithRetry(
   fetchImpl: typeof fetch,
   url: string,
   accessToken: string,
   externalSignal: AbortSignal | undefined,
+  body?: unknown,
 ): Promise<unknown> {
   return withHttpRetry<unknown, GmailRetryClass>({
-    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal),
+    attempt: (signal) => requestJson(fetchImpl, url, accessToken, signal, body),
     timeoutMs: REQUEST_TIMEOUT_MS,
     externalSignal,
     classes: {
@@ -174,6 +192,20 @@ export interface GmailThread {
   messages: GmailThreadMessageRef[];
 }
 
+/**
+ * `users.messages.modify`'s request body — backs `gmail_archive` (`removeLabelIds: ["INBOX"]`) and `gmail_label` (`addLabelIds`/`removeLabelIds: [resolvedLabelId]`). Both fields optional per Google's own API, though every call this codebase makes populates exactly one.
+ */
+export interface GmailModifyMessageRequest {
+  addLabelIds?: string[];
+  removeLabelIds?: string[];
+}
+
+/** One entry of `users.labels.list` — backs `gmail_label`'s name→id resolution. */
+export interface GmailLabel {
+  id: string;
+  name: string;
+}
+
 export interface GmailClient {
   /** `GET /messages?q=...&labelIds=...&maxResults=...` — backs `gmail_list_unread`. Returns `messages: []` (never `undefined`) when the API response omits the field, e.g. an empty inbox. */
   listMessages(
@@ -209,6 +241,22 @@ export interface GmailClient {
    * separately, only for the capped subset, via `getMessageFull`.
    */
   getThread(accessToken: string, threadId: string, signal?: AbortSignal): Promise<GmailThread>;
+  /**
+   * `POST /messages/{id}/modify` — adds/removes labels on one message. Backs
+   * `gmail_archive` (removing `INBOX`) and `gmail_label` (adding/removing a
+   * resolved label id). Idempotent by Gmail's own semantics — adding an
+   * already-present label or removing an already-absent one is a harmless
+   * no-op — so it retries under the same rules `requestWithRetry` gives every
+   * read (Phase 3 file-changes row).
+   */
+  modifyMessage(
+    accessToken: string,
+    id: string,
+    request: GmailModifyMessageRequest,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  /** `GET /labels` — backs `gmail_label`'s label-name-to-id resolution, so `prepare` can refuse an unknown label legibly before any approval prompt. */
+  listLabels(accessToken: string, signal?: AbortSignal): Promise<GmailLabel[]>;
 }
 
 export interface CreateGmailClientOptions {
@@ -250,6 +298,10 @@ interface RawThreadResponse {
   messages?: RawThreadMessage[];
 }
 
+interface RawLabelsListResponse {
+  labels?: GmailLabel[];
+}
+
 function extractHeaders(rawHeaders: RawMessageHeader[] | undefined): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const header of rawHeaders ?? []) {
@@ -272,7 +324,7 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
       params.set("maxResults", String(maxResults));
 
       const url = `${GMAIL_API_BASE}/messages?${params.toString()}`;
-      const result = (await getWithRetry(
+      const result = (await requestWithRetry(
         fetchImpl,
         url,
         accessToken,
@@ -286,7 +338,7 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
       for (const header of METADATA_HEADERS) params.append("metadataHeaders", header);
 
       const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}?${params.toString()}`;
-      const result = (await getWithRetry(
+      const result = (await requestWithRetry(
         fetchImpl,
         url,
         accessToken,
@@ -302,7 +354,7 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
     },
     async getMessageFull(accessToken, id, signal) {
       const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}?format=full`;
-      const result = (await getWithRetry(
+      const result = (await requestWithRetry(
         fetchImpl,
         url,
         accessToken,
@@ -317,7 +369,12 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
     },
     async getThread(accessToken, threadId, signal) {
       const url = `${GMAIL_API_BASE}/threads/${encodeURIComponent(threadId)}?format=full`;
-      const result = (await getWithRetry(fetchImpl, url, accessToken, signal)) as RawThreadResponse;
+      const result = (await requestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        signal,
+      )) as RawThreadResponse;
       return {
         id: result.id,
         messages: (result.messages ?? []).map((message) => ({
@@ -325,6 +382,20 @@ export function createGmailClient(opts: CreateGmailClientOptions = {}): GmailCli
           internalDate: message.internalDate ?? "0",
         })),
       };
+    },
+    async modifyMessage(accessToken, id, request, signal) {
+      const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}/modify`;
+      await requestWithRetry(fetchImpl, url, accessToken, signal, request);
+    },
+    async listLabels(accessToken, signal) {
+      const url = `${GMAIL_API_BASE}/labels`;
+      const result = (await requestWithRetry(
+        fetchImpl,
+        url,
+        accessToken,
+        signal,
+      )) as RawLabelsListResponse;
+      return (result.labels ?? []).map((label) => ({ id: label.id, name: label.name }));
     },
   };
 }

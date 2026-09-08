@@ -578,6 +578,40 @@ Wired the same way the Sheets/Calendar tools are:
   `Message-ID` headers, plus `labelIds` for the `unread`/`important` flags).
   Bodies, threads, and free-text search are later phases.
 
+## Google Gmail write tier (`09-gmail-read-then-send` Phase 3)
+
+`/connect google gmail-send` (identity + `GMAIL_READ_SCOPES` + Phase 3's new
+`GMAIL_WRITE_SCOPES`, i.e. `gmail.readonly` + `gmail.modify` + `gmail.send`)
+and the first two approval-gated Gmail tools, `gmail_archive` and
+`gmail_label` — reversible mutations, proving the whole gated path before
+Phase 5's irreversible `gmail_send_draft`:
+
+- **`connect.ts`'s `USAGE_TEXT`** gains the `gmail-send` form;
+  `resolveConnectScopes("gmail-send")` already owns the mapping — identity
+  plus read plus write, deliberately re-requesting `gmail.readonly` even
+  though `gmail.modify` implies it (settled decision 1; see
+  `packages/google-gmail/README.md`'s "Two scope tiers" section).
+- **Gated behind `withRequiredScopes<GmailArchivePlan>("gmail_archive", …)`
+  / `withRequiredScopes<GmailLabelPlan>("gmail_label", …)`**, each with
+  `requiredScopes: ["https://www.googleapis.com/auth/gmail.modify"]` only —
+  not the whole write tier, so each tool's declared requirement stays the
+  minimum it actually needs. `with-required-scopes.ts`'s
+  `describeConnectCommand` table gains a `GMAIL_WRITE_SCOPES` row pointing at
+  `/connect google gmail-send`.
+- **Both tools declare a `prepare` hook**, gated the same way `create_event`/
+  `cancel_event`'s `prepare` are — an under-scoped or unconnected account
+  never sees an approval prompt, exactly as with every other gated tool.
+- **`gmail_archive`/`gmail_label` are appended last in `build-agent.ts`'s
+  `tools` array**, after `gmail_read_thread` — the existing prefix bytes are
+  untouched (ROADMAP invariant 6).
+- **`requiresApproval: true`, `ToolSpec.timeoutMs: 30_000`** — same posture
+  as `cancel_event`/`sheets_write`.
+- **No durable write log.** Unlike Phase 5's `gmail_send_draft`, neither tool
+  needs a `SheetWriteLogPort`-style claim/complete dance: `modifyMessage` is
+  genuinely idempotent (re-archiving an archived thread, re-adding a
+  present label are harmless no-ops), so a crashed process or an ambiguous
+  response is safe to retry outright.
+
 ## Handlers
 
 - `complete.ts` — the dispatcher's fallthrough and the only handler that

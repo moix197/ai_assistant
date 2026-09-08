@@ -6,6 +6,10 @@ connected account. Nothing trading-specific lives here — see
 `gmail_list_unread` (read-only) alongside the package scaffold itself. Phase
 2 ships `gmail_search` and `gmail_read_thread` — the first tools that put
 actual mail body text into context, bounded (see "Body pipeline" below).
+Phase 3 ships the write tier's first two tools, `gmail_archive` and
+`gmail_label` — both approval-gated, both reversible, proving the whole
+`prepare` → `ApprovalSummary` → Telegram prompt → tap → handler → Gmail path
+before Phase 5's irreversible `gmail_send_draft` ever exists.
 
 ## Ports
 
@@ -61,14 +65,29 @@ client (settled decision 20, same posture as `sheets-client.ts`/
   count) — the per-message body is fetched separately, only for the capped
   subset, via `getMessageFull`.
 
+Phase 3 adds the first write method, plus one more read:
+
+- `modifyMessage(accessToken, id, { addLabelIds?, removeLabelIds? }, signal?)`
+  — `POST /users/me/messages/{id}/modify` (`users.messages.modify`). Backs
+  `gmail_archive` (`removeLabelIds: ["INBOX"]`) and `gmail_label`
+  (`addLabelIds`/`removeLabelIds: [resolvedLabelId]`). **Idempotent by
+  Gmail's own label semantics** — adding an already-present label or
+  removing an already-absent one is a harmless no-op — so it goes through
+  the same `requestWithRetry` path and the same retry classes every `GET`
+  does; no `sheets-client.ts`-style ambiguous-write split is needed.
+- `listLabels(accessToken, signal?)` — `GET /users/me/labels`
+  (`users.labels.list`). Backs `gmail_label`'s label-name-to-id resolution,
+  so `prepare` can refuse an unknown label legibly, before any approval
+  prompt, listing every registered label.
+
 Own `classify` (429 → `rateLimit`, honoring `Retry-After`; 5xx →
 `transient`; anything else — **notably 401/403** — fatal, thrown directly,
 never retried) and own `redact` (strips the bearer token from any thrown
 message) — `withHttpRetry` itself never touches request/response content,
-per its own contract. Both methods are reads (`GET`), naturally idempotent,
-so both retry classes retry freely within the tool's own timeout budget —
-no `sheets-client.ts`-style ambiguous-write split is needed here (there is
-no write this phase).
+per its own contract. Every `GET` this client makes is naturally idempotent,
+and the one `POST` (`modifyMessage`) is idempotent by Gmail's own semantics
+too, so both retry freely within the tool's own timeout budget with no
+method-specific special-casing.
 
 ## `insufficient-scope.ts`
 
@@ -174,16 +193,63 @@ see `.ai/decisions/bounded-tool-results.md`'s third-caller trigger.
   text part in a kept message returns that message with `text: ""`, never a
   thrown error.
 
-All three are base, ungated `ToolSpec`s — `apps/hermes/src/agent/
-build-agent.ts` wraps each in `withRequiredScopes(name, { googleAccountRepo,
-requiredScopes })`, the same split `whoami`/the Sheets/Calendar tools use:
-the capability lives in this package, the scope gate lives in
-`apps/hermes`. `requiredScopes` is read from `@hermes/google-auth`'s
-`TOOL_REQUIRED_SCOPES` map (`GMAIL_READ_SCOPES` for all three) rather than
-hardcoded at the wiring site. No tool here checks scopes itself and none
-calls the Gmail API (or even fetches an access token) for an unconnected or
-under-scoped account — the gate runs first and short-circuits before this
-package's handler is ever invoked.
+- `gmail_archive { threadId }` — approval-gated (`requiresApproval: true`).
+  `prepare` resolves the thread's newest message (subject for the prompt, id
+  for the handler) and builds a Spanish summary: `"¿Archivar esta
+  conversación?"`, target the subject, effects `["Sale de Recibidos. Sigue
+  disponible en Todos los mensajes."]`. A thread id Gmail 404s on refuses
+  **before** any prompt with `{ ok: false, reason: "thread_not_found" }`.
+  `handler` reads `ctx.plan` and removes `INBOX` via `modifyMessage` — it
+  never re-resolves the thread. Returns `{ ok: true, threadId, subject }`.
+- `gmail_label { threadId, label, action? }` — approval-gated. A **flat
+  object plus enum** schema, never a root union
+  (`.ai/decisions/tool-arg-schema-top-level-object.md`) — `action` is
+  `"add"` (default) or `"remove"`. `prepare` resolves `label` (a display
+  name) to its id via `listLabels`, refusing an unknown name **before** any
+  prompt with `{ ok: false, reason: "unknown_label", available: [...] }` —
+  the shape `resolve-sheet.ts`'s `unknown_sheet` established — and resolves
+  the thread's newest message the same way `gmail_archive` does, refusing
+  `thread_not_found` the same way. `handler` reads `ctx.plan` and calls
+  `modifyMessage` with the resolved label id on the planned side
+  (`addLabelIds` or `removeLabelIds`) — it never re-resolves the label name
+  or re-lists labels. Returns `{ ok: true, threadId, label, action }`.
+
+Both write tools' `prepare` and `handler` catch a 401/403 the same way every
+read tool's handler does — via `toInsufficientScopeResult` — since a scope
+revoked at Google after `withRequiredScopes`'s pre-check can still surface
+mid-call.
+
+**No durable write log, unlike `gmail_send_draft` (Phase 5).** Because
+`modifyMessage` is genuinely idempotent — re-archiving an already-archived
+thread, or re-adding an already-present label, is a harmless no-op — a
+crashed process or an ambiguous response is safe to retry outright. There is
+no `SheetWriteLogPort`-style claim/complete dance here; see Phase 6's
+`.ai/decisions/gmail-send-intent-log.md` for why `gmail_send_draft`, the one
+*irreversible* tool, needs one and these two don't.
+
+All five are base `ToolSpec`s — `apps/hermes/src/agent/build-agent.ts` wraps
+each in `withRequiredScopes(name, { googleAccountRepo, requiredScopes })`,
+the same split `whoami`/the Sheets/Calendar tools use: the capability lives
+in this package, the scope gate lives in `apps/hermes`. `requiredScopes` is
+read from `@hermes/google-auth`'s `TOOL_REQUIRED_SCOPES` map
+(`GMAIL_READ_SCOPES` for the three read tools; **`gmail.modify` only** — not
+the whole `GMAIL_WRITE_SCOPES` tier — for `gmail_archive`/`gmail_label`, so
+each tool's declared requirement stays the minimum it actually needs) rather
+than hardcoded at the wiring site. No tool here checks scopes itself and
+none calls the Gmail API (or even fetches an access token) for an
+unconnected or under-scoped account — the gate runs first and short-circuits
+before this package's handler (or `prepare`) is ever invoked.
+
+## Two scope tiers (Phase 3)
+
+`/connect google gmail` grants identity + `gmail.readonly` (Phase 1-2, the
+three read tools). `/connect google gmail-send` grants identity +
+`gmail.readonly` + `gmail.modify` + `gmail.send` — deliberately re-requesting
+`gmail.readonly` even though `gmail.modify` functionally implies read, since
+`hasRequiredScopes` (`@hermes/google-auth`) is literal string containment
+with no implication table (settled decision 1; see the plan's Dependencies &
+Risks for the named contingency if Google ever normalizes the combined
+request down to one granted scope).
 
 ## Dependencies
 

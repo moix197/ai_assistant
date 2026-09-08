@@ -53,3 +53,15 @@ export {
   type CreateGmailReadThreadToolDeps,
   type GmailThreadMessage,
 } from "./tools/gmail-read-thread";
+export {
+  createGmailArchiveTool,
+  type CreateGmailArchiveToolDeps,
+  type GmailArchivePlan,
+  type ThreadNotFoundResult,
+} from "./tools/gmail-archive";
+export {
+  createGmailLabelTool,
+  type CreateGmailLabelToolDeps,
+  type GmailLabelPlan,
+  type UnknownLabelResult,
+} from "./tools/gmail-label";

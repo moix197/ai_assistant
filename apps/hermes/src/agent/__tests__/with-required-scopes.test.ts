@@ -15,6 +15,10 @@ const IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.ema
 const SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 const CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"];
 const GMAIL_READ_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
+const GMAIL_WRITE_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/gmail.send",
+];
 
 function fakeAccount(overrides: Partial<GoogleAccount> = {}): GoogleAccount {
   return {
@@ -197,6 +201,47 @@ describe("withRequiredScopes", () => {
       reason: "missing_scope",
       scope: [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES].join(" "),
       fix: "run /connect google gmail",
+    });
+    expect(handler).toHaveBeenCalledTimes(0);
+  });
+
+  it("connected but missing scope, gating on the full Gmail write tier: returns missing_scope with a fix pointing at /connect google gmail-send, wrapped handler never invoked", async () => {
+    const handler = vi.fn().mockResolvedValue({ ok: true, value: "should never run" });
+    const spec = fakeSpec(handler);
+    const repo = fakeRepo(fakeAccount({ scopes: IDENTITY_SCOPES }));
+    const gated = withRequiredScopes("some-tool", {
+      googleAccountRepo: repo,
+      requiredScopes: [...IDENTITY_SCOPES, ...GMAIL_WRITE_SCOPES],
+    })(spec);
+
+    const result = await gated.handler({}, CTX);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "missing_scope",
+      scope: [...IDENTITY_SCOPES, ...GMAIL_WRITE_SCOPES].join(" "),
+      fix: "run /connect google gmail-send",
+    });
+    expect(handler).toHaveBeenCalledTimes(0);
+  });
+
+  it("connected but missing scope, gating on Gmail write (gmail.modify only, e.g. gmail_archive/gmail_label): returns missing_scope with a fix pointing at /connect google gmail-send, wrapped handler never invoked", async () => {
+    const handler = vi.fn().mockResolvedValue({ ok: true, value: "should never run" });
+    const spec = fakeSpec(handler);
+    const repo = fakeRepo(fakeAccount({ scopes: IDENTITY_SCOPES }));
+    const gmailModifyScope = "https://www.googleapis.com/auth/gmail.modify";
+    const gated = withRequiredScopes("some-tool", {
+      googleAccountRepo: repo,
+      requiredScopes: [gmailModifyScope],
+    })(spec);
+
+    const result = await gated.handler({}, CTX);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "missing_scope",
+      scope: gmailModifyScope,
+      fix: "run /connect google gmail-send",
     });
     expect(handler).toHaveBeenCalledTimes(0);
   });

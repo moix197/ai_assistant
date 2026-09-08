@@ -88,6 +88,8 @@ function createFakeGmailDeps(): GmailToolDeps {
     getMessageMetadata: vi.fn(),
     getMessageFull: vi.fn(),
     getThread: vi.fn(),
+    modifyMessage: vi.fn(),
+    listLabels: vi.fn(),
   };
   return { accessTokenPort, gmailClient };
 }
@@ -154,7 +156,7 @@ describe("buildAgent — wiring", () => {
     );
   });
 
-  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event, reschedule_event, cancel_event, gmail_list_unread, gmail_search, gmail_read_thread) and the given model through to the provider request", async () => {
+  it("passes the AgentDefinition's tools (get_current_time, echo, sheets_inspect, sheets_read, sheets_write, whoami, list_events, find_free_slot, check_availability, create_event, reschedule_event, cancel_event, gmail_list_unread, gmail_search, gmail_read_thread, gmail_archive, gmail_label) and the given model through to the provider request", async () => {
     const pool = createMockPool([
       { id: "thread-2", channel: "telegram", chat_id: "999", messages: [] },
     ]);
@@ -188,6 +190,7 @@ describe("buildAgent — wiring", () => {
         // for deterministic output — "cancel_event" precedes
         // "check_availability" precedes "create_event" precedes "echo"
         // precedes "find_free_slot" precedes "get_current_time" precedes
+        // "gmail_archive" precedes "gmail_label" precedes
         // "gmail_list_unread" precedes "gmail_read_thread" precedes
         // "gmail_search" precedes "list_events" precedes
         // "reschedule_event" precedes "sheets_inspect" precedes
@@ -199,7 +202,7 @@ describe("buildAgent — wiring", () => {
         // Phase 4 inserts create_event, Phase 5 inserts reschedule_event,
         // Phase 6 inserts cancel_event, 09-gmail-read-then-send Phase 1
         // inserts gmail_list_unread, Phase 2 inserts gmail_search/
-        // gmail_read_thread.
+        // gmail_read_thread, Phase 3 inserts gmail_archive/gmail_label.
         tools: [
           expect.objectContaining({ name: "cancel_event" }),
           expect.objectContaining({ name: "check_availability" }),
@@ -207,6 +210,8 @@ describe("buildAgent — wiring", () => {
           expect.objectContaining({ name: "echo" }),
           expect.objectContaining({ name: "find_free_slot" }),
           expect.objectContaining({ name: "get_current_time" }),
+          expect.objectContaining({ name: "gmail_archive" }),
+          expect.objectContaining({ name: "gmail_label" }),
           expect.objectContaining({ name: "gmail_list_unread" }),
           expect.objectContaining({ name: "gmail_read_thread" }),
           expect.objectContaining({ name: "gmail_search" }),
@@ -388,7 +393,7 @@ describe("buildAgent — wiring", () => {
     expect(gmailListUnreadTool?.requiresApproval).toBe(false);
   });
 
-  it("passes gmail_search and gmail_read_thread (09-gmail-read-then-send Phase 2) appended last in the raw tools array, ungated (requiresApproval: false)", async () => {
+  it("passes gmail_search and gmail_read_thread (09-gmail-read-then-send Phase 2) in the raw tools array, immediately before Phase 3's gmail_archive/gmail_label, ungated (requiresApproval: false)", async () => {
     const pool = createMockPool([
       { id: "thread-7", channel: "telegram", chat_id: "444", messages: [] },
     ]);
@@ -419,8 +424,8 @@ describe("buildAgent — wiring", () => {
     // wiring, not just presence: ROADMAP invariant 6 requires the existing
     // prefix bytes stay untouched, with any new tool appended at the end.
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
-    expect(definitionArg?.tools.at(-2)?.name).toBe("gmail_search");
-    expect(definitionArg?.tools.at(-1)?.name).toBe("gmail_read_thread");
+    expect(definitionArg?.tools.at(-4)?.name).toBe("gmail_search");
+    expect(definitionArg?.tools.at(-3)?.name).toBe("gmail_read_thread");
 
     const gmailSearchTool = definitionArg?.tools.find((tool) => tool.name === "gmail_search");
     const gmailReadThreadTool = definitionArg?.tools.find(
@@ -428,5 +433,44 @@ describe("buildAgent — wiring", () => {
     );
     expect(gmailSearchTool?.requiresApproval).toBe(false);
     expect(gmailReadThreadTool?.requiresApproval).toBe(false);
+  });
+
+  it("passes gmail_archive and gmail_label (09-gmail-read-then-send Phase 3) appended last in the raw tools array, gated (requiresApproval: true) with a prepare hook", async () => {
+    const pool = createMockPool([
+      { id: "thread-8", channel: "telegram", chat_id: "333", messages: [] },
+    ]);
+    const complete = vi.fn().mockResolvedValue({
+      text: "ok",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2, cacheHitTokens: 0 },
+      finishReason: "stop",
+      costUsd: 0,
+    });
+    const llmProvider: LlmProvider = { complete };
+
+    const { agent } = buildAgent(
+      pool,
+      llmProvider,
+      "some-model",
+      createMockRecorder(),
+      new AbortController().signal,
+      createMockChannel(),
+      createFakeSheetsDeps(),
+      createFakeSheetWriteLogRepo(),
+      createFakeCalendarDeps(),
+      createFakeGmailDeps(),
+    );
+    await agent.handleMessage("telegram", "333", "111", "hi");
+
+    const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];
+    expect(definitionArg?.tools.at(-2)?.name).toBe("gmail_archive");
+    expect(definitionArg?.tools.at(-1)?.name).toBe("gmail_label");
+
+    const gmailArchiveTool = definitionArg?.tools.find((tool) => tool.name === "gmail_archive");
+    const gmailLabelTool = definitionArg?.tools.find((tool) => tool.name === "gmail_label");
+    expect(gmailArchiveTool?.requiresApproval).toBe(true);
+    expect(typeof gmailArchiveTool?.prepare).toBe("function");
+    expect(gmailLabelTool?.requiresApproval).toBe(true);
+    expect(typeof gmailLabelTool?.prepare).toBe("function");
   });
 });

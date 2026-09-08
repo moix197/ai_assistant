@@ -33,6 +33,18 @@ export const CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"];
  */
 export const GMAIL_READ_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
 
+/**
+ * The two scopes gmail_archive/gmail_label need on top of read (Phase 3),
+ * and later phases' gmail_draft_reply/gmail_send_draft — granted only by
+ * `/connect google gmail-send`, never by `/connect google gmail`. Individual
+ * members are re-exported so `TOOL_REQUIRED_SCOPES` rows can declare exactly
+ * the one scope a given tool needs (settled decision 1: kept flat and
+ * literal, no scope-implication graph), rather than the whole tier.
+ */
+const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+export const GMAIL_WRITE_SCOPES = [GMAIL_MODIFY_SCOPE, GMAIL_SEND_SCOPE];
+
 /** `true` only if every scope in `required` is present in `granted` — a tool never runs on a partial match. */
 export function hasRequiredScopes(granted: string[], required: string[]): boolean {
   return required.every((scope) => granted.includes(scope));
@@ -52,6 +64,9 @@ export function resolveConnectScopes(argument: string): string[] | undefined {
   if (normalized === "sheets") return [...IDENTITY_SCOPES, ...SHEETS_SCOPES];
   if (normalized === "calendar") return [...IDENTITY_SCOPES, ...CALENDAR_SCOPES];
   if (normalized === "gmail") return [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES];
+  if (normalized === "gmail-send") {
+    return [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES, ...GMAIL_WRITE_SCOPES];
+  }
   return undefined;
 }
 
@@ -77,4 +92,9 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   ["gmail_list_unread", GMAIL_READ_SCOPES],
   ["gmail_search", GMAIL_READ_SCOPES],
   ["gmail_read_thread", GMAIL_READ_SCOPES],
+  // Only `gmail.modify`, not the whole GMAIL_WRITE_SCOPES tier — a tool's
+  // declared requirement stays the minimum it actually needs (Phase 3
+  // file-changes row).
+  ["gmail_archive", [GMAIL_MODIFY_SCOPE]],
+  ["gmail_label", [GMAIL_MODIFY_SCOPE]],
 ]);

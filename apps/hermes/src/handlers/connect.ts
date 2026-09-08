@@ -3,7 +3,7 @@ import { type ConnectFlow, resolveConnectScopes } from "@hermes/google-auth";
 import { CHANNEL_TELEGRAM } from "../agent/build-agent";
 
 const USAGE_TEXT =
-  "Usage: /connect google, /connect google sheets, /connect google calendar, or /connect google gmail";
+  "Usage: /connect google, /connect google sheets, /connect google calendar, /connect google gmail, or /connect google gmail-send";
 /** Deployments with the Google all-or-none env group unset — Google features are cleanly absent, not a boot failure. */
 const NOT_CONFIGURED_TEXT = "Google connect is not configured on this deployment.";
 

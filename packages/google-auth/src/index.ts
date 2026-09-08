@@ -39,6 +39,7 @@ export {
 export {
   CALENDAR_SCOPES,
   GMAIL_READ_SCOPES,
+  GMAIL_WRITE_SCOPES,
   hasRequiredScopes,
   IDENTITY_SCOPES,
   resolveConnectScopes,

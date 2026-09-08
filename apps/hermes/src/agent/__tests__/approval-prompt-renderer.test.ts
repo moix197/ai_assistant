@@ -271,6 +271,71 @@ describe("formatBatchPrompt", () => {
       ].join("\n"),
     );
   });
+
+  it("renders gmail_archive's summary through the unchanged renderer (09-gmail-read-then-send Phase 3, hand-built ApprovalSummary — no renderer change needed)", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "gmail_archive",
+        args: { threadId: "thread-1" },
+        summary: {
+          action: "¿Archivar esta conversación?",
+          target: "Q3 budget",
+          effects: ["Sale de Recibidos. Sigue disponible en Todos los mensajes."],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        "¿Archivar esta conversación?",
+        "Q3 budget",
+        "",
+        "Sale de Recibidos. Sigue disponible en Todos los mensajes.",
+      ].join("\n"),
+    );
+  });
+
+  it("renders gmail_label's 'add' summary through the unchanged renderer (09-gmail-read-then-send Phase 3)", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "gmail_label",
+        args: { threadId: "thread-1", label: "Trabajo", action: "add" },
+        summary: {
+          action: '¿Ponerle la etiqueta "Trabajo" a esta conversación?',
+          effects: ['Se agrega la etiqueta "Trabajo".'],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        '¿Ponerle la etiqueta "Trabajo" a esta conversación?',
+        "",
+        'Se agrega la etiqueta "Trabajo".',
+      ].join("\n"),
+    );
+  });
+
+  it("renders gmail_label's 'remove' summary distinctly from 'add' (09-gmail-read-then-send Phase 3)", () => {
+    const batch: ApprovalRequest[] = [
+      {
+        tool: "gmail_label",
+        args: { threadId: "thread-1", label: "Trabajo", action: "remove" },
+        summary: {
+          action: '¿Sacarle la etiqueta "Trabajo" a esta conversación?',
+          effects: ['Se quita la etiqueta "Trabajo".'],
+        },
+      },
+    ];
+
+    expect(formatBatchPrompt(batch)).toBe(
+      [
+        '¿Sacarle la etiqueta "Trabajo" a esta conversación?',
+        "",
+        'Se quita la etiqueta "Trabajo".',
+      ].join("\n"),
+    );
+  });
 });
 
 describe("formatResolvedText", () => {

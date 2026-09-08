@@ -2,6 +2,7 @@ import type { ToolContext, ToolPreparation, ToolSpec } from "@hermes/agent";
 import {
   CALENDAR_SCOPES,
   GMAIL_READ_SCOPES,
+  GMAIL_WRITE_SCOPES,
   type GoogleAccount,
   type GoogleAccountRepo,
   SHEETS_SCOPES,
@@ -60,6 +61,7 @@ const CONNECT_COMMAND_TIERS: ReadonlyArray<{ scopes: readonly string[]; command:
   { scopes: CALENDAR_SCOPES, command: "run /connect google calendar" },
   { scopes: SHEETS_SCOPES, command: "run /connect google sheets" },
   { scopes: GMAIL_READ_SCOPES, command: "run /connect google gmail" },
+  { scopes: GMAIL_WRITE_SCOPES, command: "run /connect google gmail-send" },
 ];
 
 function describeConnectCommand(requiredScopes: string[]): string {
