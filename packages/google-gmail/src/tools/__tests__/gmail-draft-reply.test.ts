@@ -6,11 +6,12 @@ import { decodeBase64Url } from "../../mime";
 import { type GmailDraftReplyPlan, createGmailDraftReplyTool } from "../gmail-draft-reply";
 import type { GmailToolContext } from "../tool-deps";
 
-const CTX: GmailToolContext = {
+const CTX: GmailToolContext & { googleAccount: { googleEmail: string } } = {
   signal: new AbortController().signal,
   channel: "telegram",
   channelUserId: "111",
   turnId: "turn-1",
+  googleAccount: { googleEmail: "me@example.com" },
 };
 
 const THREAD: GmailThread = {
@@ -63,6 +64,12 @@ function decodeRawSubject(raw: string): string {
   return line.slice("Subject: ".length);
 }
 
+function decodeRawHeader(raw: string, name: string): string {
+  const text = decodeBase64Url(raw).toString("utf-8");
+  const line = text.split("\r\n").find((l) => l.startsWith(`${name}: `)) as string;
+  return line.slice(`${name}: `.length);
+}
+
 describe("createGmailDraftReplyTool", () => {
   it("requiresApproval is true, declares a prepare hook, and timeoutMs is 30_000", () => {
     const tool = createGmailDraftReplyTool({
@@ -99,6 +106,7 @@ describe("createGmailDraftReplyTool", () => {
     expect(result.plan.references).toBe("<msg-new@mail.gmail.com>");
     expect(typeof result.plan.raw).toBe("string");
     expect(decodeRawSubject(result.plan.raw)).toMatch(/^=\?UTF-8\?B\?.+\?=$/);
+    expect(decodeRawHeader(result.plan.raw, "From")).toBe(CTX.googleAccount.googleEmail);
 
     expect(result.summary).toEqual({
       action: "¿Guardar este borrador de respuesta?",
@@ -106,6 +114,74 @@ describe("createGmailDraftReplyTool", () => {
       items: ["El viernes me sirve."],
       effects: ["Se guarda como borrador en Gmail. No se envía nada todavía."],
     });
+  });
+
+  it("when the connected account sent the thread's last message, the reply goes to that message's To (the other party), not back to ourselves", async () => {
+    const gmailClient = fakeGmailClient({
+      getMessageMetadata: vi.fn().mockResolvedValue({
+        ...NEWEST_METADATA,
+        headers: {
+          From: "me@example.com",
+          To: "sarah@example.com",
+          Subject: "Confirmación",
+          "Message-ID": "<msg-new@mail.gmail.com>",
+        },
+      }),
+    });
+    const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
+
+    const result = (await tool.prepare?.(
+      { threadId: "thread-1", body: "Cualquier novedad?" },
+      CTX,
+    )) as { ok: true; plan: GmailDraftReplyPlan };
+
+    expect(result.ok).toBe(true);
+    expect(result.plan.to).toBe("sarah@example.com");
+    expect(result.plan.to).not.toBe(CTX.googleAccount.googleEmail);
+  });
+
+  it("matches the connected account's address against From case-insensitively", async () => {
+    const gmailClient = fakeGmailClient({
+      getMessageMetadata: vi.fn().mockResolvedValue({
+        ...NEWEST_METADATA,
+        headers: {
+          From: "Me@Example.com",
+          To: "sarah@example.com",
+          Subject: "Confirmación",
+          "Message-ID": "<msg-new@mail.gmail.com>",
+        },
+      }),
+    });
+    const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
+
+    const result = (await tool.prepare?.({ threadId: "thread-1", body: "hola" }, CTX)) as {
+      ok: true;
+      plan: GmailDraftReplyPlan;
+    };
+
+    expect(result.plan.to).toBe("sarah@example.com");
+  });
+
+  it('matches a display-name-form From header ("Name <addr>") against the connected account\'s bare address', async () => {
+    const gmailClient = fakeGmailClient({
+      getMessageMetadata: vi.fn().mockResolvedValue({
+        ...NEWEST_METADATA,
+        headers: {
+          From: "Yo Mismo <me@example.com>",
+          To: "sarah@example.com",
+          Subject: "Confirmación",
+          "Message-ID": "<msg-new@mail.gmail.com>",
+        },
+      }),
+    });
+    const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
+
+    const result = (await tool.prepare?.({ threadId: "thread-1", body: "hola" }, CTX)) as {
+      ok: true;
+      plan: GmailDraftReplyPlan;
+    };
+
+    expect(result.plan.to).toBe("sarah@example.com");
   });
 
   it("prepare's action reads '¿Actualizar el borrador?' when a draftId is supplied", async () => {

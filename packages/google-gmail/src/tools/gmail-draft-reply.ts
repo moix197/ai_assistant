@@ -31,6 +31,18 @@ const BODY_PREVIEW_MAX_CHARS = 500;
 export type CreateGmailDraftReplyToolDeps = GmailToolDeps;
 
 /**
+ * `GmailToolContext` plus `ctx.googleAccount` — `withRequiredScopes`
+ * (`apps/hermes/src/agent/with-required-scopes.ts`) injects the real value at
+ * runtime for every scope-gated Gmail tool, but `GmailToolContext` itself
+ * never declared the field, so it was silently available and never read.
+ * Declared locally per this package's consumer-declares-its-own-port
+ * convention (`GmailToolContext` above) rather than importing
+ * `@hermes/google-auth`'s `GoogleAccount` — only the one field this tool
+ * needs.
+ */
+type DraftReplyContext = GmailToolContext & { googleAccount: { googleEmail: string } };
+
+/**
  * What `prepare` resolves and threads onto `ctx.plan` for `handler` —
  * critically including `raw`, the fully-composed MIME message. `handler`
  * posts `plan.raw` verbatim and never calls `buildMimeMessage` itself: the
@@ -76,6 +88,20 @@ async function findNewestMessageHeaders(
   return metadata.headers;
 }
 
+/**
+ * The bare address out of a header value that may be a plain address
+ * (`user@example.com`) or a display-name form
+ * (`Display Name <user@example.com>`) — lowercased, for case-insensitive
+ * comparison only. The caller keeps the original formatted header value for
+ * anything that ends up in composed `to`/`from` fields; this extraction is
+ * never used to build message content.
+ */
+function extractEmailAddress(headerValue: string): string {
+  const match = headerValue.match(/<([^>]+)>/);
+  const address = match?.[1] ?? headerValue;
+  return address.trim().toLowerCase();
+}
+
 /** `"Re: <subject>"`, unless the original subject already starts with "Re:" (case-insensitive) — never double-prefixed. */
 function buildReplySubject(original: string | undefined): string {
   const subject = (original ?? "").trim();
@@ -91,18 +117,23 @@ function buildBodyPreview(body: string): string {
 }
 
 /**
- * `prepare(args, ctx)`: resolves the thread's newest message headers,
- * derives the reply's recipient (the newest message's sender), our own
- * address (the newest message's own recipient), the `Re:` subject and the
- * `In-Reply-To`/`References` threading headers, then composes the full
- * `raw` message **here** via `buildMimeMessage` — the one and only place
- * this tool ever builds it. A thread id Gmail 404s on refuses before any
- * prompt with `thread_not_found`, same posture as `gmail-archive.ts`.
+ * `prepare(args, ctx)`: resolves the thread's newest message headers, then
+ * derives the reply's recipient. The newest message's `From` is the reply
+ * target only when someone else sent it — when the connected account itself
+ * sent the last message (a normal back-and-forth, "send another one" after
+ * we spoke last), `From` is our own address, so the recipient is that
+ * message's `To` instead (the other party). Our own address (`from`) is
+ * always `ctx.googleAccount.googleEmail`, never derived from thread headers.
+ * Then builds the `Re:` subject and the `In-Reply-To`/`References` threading
+ * headers, and composes the full `raw` message **here** via
+ * `buildMimeMessage` — the one and only place this tool ever builds it. A
+ * thread id Gmail 404s on refuses before any prompt with
+ * `thread_not_found`, same posture as `gmail-archive.ts`.
  */
 async function prepareDraftReply(
   deps: CreateGmailDraftReplyToolDeps,
   args: unknown,
-  ctx: GmailToolContext,
+  ctx: DraftReplyContext,
 ): Promise<DraftReplyPrepareResult> {
   const { threadId, body, draftId } = args as Args;
   const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
@@ -119,8 +150,10 @@ async function prepareDraftReply(
     throw error;
   }
 
-  const to = headers.From ?? "";
-  const from = headers.To ?? "";
+  const from = ctx.googleAccount.googleEmail;
+  const newestSender = headers.From ?? "";
+  const sentByOwnAccount = extractEmailAddress(newestSender) === extractEmailAddress(from);
+  const to = sentByOwnAccount ? (headers.To ?? "") : newestSender;
   const subject = buildReplySubject(headers.Subject);
   const inReplyTo = headers["Message-ID"];
   const references = inReplyTo;
@@ -186,10 +219,10 @@ export function createGmailDraftReplyTool(deps: CreateGmailDraftReplyToolDeps) {
     schema,
     timeoutMs: 30_000,
     requiresApproval: true,
-    prepare: (args: unknown, ctx: GmailToolContext) => prepareDraftReply(deps, args, ctx),
+    prepare: (args: unknown, ctx: DraftReplyContext) => prepareDraftReply(deps, args, ctx),
     handler: async (
       args: unknown,
-      ctx: GmailToolContext & { plan: GmailDraftReplyPlan },
+      ctx: DraftReplyContext & { plan: GmailDraftReplyPlan },
     ): Promise<unknown> => {
       const { plan } = ctx;
       const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
