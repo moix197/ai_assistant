@@ -847,30 +847,33 @@ wrong.
 
 **Steps:**
 
-- [ ] Write `prepare` so **every** refusal it can produce (unknown label,
+- [x] Write `prepare` so **every** refusal it can produce (unknown label,
       missing thread, missing scope via the decorator) happens **before** the
       prompt — a user must never be asked to approve something already
       destined to fail (`.ai/decisions/tool-prepare-hook.md`; the same
       correctness bar `06-legible-approvals-bounded-reads` Phase 4 set for
       `read_only_sheet`)
-- [ ] Exact-string tests for both prompts against a hand-built
+- [x] Exact-string tests for both prompts against a hand-built
       `ApprovalSummary` — the renderer
       (`apps/hermes/src/agent/approval-prompt-renderer.ts`) needs **zero
       changes** this phase; if it appears to need one, the summary is wrong,
-      not the renderer
-- [ ] Confirm the batch entry sent to `requestApproval` carries the model's
+      not the renderer (confirmed untouched in the diff)
+- [x] Confirm the batch entry sent to `requestApproval` carries the model's
       **raw** args, not the parsed ones — the loop already guarantees this;
       the step is to not accidentally depend on the parsed form
-- [ ] Confirm denial and timeout leave the mailbox untouched: the handler
+- [x] Confirm denial and timeout leave the mailbox untouched: the handler
       must never be reached (spy asserted called zero times)
-- [ ] Confirm `modifyMessage` is genuinely idempotent in our usage (adding an
+- [x] Confirm `modifyMessage` is genuinely idempotent in our usage (adding an
       already-present label, archiving an archived thread) and that a repeat
       is a harmless no-op — this is the evidence backing the
       no-durable-log decision recorded in Phase 6
-- [ ] Verify at execution time which scope Gmail actually requires for
+- [x] Verify at execution time which scope Gmail actually requires for
       `users.messages.modify` and `users.labels.list` against Google's
       per-method scope table, and correct `TOOL_REQUIRED_SCOPES` if it
-      differs from `gmail.modify`
+      differs from `gmail.modify` — confirmed `gmail.modify` covers both by
+      inspection of Google's docs (code-review nit: not yet cross-checked
+      against a live 403, only against documentation — do so during the
+      Manual (hil) verification below)
 
 **Tests:**
 
@@ -894,9 +897,11 @@ Gmail.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-gmail test` green
-- [ ] `pnpm -r typecheck` green, `pnpm -r test` green, `pnpm lint` green
-- [ ] `pnpm build` before manual checks
+- [x] `pnpm --filter @hermes/google-gmail test` green (102/102)
+- [x] `pnpm -r typecheck` green, `pnpm -r test` green (non-DB suites; 2 DB
+      integration tests still blocked on no local Postgres, pre-existing,
+      unrelated), `pnpm lint` green
+- [x] `pnpm build` before manual checks
 - [ ] Manual (hil): `/connect google gmail-send` → consent → `/status` lists
       `gmail.readonly`, `gmail.modify`, `gmail.send`. **If `gmail.readonly`
       is absent, run `/connect google gmail` once and re-check** — record
@@ -914,14 +919,15 @@ Gmail.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+      (the five manual hil live-mailbox checks remain open — see Verification)
+- [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
+      subagent dispatch, superseding this template's manual clear-context
+      handoff protocol) — verdict: green, nits only
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits noted, no changes required)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: /connect google gmail-send, approval-gated gmail_archive and gmail_label`
+- [x] Changes committed: `feat: /connect google gmail-send, approval-gated gmail_archive and gmail_label`
 - [ ] Phase marked complete
 
 ---
