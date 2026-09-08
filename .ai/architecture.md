@@ -23,6 +23,7 @@ packages/telemetry buffered recorder behind core's port + /stats rollup math
 packages/agent     bounded turn loop + tool execution + ThreadRepo/ApprovalGate PORTS
 packages/google-auth OAuth connect flow + token crypto + revoke + refresh coordinator + GoogleAccountRepo PORT
 packages/google-sheets Sheets v4 fetch client + 3 tools + SheetRegistry/AccessToken/SheetWriteLog PORTS
+packages/google-calendar Calendar v3 fetch client + 6 tools + AccessToken PORT only — no DB-backed port
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -35,12 +36,12 @@ Strictly downward; no package imports one above it.
 
 ```
                         apps/hermes
-                             │  (imports all nine; the ONLY place they are wired together)
-     ┌───────────┬───────────┼───────────┬───────────┬──────────┬─────────────┬───────────────┬───────┐
-     ▼           ▼           ▼           ▼           ▼          ▼             ▼               ▼       ▼
-  config       store     channels       llm      telemetry    agent     google-auth   google-sheets  core
-     │           │       (only dep)  (only dep)  (only dep)  (core+llm)  (only dep)     (only dep)
-     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────────┴───────────────┴─────► core
+                             │  (imports all ten; the ONLY place they are wired together)
+     ┌───────────┬───────────┼───────────┬───────────┬──────────┬─────────────┬───────────────┬────────────────┬───────┐
+     ▼           ▼           ▼           ▼           ▼          ▼             ▼               ▼                ▼       ▼
+  config       store     channels       llm      telemetry    agent     google-auth   google-sheets  google-calendar  core
+     │           │       (only dep)  (only dep)  (only dep)  (core+llm)  (only dep)     (only dep)       (only dep)
+     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────────┴───────────────┴────────────────┴─────► core
 ```
 
 The siblings on that row are siblings, not a chain: none of them may import
@@ -171,6 +172,25 @@ shape) and was removed — see the `packages/google-auth` bullet below.
   `SheetRegistryEntry` follows `GoogleAccount`'s arrangement — declared in
   `core`, re-exported by both `store` and `google-sheets` — applied up front
   this time rather than retrofitted after review.
+- **`packages/google-calendar` depends on `packages/core` only** — same
+  shape as `google-sheets`, but with one fewer port. Six tools
+  (`list_events`, `find_free_slot`, `check_availability`, `create_event`,
+  `reschedule_event`, `cancel_event`) share a single consumer-declared
+  `AccessTokenPort` (bound in
+  `apps/hermes/src/google/build-calendar-access-token-port.ts` over the same
+  shared `RefreshCoordinator`). **Unlike `google-sheets`, it has no
+  DB-backed port at all** — v1 scope is the user's primary calendar only, so
+  there is no `SheetRegistryPort` analogue (no multi-calendar registry), and
+  the write tools' idempotency is a client-supplied Calendar event `id`
+  (`deriveEventId`) rather than a `SheetWriteLogPort`-style claim/audit
+  table — see
+  [calendar-event-idempotency](decisions/calendar-event-idempotency.md).
+  The scope gate lives in `apps/hermes`'s `withRequiredScopes`, same split as
+  Sheets, driven by the same `TOOL_REQUIRED_SCOPES` declared in
+  `google-auth`. Timezone-aware date math (`relative-time.ts`,
+  `timezone-cache.ts`, `window-bounds.ts`) is this package's other load-bearing
+  addition — see
+  [luxon-timezone-library](decisions/luxon-timezone-library.md).
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
