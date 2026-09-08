@@ -16,6 +16,8 @@ import {
 import { createCalendarCreateEventTool } from "@hermes/google-calendar";
 import { createCalendarRescheduleEventTool } from "@hermes/google-calendar";
 import { createCalendarCancelEventTool } from "@hermes/google-calendar";
+import type { GmailToolDeps } from "@hermes/google-gmail";
+import { createGmailListUnreadTool } from "@hermes/google-gmail";
 import type { SheetWriteLogPort, SheetsToolDeps, SheetsWritePlan } from "@hermes/google-sheets";
 import {
   createSheetsInspectTool,
@@ -159,6 +161,13 @@ export function buildAgent(
    */
   calendarDeps: CalendarToolDeps,
   /**
+   * `09-gmail-read-then-send` Phase 1 — `gmail_list_unread`'s real-infra
+   * dependencies (`accessTokenPort`, `gmailClient`), constructed and passed
+   * in already-built by `boot.ts`'s `buildGmailDeps`, the same
+   * already-built-deps convention `sheetsDeps`/`calendarDeps` above follow.
+   */
+  gmailDeps: GmailToolDeps,
+  /**
    * `06-legible-approvals-bounded-reads` Phase 3 — `createTelegramApprovalGate`
    * logs each ready call's raw args/resolved plan at debug level right
    * before sending its prompt. `boot.ts` wires its own config-aware `logger`
@@ -218,6 +227,11 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("cancel_event"),
   })(createCalendarCancelEventTool(calendarDeps));
 
+  const gmailListUnreadTool = withRequiredScopes("gmail_list_unread", {
+    googleAccountRepo,
+    requiredScopes: requiredScopesFor("gmail_list_unread"),
+  })(createGmailListUnreadTool(gmailDeps));
+
   const definition: AgentDefinition = {
     name: "hermes",
     model,
@@ -235,6 +249,7 @@ export function buildAgent(
       createEventTool,
       rescheduleEventTool,
       cancelEventTool,
+      gmailListUnreadTool,
     ],
     channels: [CHANNEL_TELEGRAM],
   };

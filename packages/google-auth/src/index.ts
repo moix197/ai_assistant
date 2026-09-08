@@ -38,6 +38,7 @@ export {
 } from "./refresh";
 export {
   CALENDAR_SCOPES,
+  GMAIL_READ_SCOPES,
   hasRequiredScopes,
   IDENTITY_SCOPES,
   resolveConnectScopes,

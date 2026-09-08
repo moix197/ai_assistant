@@ -22,6 +22,7 @@ import {
   decryptTokenEnvelope,
 } from "@hermes/google-auth";
 import { type CalendarToolDeps, createCalendarClient } from "@hermes/google-calendar";
+import { type GmailToolDeps, createGmailClient } from "@hermes/google-gmail";
 import {
   type SheetWriteLogPort,
   type SheetsToolDeps,
@@ -534,6 +535,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
   );
   const sheetsDeps = buildSheetsDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
   const calendarDeps = buildCalendarDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
+  const gmailDeps = buildGmailDeps(pool, buildGoogleAccountRepo(pool), refreshCoordinator);
   const { agent, handleApprovalCallback } = buildAgent(
     pool,
     llmProvider,
@@ -544,6 +546,7 @@ function createMessageHandlers(deps: MessageHandlerDeps): MessageHandlerWiring {
     sheetsDeps,
     buildSheetWriteLogRepo(pool),
     calendarDeps,
+    gmailDeps,
     logger,
   );
 
@@ -797,6 +800,37 @@ export function buildCalendarDeps(
   return {
     accessTokenPort,
     calendarClient: createCalendarClient(),
+  };
+}
+
+/**
+ * Builds `gmail_list_unread`'s (`09-gmail-read-then-send` Phase 1) real-infra
+ * dependencies: the `AccessTokenPort` bound to the refresh seam, and the
+ * Gmail HTTP client. Direct twin of `buildSheetsDeps` — including the
+ * unconfigured-Google fallback (a throwing stub rather than `undefined`; see
+ * that function's own doc comment for why the stub is never actually
+ * reached) — and, unlike Calendar, reuses `buildAccessTokenPort` directly
+ * rather than a package-specific binder: `@hermes/google-gmail`'s own
+ * `AccessTokenPort` is structurally identical to `@hermes/google-sheets`'.
+ */
+export function buildGmailDeps(
+  pool: Pool,
+  googleAccountRepo: GoogleAccountRepo,
+  coordinator: RefreshCoordinator | undefined,
+): GmailToolDeps {
+  const accessTokenPort = coordinator
+    ? buildAccessTokenPort({ pool, googleAccountRepo, refreshCoordinator: coordinator })
+    : {
+        getAccessToken: async (): Promise<string> => {
+          throw new Error(
+            "Gmail is not configured (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET/TOKEN_ENCRYPTION_KEY unset)",
+          );
+        },
+      };
+
+  return {
+    accessTokenPort,
+    gmailClient: createGmailClient(),
   };
 }
 

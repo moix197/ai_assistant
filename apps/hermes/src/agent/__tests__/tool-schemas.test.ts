@@ -6,6 +6,11 @@ import type {
   CalendarToolDeps,
 } from "@hermes/google-calendar";
 import type {
+  AccessTokenPort as GmailAccessTokenPort,
+  GmailClient,
+  GmailToolDeps,
+} from "@hermes/google-gmail";
+import type {
   AccessTokenPort,
   SheetRegistryPort,
   SheetWriteLogPort,
@@ -71,6 +76,16 @@ function createFakeCalendarDeps(): CalendarToolDeps {
   return { accessTokenPort, calendarClient };
 }
 
+/** Never exercised by this test (no Gmail tool call is triggered) — just needs to satisfy the type. */
+function createFakeGmailDeps(): GmailToolDeps {
+  const accessTokenPort: GmailAccessTokenPort = { getAccessToken: vi.fn() };
+  const gmailClient: GmailClient = {
+    listMessages: vi.fn(),
+    getMessageMetadata: vi.fn(),
+  };
+  return { accessTokenPort, gmailClient };
+}
+
 function createMockChannel(): TelegramPoller {
   return {
     capabilities: { markdown: true, files: true, buttons: true, maxMessageLength: 4096 },
@@ -102,6 +117,7 @@ describe("tool schemas — LLM wire-format regression", () => {
       createFakeSheetsDeps(),
       createFakeSheetWriteLogRepo(),
       createFakeCalendarDeps(),
+      createFakeGmailDeps(),
     );
 
     const definitionArg = vi.mocked(createAgent).mock.calls[0]?.[0];

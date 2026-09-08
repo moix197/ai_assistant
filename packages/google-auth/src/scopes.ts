@@ -23,6 +23,16 @@ export const SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
  */
 export const CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"];
 
+/**
+ * The one scope `gmail_list_unread` needs (this phase); later phases' other
+ * read tools (`gmail_search`/`gmail_read_thread`) share it too — a single
+ * incremental-consent unit `/connect google gmail` requests on top of
+ * identity, never on its own. The `gmail-send` tier's own scope constant
+ * lands in a later phase, kept separate so a read-only connection never
+ * implicitly grants send.
+ */
+export const GMAIL_READ_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
+
 /** `true` only if every scope in `required` is present in `granted` — a tool never runs on a partial match. */
 export function hasRequiredScopes(granted: string[], required: string[]): boolean {
   return required.every((scope) => granted.includes(scope));
@@ -41,6 +51,7 @@ export function resolveConnectScopes(argument: string): string[] | undefined {
   if (normalized === "") return IDENTITY_SCOPES;
   if (normalized === "sheets") return [...IDENTITY_SCOPES, ...SHEETS_SCOPES];
   if (normalized === "calendar") return [...IDENTITY_SCOPES, ...CALENDAR_SCOPES];
+  if (normalized === "gmail") return [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES];
   return undefined;
 }
 
@@ -63,4 +74,5 @@ export const TOOL_REQUIRED_SCOPES: ReadonlyMap<string, readonly string[]> = new 
   ["create_event", CALENDAR_SCOPES],
   ["reschedule_event", CALENDAR_SCOPES],
   ["cancel_event", CALENDAR_SCOPES],
+  ["gmail_list_unread", GMAIL_READ_SCOPES],
 ]);

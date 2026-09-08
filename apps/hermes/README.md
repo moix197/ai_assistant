@@ -528,6 +528,56 @@ here in `apps/hermes`.
   against a `read`-registered sheet and confirm the refusal with no new
   `sheet_write_log` row.
 
+## Google Gmail tools (`09-gmail-read-then-send` Phase 1)
+
+`/connect google gmail` (identity + `GMAIL_READ_SCOPES`, i.e.
+`gmail.readonly`) and `gmail_list_unread { maxResults? }` — the first
+Gmail-backed capability, over `@hermes/google-gmail`'s generic read tool.
+Wired the same way the Sheets/Calendar tools are:
+
+- **`connect.ts`'s `USAGE_TEXT`** gains the Gmail form (`/connect google
+  gmail`); `resolveConnectScopes("gmail")` already owns the
+  argument-to-scopes mapping, so no other parsing changed.
+- **Gated behind `withRequiredScopes("gmail_list_unread", {
+  googleAccountRepo, requiredScopes: GMAIL_READ_SCOPES })`** — same
+  fail-closed posture as every other scoped tool (see "Scope-gated tools"
+  above): an identity-only account, or no account at all, never reaches the
+  tool's handler, never fetches an access token, never calls the Gmail API.
+  `src/agent/with-required-scopes.ts`'s `describeConnectCommand` is now a
+  small ordered table of `{ scopes, command }` tiers (Calendar, Sheets,
+  Gmail, in that order) instead of a hardcoded if-chain, so the refusal's
+  `fix` names `/connect google gmail` for this tier without duplicating the
+  scope-to-command mapping at the call site.
+- **The access token comes from the existing refresh seam, never a second
+  one.** `src/google/build-access-token-port.ts`'s `buildAccessTokenPort` is
+  reused as-is (its `AccessTokenPort` return type was generalized to a
+  locally-declared `GoogleAccessTokenPort`, structurally identical to every
+  consumer package's own port) — unlike Calendar, Gmail needed no new
+  package-specific binder file.
+- **`buildGmailDeps` (`boot.ts`)** is the direct twin of `buildSheetsDeps`/
+  `buildCalendarDeps`: real infra when Google's env group is configured, a
+  throwing stub otherwise (never reached in practice, since the scope gate
+  always runs first and no account can exist without that same env group).
+- **`gmail_list_unread` is appended last in `build-agent.ts`'s `tools`
+  array** — the existing prefix bytes (through `cancel_event`) are
+  untouched, preserving the provider request's prompt-cache prefix
+  (ROADMAP invariant 6).
+- **`ToolSpec.timeoutMs: 30_000`**, `requiresApproval: false` — a real
+  Gmail API round trip (list + one metadata fetch per message) can outrun
+  the 10s default, and a read has no consequence to confirm.
+- **A 401/403 from the Gmail API surfaces as `{ ok: false, reason:
+  "insufficient_scope", scope, fix }`**, not a throw — `@hermes/google-gmail`'s
+  `toInsufficientScopeResult` (defense in depth: `withRequiredScopes`
+  already gates the call on a granted scope, but a scope revoked at Google
+  after that check still needs a structured refusal). This is a distinct
+  `reason` from `withRequiredScopes`'s own pre-call `missing_scope`, but the
+  same `{scope, fix}` shape, so the model has one refusal vocabulary either
+  way.
+- **No message body, no MIME parsing this phase** — `gmail_list_unread`
+  fetches `format: "metadata"` only (`From`/`To`/`Subject`/`Date`/
+  `Message-ID` headers, plus `labelIds` for the `unread`/`important` flags).
+  Bodies, threads, and free-text search are later phases.
+
 ## Handlers
 
 - `complete.ts` — the dispatcher's fallthrough and the only handler that

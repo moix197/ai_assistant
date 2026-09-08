@@ -47,6 +47,9 @@ importers:
       '@hermes/google-calendar':
         specifier: workspace:*
         version: link:../../packages/google-calendar
+      '@hermes/google-gmail':
+        specifier: workspace:*
+        version: link:../../packages/google-gmail
       '@hermes/google-sheets':
         specifier: workspace:*
         version: link:../../packages/google-sheets
@@ -123,6 +126,15 @@ importers:
       '@types/luxon':
         specifier: ^3.7.5
         version: 3.7.5
+
+  packages/google-gmail:
+    dependencies:
+      '@hermes/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
 
   packages/google-sheets:
     dependencies:

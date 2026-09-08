@@ -14,6 +14,7 @@ const CTX = {
 const IDENTITY_SCOPES = ["openid", "https://www.googleapis.com/auth/userinfo.email"];
 const SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 const CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"];
+const GMAIL_READ_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
 
 function fakeAccount(overrides: Partial<GoogleAccount> = {}): GoogleAccount {
   return {
@@ -176,6 +177,26 @@ describe("withRequiredScopes", () => {
       reason: "missing_scope",
       scope: [...IDENTITY_SCOPES, ...CALENDAR_SCOPES].join(" "),
       fix: "run /connect google calendar",
+    });
+    expect(handler).toHaveBeenCalledTimes(0);
+  });
+
+  it("connected but missing scope, gating on Gmail read: returns missing_scope with a fix pointing at /connect google gmail, wrapped handler never invoked", async () => {
+    const handler = vi.fn().mockResolvedValue({ ok: true, value: "should never run" });
+    const spec = fakeSpec(handler);
+    const repo = fakeRepo(fakeAccount({ scopes: IDENTITY_SCOPES }));
+    const gated = withRequiredScopes("some-tool", {
+      googleAccountRepo: repo,
+      requiredScopes: [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES],
+    })(spec);
+
+    const result = await gated.handler({}, CTX);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "missing_scope",
+      scope: [...IDENTITY_SCOPES, ...GMAIL_READ_SCOPES].join(" "),
+      fix: "run /connect google gmail",
     });
     expect(handler).toHaveBeenCalledTimes(0);
   });
