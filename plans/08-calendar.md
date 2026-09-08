@@ -761,7 +761,7 @@ time being cancelled → approving removes it from the calendar.
 
 - [x] `pnpm --filter @hermes/google-calendar test` passes
 - [x] `pnpm -r typecheck` passes
-- [ ] Manual: against the real bot — "cancel my \<event\>" shows the real event/time in the approval prompt; approving removes it from Google Calendar; denying leaves it untouched
+- [x] Manual: against the real bot — "cancel my \<event\>" shows the real event/time in the approval prompt; approving removes it from Google Calendar; denying leaves it untouched
 
 **Phase review:**
 
@@ -770,9 +770,9 @@ time being cancelled → approving removes it from the calendar.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits only, none required)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (README.md)
-- [ ] Orchestrator (user) has verified and approved this phase
+- [x] Orchestrator (user) has verified and approved this phase
 - [x] Changes committed: `feat(google-calendar): add approval-gated cancel_event tool` (`840ab5a`)
-- [ ] Phase marked complete
+- [x] Phase marked complete
 
 ---
 
