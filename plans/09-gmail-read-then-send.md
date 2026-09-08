@@ -1030,15 +1030,35 @@ which any fixture can prove. **No mail leaves the account in this phase.**
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-      (the four manual live-mailbox checks remain open — see Verification)
+      (manual checks below were exercised and caught a real recipient bug —
+      see post-hoc bugfix note; a clean retest against the fixed build is
+      still pending)
 - [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
       subagent dispatch, superseding this template's manual clear-context
       handoff protocol) — verdict: green, nits only
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits noted, no changes required)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [x] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate`
+- [ ] Orchestrator (user) has verified and approved this phase (bug found
+      and fixed during testing — pending a clean retest, see below)
+
+**Post-hoc bugfix (found in live manual verification, after this phase was
+originally marked complete):** `prepare`'s recipient derivation
+unconditionally read the thread's newest message's `From` header as the
+reply target. When the connected account itself sent the last message in the
+thread (normal in an ongoing back-and-forth), this addressed the reply back
+to the account owner instead of the actual other party — reproduced live 3
+times before being caught. Root cause: this tool never actually read
+`ctx.googleAccount.email` for its own identity as the Dependencies & Risks
+section says it should (`GmailToolContext` never declared the field, despite
+`with-required-scopes.ts` injecting it at runtime for every gated Gmail
+tool). Fixed in commit `697bcf2`: `to` now falls back to the newest message's
+`To` header when its `From` matches the account's own email; `from` is now
+always `ctx.googleAccount.googleEmail`, never derived from thread headers.
+4 new regression tests added (self-sent case, case-insensitive match,
+display-name-form match). Code-reviewed: green. Other Gmail write tools
+(archive/label/send-draft) checked for the same pattern — none found.
+- [x] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate` (plus follow-up bugfix `697bcf2`)
 - [ ] Phase marked complete
 
 ---
