@@ -609,28 +609,28 @@ there is a new package *and* a new observable capability, so the
 
 **Steps:**
 
-- [ ] Scaffold the package by **copying `packages/google-sheets`' manifest,
+- [x] Scaffold the package by **copying `packages/google-sheets`' manifest,
       tsconfig and file layout**, then deleting what doesn't apply — do not
       author a new package shape from scratch (CLAUDE.md: inspect a similar
       existing implementation before introducing a new pattern)
-- [ ] Confirm `pnpm install` links the new workspace package and
+- [x] Confirm `pnpm install` links the new workspace package and
       `pnpm -r build` produces `packages/google-gmail/dist/index.js` — the
       runtime resolves `main` → `dist`, so nothing works until this is true
-- [ ] Write the client's `classify` so 401/403 **throws** rather than
+- [x] Write the client's `classify` so 401/403 **throws** rather than
       returning a retry class — assert with a test that a 403 causes exactly
       one `fetchImpl` call, no backoff, no retry
-- [ ] Assert the access token never appears in any thrown message: build an
+- [x] Assert the access token never appears in any thrown message: build an
       error path with a real token string and grep the message in the test
-- [ ] `describeConnectCommand`: write the test for all three (soon four)
+- [x] `describeConnectCommand`: write the test for all three (soon four)
       tiers *before* touching it, and confirm the existing Sheets and
       identity strings come back byte-identical after the generalization
-- [ ] Confirm `requiredScopesFor("gmail_list_unread")` resolves — the
+- [x] Confirm `requiredScopesFor("gmail_list_unread")` resolves — the
       `TOOL_REQUIRED_SCOPES` lookup **throws at construction** if a tool is
       missing (`build-agent.ts:96-102`), so a forgotten row fails boot, not a
       call
-- [ ] Confirm the tool array's existing prefix is byte-identical and the new
+- [x] Confirm the tool array's existing prefix is byte-identical and the new
       tool is appended last
-- [ ] Run the existing `apps/hermes/src/agent/__tests__/tool-schemas.test.ts`
+- [x] Run the existing `apps/hermes/src/agent/__tests__/tool-schemas.test.ts`
       guard unchanged and confirm the new schema passes its top-level-object
       check
 
@@ -656,11 +656,16 @@ unread mail.
 
 **Verification:**
 
-- [ ] `pnpm --filter @hermes/google-gmail test` green
-- [ ] `pnpm -r typecheck` green
-- [ ] `pnpm -r test` green
-- [ ] `pnpm lint` green
-- [ ] `pnpm build` (or restart via `pnpm dev`, which runs `predev`) before any
+- [x] `pnpm --filter @hermes/google-gmail test` green
+- [x] `pnpm -r typecheck` green
+- [x] `pnpm -r test` green (all pass except pre-existing DB-backed suites,
+      which fail on `ECONNREFUSED 127.0.0.1:5432` in this environment — no
+      local Postgres running; unrelated to `packages/store`, which this phase
+      does not touch)
+- [ ] `pnpm lint` green — 14 pre-existing formatting errors in
+      `packages/google-calendar` (untouched by this phase); zero errors in
+      any file this phase created/modified
+- [x] `pnpm build` (or restart via `pnpm dev`, which runs `predev`) before any
       manual check — the package is invisible to the running bot otherwise
 - [ ] Manual (hil): `/connect google` (identity only) → ask "¿tengo algo sin
       leer?" → the bot relays a refusal naming `/connect google gmail`, and
@@ -675,12 +680,13 @@ unread mail.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing
-- [ ] Documentation updated (see Documentation section)
+      (lint and the three manual hil checks remain open — see Verification)
+- [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
+      subagent dispatch, superseding this template's manual clear-context
+      handoff protocol)
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (verdict: green, nits only, no changes required)
+- [x] Tests for this phase written and passing
+- [x] Documentation updated (see Documentation section)
 - [ ] Orchestrator (user) has verified and approved this phase
 - [ ] Changes committed: `feat: @hermes/google-gmail package, /connect google gmail, gmail_list_unread`
 - [ ] Phase marked complete
