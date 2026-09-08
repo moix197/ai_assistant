@@ -687,9 +687,9 @@ unread mail.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (verdict: green, nits only, no changes required)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `feat: @hermes/google-gmail package, /connect google gmail, gmail_list_unread`
-- [ ] Phase marked complete
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `feat: @hermes/google-gmail package, /connect google gmail, gmail_list_unread`
+- [x] Phase marked complete
 
 ---
 
