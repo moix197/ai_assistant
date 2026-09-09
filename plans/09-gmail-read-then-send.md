@@ -1029,18 +1029,18 @@ which any fixture can prove. **No mail leaves the account in this phase.**
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-      (manual checks below were exercised and caught a real recipient bug —
-      see post-hoc bugfix note; a clean retest against the fixed build is
-      still pending)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+      (manual checks caught a real recipient bug, which was fixed; a clean
+      retest against the fixed build, plus the follow-up UX change below,
+      passed live)
 - [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
       subagent dispatch, superseding this template's manual clear-context
       handoff protocol) — verdict: green, nits only
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (nits noted, no changes required)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase (bug found
-      and fixed during testing — pending a clean retest, see below)
+- [x] Orchestrator (user) has verified and approved this phase (live retest
+      passed after both post-hoc changes below)
 
 **Post-hoc bugfix (found in live manual verification, after this phase was
 originally marked complete):** `prepare`'s recipient derivation
@@ -1058,8 +1058,26 @@ always `ctx.googleAccount.googleEmail`, never derived from thread headers.
 4 new regression tests added (self-sent case, case-insensitive match,
 display-name-form match). Code-reviewed: green. Other Gmail write tools
 (archive/label/send-draft) checked for the same pattern — none found.
-- [x] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate` (plus follow-up bugfix `697bcf2`)
-- [ ] Phase marked complete
+
+**Post-hoc design change (user-requested, after live UX feedback):**
+composing a reply originally took two separate approval taps — one to save
+the draft, one to send it — even though saving a draft is reversible and
+fully undoable in Gmail's own Drafts folder. The user found this poor UX and
+chose, with the tradeoff explained, to drop the approval gate from
+`gmail_draft_reply` entirely: it now composes and saves/updates the draft
+immediately on every call, with no prompt. `gmail_send_draft` (Phase 5)
+**is unchanged and remains fully approval-gated** — sending is still the
+only irreversible, human-confirmed step. Implemented in commit `229a97b`:
+merged the `prepare`/`plan`/`summary` split into a single ungated `handler`
+(required because `packages/agent/src/loop.ts` never invokes `prepare` for
+an ungated tool — a dead `prepare` would have silently never run), removed
+the now-meaningless `GmailDraftReplyPlan` export, dropped the obsolete
+approval-prompt-renderer test case for this tool's old summary shape. All
+150 gmail-package tests still pass, including the recipient-bugfix
+regression tests. Verified live: draft saves silently, `gmail_send_draft`'s
+approval prompt still fires and blocks on a real send.
+- [x] Changes committed: `feat: gmail_draft_reply creating and updating real Gmail drafts behind the approval gate` (plus follow-up commits `697bcf2`, `229a97b`)
+- [x] Phase marked complete
 
 ---
 
@@ -1172,14 +1190,20 @@ definite one.
       environment, so this ran for real, not skipped)
 - [x] `pnpm -r typecheck` green, `pnpm -r test` green, `pnpm test:db` green, `pnpm lint` green
 - [x] `pnpm build` before manual checks
-- [ ] Manual (hil): draft a reply **to the user's own address**, then
+- [x] Manual (hil): draft a reply **to the user's own address**, then
       "envialo" → prompt names recipient and subject → **Rechazar** →
       confirm nothing in Sent, draft still in Drafts
-- [ ] Manual (hil): repeat → **Aprobar** → confirm the mail **arrives at the
-      user's own address** and appears in Sent
-- [ ] Manual (hil): draft again, say "envialo", and **restart the process
+- [x] Manual (hil): repeat → **Aprobar** → confirm the mail **arrives at the
+      user's own address** and appears in Sent (confirmed live twice, and via
+      `gmail_send_log` rows showing `status: complete` with real Gmail
+      message ids)
+- [x] Manual (hil): draft again, say "envialo", and **restart the process
       before tapping**; then tap → confirm the answer is the definite Spanish
       sentence, **nothing is sent**, and the draft is still in Drafts
+      (exercised across 3 separate restarts; every dead-approval row stayed
+      `awaiting_approval` — never claimed, never sent; the definite-answer
+      text was also made visible in chat history, not just a toast, via
+      follow-up commit `b5fade03`)
 - [ ] Manual (hil): ask to send an already-sent/deleted `draftId` → confirm
       **no prompt at all** and a legible refusal
 - [ ] [~] A genuinely ambiguous send (post-send timeout / 5xx after the
@@ -1190,7 +1214,8 @@ definite one.
 **Phase review:**
 
 - [ ] All Steps and Verification checkboxes above ticked in the plan file
-      (the four manual hil live-send checks remain open — see Verification)
+      (only the stale/deleted-`draftId` refusal check remains open — see
+      Verification)
 - [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
       subagent dispatch, superseding this template's manual clear-context
       handoff protocol) — first pass: **yellow** (missing
@@ -1199,9 +1224,12 @@ definite one.
 - [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (missing renderer test added; ambiguous-path wording divergence noted above, accepted as functionally equivalent)
 - [x] Tests for this phase written and passing
 - [x] Documentation updated (see Documentation section)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [x] Changes committed: `feat: approval-gated gmail_send_draft with durable gmail_send_log and definite post-restart reporting`
-- [ ] Phase marked complete
+- [x] Orchestrator (user) has verified and approved this phase (reject,
+      approve/real-send, and restart-mid-approval all confirmed live and
+      corroborated against `gmail_send_log`; stale-`draftId` refusal not yet
+      exercised)
+- [x] Changes committed: `feat: approval-gated gmail_send_draft with durable gmail_send_log and definite post-restart reporting` (plus follow-up commit `b5fade03`)
+- [ ] Phase marked complete (pending the one remaining manual check)
 
 ---
 
