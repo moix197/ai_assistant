@@ -1359,17 +1359,24 @@ against the shipped code.
 **Steps:**
 
 - [ ] Every preceding phase's Steps/Verification/Phase review checkboxes are
-      ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block (scoped to
-      end-to-end review)
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt
-      into a fresh session
-- [ ] Code-reviewer agent reviews the entire change end-to-end
-- [ ] Any changes made in response to the final review reflected back into
-      this plan file
-- [ ] `pnpm -r typecheck` green, `pnpm -r test` green, `pnpm test:db` green,
-      `pnpm lint` green, `pnpm build` green
-- [ ] No CLAUDE.md invariants violated
+      ticked in the plan file (one item remains: Phase 5's stale/deleted-
+      `draftId` refusal check)
+- [x] Code-reviewer agent reviews the entire change end-to-end (via
+      `/execute-prd`'s subagent dispatch, superseding this template's manual
+      clear-context handoff protocol) — verdict: green, safe to merge, two
+      non-blocking nits (a `References` header simplification for multi-hop
+      threads — Gmail threads by `threadId` regardless, so low-impact; no
+      redundant index beyond the PK)
+- [x] Any changes made in response to the final review reflected back into
+      this plan file (both nits accepted as-is, no action needed)
+- [x] `pnpm -r typecheck` green, `pnpm -r test` green, `pnpm test:db` green,
+      `pnpm lint` green, `pnpm build` green (all re-run and confirmed
+      directly by the orchestrator, not just trusted from phase reports)
+- [x] No CLAUDE.md invariants violated (verified directly: `google-gmail`
+      package.json still only `@hermes/core` + `zod`; `packages/agent` and
+      `approval-prompt-renderer.ts` show zero diff against `main`;
+      `packages/google-gmail` has no actual `import` of `@hermes/store` or
+      `@hermes/google-auth`, comment-only mentions)
 - [ ] Manual golden path, on a real phone against the real bot, in order:
       "¿hay algo urgente hoy?" → a real triage → "respondele a <hilo real,
       dirigido a la propia dirección del usuario> que el viernes me sirve" →
@@ -1379,8 +1386,9 @@ against the shipped code.
       address**
 - [ ] Manual: the same send flow but **Rechazar** at the send prompt →
       nothing sent, draft intact
-- [ ] Manual: restart mid-send-prompt, then tap → definite answer, nothing
-      sent
+- [x] Manual: restart mid-send-prompt, then tap → definite answer, nothing
+      sent (exercised repeatedly during Phase 5 live verification across 3+
+      restarts, including after the chat-visibility fix landed)
 - [ ] Manual: revoke Gmail access at
       `myaccount.google.com` → a Gmail tool call returns `insufficient_scope`
       with the right `/connect` instruction, the account is **not**
@@ -1389,12 +1397,13 @@ against the shipped code.
 - [ ] Manual: confirm all `05-google-sheets`/`06-legible-approvals` exit
       criteria still hold (Sheets read/write, legible prompts) — this plan
       touched shared wiring and must not have regressed them
-- [ ] [~] Ambiguous-send and in-turn send dedupe remain unit-test-only —
+- [~] Ambiguous-send and in-turn send dedupe remain unit-test-only —
       not provokable against Google, and every inbound Telegram message is a
       new turn — same accepted posture `05-google-sheets` recorded
-- [ ] Overall success criteria met
-- [ ] `sync-knowledge` re-run to confirm Phase 6's edits are still accurate
-      after any Final-Verification-driven fixes
+- [ ] Overall success criteria met (pending the manual checks above)
+- [x] `sync-knowledge` re-run to confirm Phase 6's edits are still accurate
+      after any Final-Verification-driven fixes (n/a — final review required
+      no code or doc changes)
 - [ ] All phase checkboxes above are ticked
 
 ## Documentation
