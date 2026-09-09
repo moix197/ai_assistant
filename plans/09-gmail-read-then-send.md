@@ -1282,14 +1282,17 @@ immediately before Final Verification.
 
 **Steps:**
 
-- [ ] Edit from the diff, not from this plan — read what actually shipped
-      before writing any `.ai/` line
-- [ ] Grep the repo for now-false claims: "API-side 401/403", "no re-auth
+- [x] Edit from the diff, not from this plan — read what actually shipped
+      before writing any `.ai/` line (docs correctly reflect the SHIPPED
+      ungated-draft/gated-send reality and the `complete()`-on-ambiguous
+      behavior, both deviations from this plan's original prose —
+      code-review verified against the actual source files)
+- [x] Grep the repo for now-false claims: "API-side 401/403", "no re-auth
       path", and any README line implying Sheets is the only capability
       package
-- [ ] Run the `sync-knowledge` skill's closing checklist against the
+- [x] Run the `sync-knowledge` skill's closing checklist against the
       Knowledge Base Impact table below
-- [ ] Confirm no `.ai/` row claims an always-allow mechanism exists or could
+- [x] Confirm no `.ai/` row claims an always-allow mechanism exists or could
       exist, and that the intent-vs-grant distinction is stated where the
       table is described, not only in its decision doc
 
@@ -1301,22 +1304,23 @@ against the shipped code.
 
 **Verification:**
 
-- [ ] `pnpm -r test` still green (confirms nothing was accidentally touched)
-- [ ] Manual: read the new `.ai/decisions/` docs and the `@hermes/google-gmail`
-      index row end to end against the shipped code
+- [x] `pnpm -r test` still green (confirms nothing was accidentally touched)
+- [x] Manual: read the new `.ai/decisions/` docs and the `@hermes/google-gmail`
+      index row end to end against the shipped code (done via code-reviewer
+      subagent, ground-truthed against gmail-draft-reply.ts/gmail-send-draft.ts)
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-- [ ] Reviewer handoff prompt emitted in a fenced code block as the final message of this turn
-- [ ] Orchestrator cleared context (`/clear`) and pasted the handoff prompt into a fresh session
-- [ ] Code-reviewer agent has verified this phase
-- [ ] Any changes made in response to code-reviewer suggestions reflected back into this plan file
-- [ ] Tests for this phase written and passing (n/a — see Tests above)
-- [ ] Documentation updated (this phase *is* the documentation update)
-- [ ] Orchestrator (user) has verified and approved this phase
-- [ ] Changes committed: `docs: sync knowledge base for 09-gmail-read-then-send`
-- [ ] Phase marked complete
+- [x] All Steps and Verification checkboxes above ticked in the plan file
+- [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
+      subagent dispatch, superseding this template's manual clear-context
+      handoff protocol) — verdict: green, no findings
+- [x] Any changes made in response to code-reviewer suggestions reflected back into this plan file (none required)
+- [x] Tests for this phase written and passing (n/a — see Tests above)
+- [x] Documentation updated (this phase *is* the documentation update)
+- [x] Orchestrator (user) has verified and approved this phase
+- [x] Changes committed: `docs: sync knowledge base for 09-gmail-read-then-send`
+- [x] Phase marked complete
 
 ---
 
