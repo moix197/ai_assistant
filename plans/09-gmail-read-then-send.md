@@ -2,7 +2,7 @@
 
 **Created:** 2026-09-06
 **Branch:** `feat/09-gmail-read-then-send`
-**Status:** not started
+**Status:** complete — all 7 phases done, merged to main
 
 ## Context
 
@@ -1204,18 +1204,19 @@ definite one.
       `awaiting_approval` — never claimed, never sent; the definite-answer
       text was also made visible in chat history, not just a toast, via
       follow-up commit `b5fade03`)
-- [ ] Manual (hil): ask to send an already-sent/deleted `draftId` → confirm
-      **no prompt at all** and a legible refusal
-- [ ] [~] A genuinely ambiguous send (post-send timeout / 5xx after the
+- [x] Manual (hil): ask to send an already-sent/deleted `draftId` → confirm
+      **no prompt at all** and a legible refusal (waived by the orchestrator
+      — covered by `gmail-send-draft.test.ts`'s `draft_not_found` pre-prompt
+      refusal test against a fake client; not independently re-verified live
+      against a real deleted draft)
+- [x] [~] A genuinely ambiguous send (post-send timeout / 5xx after the
       request left) is covered by fake-client unit tests rather than
       provoked against Google — same accepted posture `05-google-sheets`
       recorded for the equivalent write case
 
 **Phase review:**
 
-- [ ] All Steps and Verification checkboxes above ticked in the plan file
-      (only the stale/deleted-`draftId` refusal check remains open — see
-      Verification)
+- [x] All Steps and Verification checkboxes above ticked in the plan file
 - [x] Code-reviewer agent has verified this phase (via `/execute-prd`'s
       subagent dispatch, superseding this template's manual clear-context
       handoff protocol) — first pass: **yellow** (missing
@@ -1226,10 +1227,10 @@ definite one.
 - [x] Documentation updated (see Documentation section)
 - [x] Orchestrator (user) has verified and approved this phase (reject,
       approve/real-send, and restart-mid-approval all confirmed live and
-      corroborated against `gmail_send_log`; stale-`draftId` refusal not yet
-      exercised)
+      corroborated against `gmail_send_log`; stale-`draftId` refusal waived,
+      covered only by the unit test)
 - [x] Changes committed: `feat: approval-gated gmail_send_draft with durable gmail_send_log and definite post-restart reporting` (plus follow-up commit `b5fade03`)
-- [ ] Phase marked complete (pending the one remaining manual check)
+- [x] Phase marked complete
 
 ---
 
@@ -1377,34 +1378,44 @@ against the shipped code.
       `approval-prompt-renderer.ts` show zero diff against `main`;
       `packages/google-gmail` has no actual `import` of `@hermes/store` or
       `@hermes/google-auth`, comment-only mentions)
-- [ ] Manual golden path, on a real phone against the real bot, in order:
+- [x] Manual golden path, on a real phone against the real bot, in order:
       "¿hay algo urgente hoy?" → a real triage → "respondele a <hilo real,
       dirigido a la propia dirección del usuario> que el viernes me sirve" →
       prompt shows the real text → Aprobar → draft visible in Gmail →
       "cambiá el viernes por el lunes" → same draft updated → "envialo" →
       second, separate prompt → Aprobar → **mail arrives at the user's own
-      address**
-- [ ] Manual: the same send flow but **Rechazar** at the send prompt →
-      nothing sent, draft intact
+      address** (core send/draft/edit flow confirmed live and via
+      `gmail_send_log`; the standalone "¿hay algo urgente hoy?" triage
+      question specifically was waived by the orchestrator, not
+      independently re-run this session)
+- [x] Manual: the same send flow but **Rechazar** at the send prompt →
+      nothing sent, draft intact (confirmed earlier in Phase 5 live testing)
 - [x] Manual: restart mid-send-prompt, then tap → definite answer, nothing
       sent (exercised repeatedly during Phase 5 live verification across 3+
       restarts, including after the chat-visibility fix landed)
-- [ ] Manual: revoke Gmail access at
+- [x] Manual: revoke Gmail access at
       `myaccount.google.com` → a Gmail tool call returns `insufficient_scope`
       with the right `/connect` instruction, the account is **not**
       disconnected, and a Sheets tool still works → re-connect and confirm
-      recovery
-- [ ] Manual: confirm all `05-google-sheets`/`06-legible-approvals` exit
+      recovery (waived by the orchestrator — covered by unit tests for the
+      403-mapping and no-disconnect-on-403 behavior; not independently
+      re-verified against a live Google-side revocation)
+- [x] Manual: confirm all `05-google-sheets`/`06-legible-approvals` exit
       criteria still hold (Sheets read/write, legible prompts) — this plan
-      touched shared wiring and must not have regressed them
-- [~] Ambiguous-send and in-turn send dedupe remain unit-test-only —
+      touched shared wiring and must not have regressed them (waived by the
+      orchestrator — no Sheets-touching code changed in this plan; covered
+      by the full regression suite staying green throughout)
+- [x] Ambiguous-send and in-turn send dedupe remain unit-test-only —
       not provokable against Google, and every inbound Telegram message is a
       new turn — same accepted posture `05-google-sheets` recorded
-- [ ] Overall success criteria met (pending the manual checks above)
+- [x] Overall success criteria met (core criteria confirmed live; a few
+      manual hil checks waived by the orchestrator's explicit decision to
+      close out and merge rather than exercise every one individually — see
+      notes above on each waived item)
 - [x] `sync-knowledge` re-run to confirm Phase 6's edits are still accurate
       after any Final-Verification-driven fixes (n/a — final review required
       no code or doc changes)
-- [ ] All phase checkboxes above are ticked
+- [x] All phase checkboxes above are ticked
 
 ## Documentation
 
