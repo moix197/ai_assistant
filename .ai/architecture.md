@@ -24,6 +24,8 @@ packages/agent     bounded turn loop + tool execution + ThreadRepo/ApprovalGate 
 packages/google-auth OAuth connect flow + token crypto + revoke + refresh coordinator + GoogleAccountRepo PORT
 packages/google-sheets Sheets v4 fetch client + 3 tools + SheetRegistry/AccessToken/SheetWriteLog PORTS
 packages/google-calendar Calendar v3 fetch client + 6 tools + AccessToken PORT only — no DB-backed port
+packages/google-gmail Gmail v1 fetch client + own MIME/HTML-to-text code + 7 tools + AccessToken PORT
+                   (+ GmailSendLogPort for gmail_send_draft only) — no reach-gate, no registry
 ```
 
 Monorepo ≠ one deployable. The build must stay able to emit a lean per-app
@@ -36,12 +38,12 @@ Strictly downward; no package imports one above it.
 
 ```
                         apps/hermes
-                             │  (imports all ten; the ONLY place they are wired together)
-     ┌───────────┬───────────┼───────────┬───────────┬──────────┬─────────────┬───────────────┬────────────────┬───────┐
-     ▼           ▼           ▼           ▼           ▼          ▼             ▼               ▼                ▼       ▼
-  config       store     channels       llm      telemetry    agent     google-auth   google-sheets  google-calendar  core
-     │           │       (only dep)  (only dep)  (only dep)  (core+llm)  (only dep)     (only dep)       (only dep)
-     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────────┴───────────────┴────────────────┴─────► core
+                             │  (imports all eleven; the ONLY place they are wired together)
+     ┌───────────┬───────────┼───────────┬───────────┬──────────┬─────────────┬───────────────┬────────────────┬────────────────┬───────┐
+     ▼           ▼           ▼           ▼           ▼          ▼             ▼               ▼                ▼                ▼       ▼
+  config       store     channels       llm      telemetry    agent     google-auth   google-sheets  google-calendar  google-gmail  core
+     │           │       (only dep)  (only dep)  (only dep)  (core+llm)  (only dep)     (only dep)       (only dep)      (only dep)
+     └───────────┴───────────┴───────────┴───────────┴──────────┴─────────────┴───────────────┴────────────────┴────────────────┴─────► core
 ```
 
 The siblings on that row are siblings, not a chain: none of them may import
@@ -191,6 +193,22 @@ shape) and was removed — see the `packages/google-auth` bullet below.
   `timezone-cache.ts`, `window-bounds.ts`) is this package's other load-bearing
   addition — see
   [luxon-timezone-library](decisions/luxon-timezone-library.md).
+- **`packages/google-gmail` depends on `packages/core` only** — same shape as
+  `google-sheets`/`google-calendar`. One consumer-declared `AccessTokenPort`,
+  structurally identical to the other two capability packages' (reused
+  directly via `apps/hermes`' generalized `buildAccessTokenPort`, no
+  package-specific binder needed), plus a second port only `gmail_send_draft`
+  takes — `GmailSendLogPort`, bound in `boot.ts` over `@hermes/store`'s
+  `gmail_send_log` functions, the direct twin of `SheetWriteLogPort`. **No
+  `SheetRegistryPort`-style third port** — there is no reach-gate to
+  enforce; a connected, sufficiently-scoped account can read its own inbox
+  outright. The scope gate lives in `apps/hermes`'s `withRequiredScopes`,
+  same split as Sheets/Calendar, driven by `TOOL_REQUIRED_SCOPES`'s two
+  Gmail tiers ([gmail-two-tier-scopes](decisions/gmail-two-tier-scopes.md)).
+  Own MIME parsing, HTML-to-text and quoted-reply stripping
+  ([gmail-body-bounding](decisions/gmail-body-bounding.md)) are this
+  package's other load-bearing addition — no mail-parsing dependency, same
+  posture as `gmail-client.ts`'s own `fetch` wrapper.
 - Type-level leakage counts too: `pg`'s `Pool` reaches `apps/hermes` only via a
   re-export from `@hermes/store`, so `pg` stays store's declared dependency and
   a missing dep is caught by `pnpm -r typecheck` (which runs before `build`).
@@ -381,6 +399,98 @@ all, alongside the unknown-slug refusal that always short-circuited. See
 [tool-prepare-hook](decisions/tool-prepare-hook.md),
 [bounded-tool-results](decisions/bounded-tool-results.md) and
 [per-tool-timeout](decisions/per-tool-timeout.md).
+
+### Inside a Gmail tool call
+
+Only three of the seven Gmail tools are gated at all — `gmail_archive`,
+`gmail_label`, and `gmail_send_draft` — and only `gmail_send_draft` writes a
+durable claim. The other four (the three read tools plus `gmail_draft_reply`,
+shipped ungated per a post-hoc UX change) skip the approval step entirely
+and go straight from the scope gate to their handler:
+
+```
+ gated call: gmail_send_draft { draftId }
+   │
+   ▼  apps/hermes  withRequiredScopes wraps prepare too
+   │     no account / missing gmail.send scope ⇒ the same refusal the
+   │     handler's wrap returns, one step earlier — NO prompt sent
+   │
+   ▼  packages/agent  prepareGatedCall — runs BEFORE the prompt
+   │  │  (safeParse first, then ToolSpec.prepare, raced against timeoutMs)
+   │  │
+   │  ▼  packages/google-gmail  gmail_send_draft's prepare
+   │       getDraft 404 ⇒ {ok:false, reason:"draft_not_found"}, BEFORE any
+   │         intent row is ever written
+   │       otherwise ⇒ reads to/subject/body preview via getMessageFull,
+   │         builds the Spanish ApprovalSummary, THEN calls
+   │         sendLogRepo.recordIntent — an awaiting_approval row, an
+   │         INTENT, never a claim and never a grant
+   │       ⇒ plan {draftId, to, subject} → ctx.plan + ApprovalSummary
+   │
+   ▼  ApprovalGate.requestApproval (survivors only; skipped if none)
+   │     denied / timed out / aborted ⇒ "user did not approve" — the
+   │     awaiting_approval row is left exactly as prepare wrote it; a
+   │     later stale tap can only ever be described, never resumed
+   │
+   ▼  packages/google-gmail  the base ToolSpec's handler (approved only)
+   │  ├─ GmailSendLogPort.claim(sha256(channel, userId, turnId, tool,
+   │  │    canonical args)) — the actual authorization-adjacent moment:
+   │  │    transitions the row OUT OF awaiting_approval (or inserts fresh)
+   │  │      alreadyComplete ⇒ return the STORED outcome, zero Gmail calls
+   │  │      alreadyPending  ⇒ return the ambiguous_send hedge, no call
+   │  │
+   │  ├─ AccessTokenPort.getAccessToken(channel, channelUserId)
+   │  │      →  google-auth's ONE RefreshCoordinator.getValidAccessToken
+   │  │
+   │  ▼  gmail-client.ts  sendDraft  →  withHttpRetry  →  Gmail v1 REST
+   │        classifySend: 429 retries; pre-send network failure retries;
+   │        any other failure ⇒ GmailAmbiguousSendError, never retried
+   │
+   ▼  resolve the claim
+        success / GmailAmbiguousSendError ⇒ complete(outcome)  ← the
+          durable record — the ambiguous branch still calls complete(),
+          not a literal "leave it pending" (turnId in the key makes the
+          two equivalent; see gmail-send-intent-log.md)
+        definitive 4xx or exhausted 429 (GmailApiError) ⇒ release()
+          then either the structured insufficient_scope refusal (401/403)
+          or rethrow — provably never landed
+        any other thrown error ⇒ leave it pending, the fail-safe default
+```
+
+`gmail_archive`/`gmail_label` follow the same scope-gate → `prepare` →
+approval-prompt → handler shape, but with **no claim step at all** —
+`prepare` refuses `thread_not_found`/`unknown_label` pre-prompt, `handler`
+calls the idempotent `modifyMessage` directly on approval, and nothing is
+written to any log; Gmail's own mailbox state is the record. The three read
+tools and `gmail_draft_reply` skip straight from the scope gate to their
+handler — no `prepare`, no approval prompt, no plan:
+
+```
+ ungated call: gmail_read_thread { threadId }
+   │
+   ▼  apps/hermes  withRequiredScopes(name, {googleAccountRepo, requiredScopes})
+   │     no account, or granted scopes ⊉ TOOL_REQUIRED_SCOPES.get(name)
+   │     ⇒ {ok:false, reason:"missing_scope", fix:"run /connect google gmail"}
+   │
+   ▼  packages/google-gmail  the base ToolSpec's handler, straight away
+   │  ├─ getThread → sort newest-first → truncateBySize (message-count cap,
+   │  │    applied BEFORE any body is fetched — a 100-message thread issues
+   │  │    at most 10 getMessageFull calls, not 100)
+   │  ├─ per kept message: getMessageFull → decodePart → htmlToText (if
+   │  │    HTML) → stripQuotedReply → per-message char cap (applied AFTER
+   │  │    steps 2-3, never on raw HTML)
+   │  └─ a caught 401/403 ⇒ toInsufficientScopeResult, not a throw
+   ▼  result, truncation fields additive via conditional spread
+```
+
+Every Gmail handler and, for the three gated write tools, `prepare` catches
+a 401/403 through `toInsufficientScopeResult` rather than letting it
+propagate — see
+[gmail-api-403-structured-refusal](decisions/gmail-api-403-structured-refusal.md).
+See [gmail-two-tier-scopes](decisions/gmail-two-tier-scopes.md),
+[gmail-body-bounding](decisions/gmail-body-bounding.md), and
+[gmail-send-intent-log](decisions/gmail-send-intent-log.md) for the full
+reasoning behind each step above.
 
 The `llm.call` event that rides alongside that write is deliberately **not** the
 same shape of guarantee, and the three differences are the whole point of

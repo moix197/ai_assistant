@@ -19,6 +19,20 @@ by a durable `gmail_send_log` claim/complete/release dance
 tools' no-log posture (see "No durable write log" below, and its own section
 further down).
 
+**All seven tools, at a glance** — the shipped state, not the original
+Phase 4 plan (`gmail_draft_reply` was originally going to be approval-gated
+too; see its own section below for why that changed):
+
+| Tool | Gated? | Durable log? |
+| --- | --- | --- |
+| `gmail_list_unread` | no | no (telemetry only) |
+| `gmail_search` | no | no (telemetry only) |
+| `gmail_read_thread` | no | no (telemetry only) |
+| `gmail_archive` | **yes** | no — idempotent `modifyMessage`, mailbox is the record |
+| `gmail_label` | **yes** | no — idempotent `modifyMessage`, mailbox is the record |
+| `gmail_draft_reply` | no — reversible, undoable in Drafts | no |
+| `gmail_send_draft` | **yes** | **yes** — `gmail_send_log`, the one irreversible tool |
+
 ## Ports
 
 One consumer-declared port, following `@hermes/google-auth`'s
@@ -151,7 +165,10 @@ the caller (hardcoded per-tool, e.g. `gmail-list-unread.ts`'s
 depth: `withRequiredScopes` already gates every call on a granted scope
 before the handler runs, but a scope revoked at Google *after* that
 pre-check still needs a structured refusal, not a throw. Shared by every
-Gmail tool from here on.
+Gmail tool from here on. Full rationale — why the model never mints a
+consent URL, and why a 403 must not disconnect the account the way
+refresh-time `invalid_grant` does — in
+`.ai/decisions/gmail-api-403-structured-refusal.md`.
 
 ## `build-mime-message.ts` (Phase 4)
 
@@ -237,7 +254,9 @@ above — a 100-message thread issues at most 10 `getMessageFull` calls, not
 100. `truncateBySize` mirrors `packages/google-sheets/src/truncate.ts`'s
 contract exactly (accumulate in order, stop before exceeding a cap, always
 keep at least one item) — deliberately **not** promoted to `@hermes/core`;
-see `.ai/decisions/bounded-tool-results.md`'s third-caller trigger.
+see `.ai/decisions/bounded-tool-results.md`'s third-caller trigger and
+`.ai/decisions/gmail-body-bounding.md` for the full pipeline-order and
+own-code-vs-library reasoning.
 
 ## Tools
 
@@ -413,7 +432,10 @@ three read tools). `/connect google gmail-send` grants identity +
 `hasRequiredScopes` (`@hermes/google-auth`) is literal string containment
 with no implication table (settled decision 1; see the plan's Dependencies &
 Risks for the named contingency if Google ever normalizes the combined
-request down to one granted scope).
+request down to one granted scope). Full rationale, rejected alternatives
+(one combined tier, three tiers, scope-implication logic) and the
+restricted-scope/CASA verification prerequisite:
+`.ai/decisions/gmail-two-tier-scopes.md`.
 
 ## Dependencies
 
