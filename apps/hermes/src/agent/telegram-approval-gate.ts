@@ -189,6 +189,7 @@ export function createTelegramApprovalGate(
     if (!entry) {
       const text = await resolveExpiredText(callback.channelUserId);
       await channel.answerCallback(callback.callbackId, text).catch(() => {});
+      await channel.editMessage(callback.chatId, callback.messageId, text).catch(() => {});
       return;
     }
 

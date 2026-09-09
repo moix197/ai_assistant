@@ -158,7 +158,26 @@ describe("createTelegramApprovalGate — unknown, already-resolved, or post-rest
       "cbq-1",
       "esta aprobación ya expiró, pídelo de nuevo",
     );
-    expect(channel.editMessage).not.toHaveBeenCalled();
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+  });
+
+  it("a thrown/rejected editMessage on an unknown callback id never propagates", async () => {
+    const channel = fakeChannel();
+    channel.editMessage.mockRejectedValue(new Error("telegram down"));
+    const gate = createTelegramApprovalGate(channel, () => "555", fakeLogger());
+
+    await expect(
+      gate.handleCallback(makeCallback("no-such-id", "approve")),
+    ).resolves.toBeUndefined();
+
+    expect(channel.answerCallback).toHaveBeenCalledWith(
+      "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
   });
 
   it("answers a second tap against an already-resolved approval with the same expiry text, not a second resolution", async () => {
@@ -179,8 +198,13 @@ describe("createTelegramApprovalGate — unknown, already-resolved, or post-rest
       "cbq-1",
       "esta aprobación ya expiró, pídelo de nuevo",
     );
-    // The second tap resolves nothing further — no second edit either.
-    expect(channel.editMessage).not.toHaveBeenCalled();
+    // The second tap resolves nothing further — just the expiry-text edit, not a resolution edit.
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+    expect(channel.editMessage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -306,6 +330,11 @@ describe("createTelegramApprovalGate — post-restart describer (09-gmail-read-t
       "cbq-1",
       "no se envió nada, el borrador sigue guardado — pedime «envialo» de nuevo",
     );
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
+      "no se envió nada, el borrador sigue guardado — pedime «envialo» de nuevo",
+    );
   });
 
   it("no describer given answers the existing EXPIRED_CALLBACK_TEXT byte-identically", async () => {
@@ -316,6 +345,11 @@ describe("createTelegramApprovalGate — post-restart describer (09-gmail-read-t
 
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
       "esta aprobación ya expiró, pídelo de nuevo",
     );
   });
@@ -337,6 +371,11 @@ describe("createTelegramApprovalGate — post-restart describer (09-gmail-read-t
       "cbq-1",
       "esta aprobación ya expiró, pídelo de nuevo",
     );
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
   });
 
   it("a describer that throws (e.g. the DB is down) falls back to EXPIRED_CALLBACK_TEXT and never breaks the tap handler", async () => {
@@ -356,6 +395,11 @@ describe("createTelegramApprovalGate — post-restart describer (09-gmail-read-t
 
     expect(channel.answerCallback).toHaveBeenCalledWith(
       "cbq-1",
+      "esta aprobación ya expiró, pídelo de nuevo",
+    );
+    expect(channel.editMessage).toHaveBeenCalledWith(
+      "555",
+      "msg-1",
       "esta aprobación ya expiró, pídelo de nuevo",
     );
   });
