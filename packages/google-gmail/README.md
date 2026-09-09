@@ -9,10 +9,11 @@ pipeline" below). Phase 3 ships the write tier's first two tools,
 `gmail_archive` and `gmail_label` — both approval-gated, both reversible,
 proving the whole `prepare` → `ApprovalSummary` → Telegram prompt → tap →
 handler → Gmail path before Phase 5's irreversible `gmail_send_draft` ever
-exists. Phase 4 ships `gmail_draft_reply` — a real, threaded Gmail draft the
-human reads in full before it exists, still reversible (a draft, never a
-send) but the first tool to compose its own outbound MIME content. Phase 5
-ships `gmail_send_draft` — the one irreversible tool in this package, backed
+exists. Phase 4 ships `gmail_draft_reply` — a real, threaded Gmail draft
+composed and saved immediately, no approval prompt: it's reversible and
+inconsequential (visible and undoable in Gmail's own Drafts folder), and the
+first tool to compose its own outbound MIME content. Phase 5 ships
+`gmail_send_draft` — the one irreversible tool in this package, backed
 by a durable `gmail_send_log` claim/complete/release dance
 (`@hermes/store`'s `gmail-send-log-repo.ts`) rather than the reversible
 tools' no-log posture (see "No durable write log" below, and its own section
@@ -178,8 +179,7 @@ returns the base64url-encoded raw message Gmail's `drafts.create`/
   message in a thread carries neither.
 
 `buildMimeMessage` is called exactly once per `gmail_draft_reply` call,
-**inside `prepare`**, never in the handler — see the tool's own section
-below for why that's the phase's load-bearing safety property.
+inside its `handler` — see the tool's own section below.
 
 ## Timeout rationale
 
@@ -302,35 +302,29 @@ no `SheetWriteLogPort`-style claim/complete dance here; see Phase 6's
 `.ai/decisions/gmail-send-intent-log.md` for why `gmail_send_draft`, the one
 *irreversible* tool, needs one and these two don't.
 
-- `gmail_draft_reply { threadId, body, draftId? }` — approval-gated. A
-  present `draftId` updates that draft; an absent one creates a new one.
-  `prepare` reads the thread's newest message's headers (`getThread` +
-  `getMessageMetadata`, the same call pair `gmail_archive`/`gmail_label`
-  make) to derive the reply's recipient (the newest message's `From`), our
-  own address (the newest message's `To`), the `Re:`-prefixed subject (never
-  double-prefixed if the original already starts with "Re:") and the
-  `In-Reply-To`/`References` threading headers (both set to the newest
-  message's `Message-ID` — this tool has no fuller reference chain to
-  thread). **`prepare` composes the full `raw` MIME message right there**,
-  via `build-mime-message.ts`'s `buildMimeMessage`, and threads it onto
-  `plan.raw` — `handler` posts it verbatim, never recomposing anything, so
-  the bytes a human approved are structurally the bytes Gmail saves
-  (`.ai/decisions/tool-prepare-hook.md`). The approval summary shows
-  `"¿Guardar este borrador de respuesta?"` (create) or `"¿Actualizar el
-  borrador?"` (update), target `"Para: <to> — <subject>"`, the
-  whitespace-collapsed, length-capped body as `items`, and effects
-  `["Se guarda como borrador en Gmail. No se envía nada todavía."]` — the
-  body preview renders through the existing generic `ApprovalSummary.items`
-  mechanism, no renderer change. `handler` dispatches to `updateDraft`
-  (`draftId` present) or `createDraft` (absent) — never both, never
-  neither — and returns `{ ok: true, draftId, to, subject, body }`; a
-  following turn (e.g. "cambiá el viernes por el lunes") passes that
-  `draftId` back in to update the same draft, with no new inbound-reply-
-  correlation machinery. A thread id Gmail 404s on refuses before any
-  prompt with `thread_not_found`, same posture as `gmail_archive`/
-  `gmail_label`. **This tool never calls, references, or wires up
-  `drafts.send`/`messages.send` anywhere** — a draft is reversible, a send
-  is Phase 5's problem.
+- `gmail_draft_reply { threadId, body, draftId? }` — **not** approval-gated
+  (`requiresApproval: false`): saving or updating a draft is reversible and
+  inconsequential (visible and undoable in Gmail's own Drafts folder), so
+  the tool composes and saves it immediately. A present `draftId` updates
+  that draft; an absent one creates a new one. `handler` reads the thread's
+  newest message's headers (`getThread` + `getMessageMetadata`, the same
+  call pair `gmail_archive`/`gmail_label` make) to derive the reply's
+  recipient (the newest message's `From`), our own address (the newest
+  message's `To`), the `Re:`-prefixed subject (never double-prefixed if the
+  original already starts with "Re:") and the `In-Reply-To`/`References`
+  threading headers (both set to the newest message's `Message-ID` — this
+  tool has no fuller reference chain to thread), composes the full `raw`
+  MIME message via `build-mime-message.ts`'s `buildMimeMessage`, then
+  dispatches to `updateDraft` (`draftId` present) or `createDraft`
+  (absent) — never both, never neither — and returns
+  `{ ok: true, draftId, to, subject, body }`; a following turn (e.g.
+  "cambiá el viernes por el lunes") passes that `draftId` back in to update
+  the same draft, with no new inbound-reply-correlation machinery. A thread
+  id Gmail 404s on refuses with `thread_not_found`, same posture as
+  `gmail_archive`/`gmail_label`. **This tool never calls, references, or
+  wires up `drafts.send`/`messages.send` anywhere** — a draft is
+  reversible, a send is Phase 5's problem, and actually sending still
+  requires a separate, approved call to `gmail_send_draft`.
 
 ## `gmail_send_draft` (Phase 5) — the one irreversible tool
 

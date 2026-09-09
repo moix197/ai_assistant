@@ -498,7 +498,7 @@ describe("buildAgent — wiring", () => {
     expect(typeof gmailLabelTool?.prepare).toBe("function");
   });
 
-  it("passes gmail_draft_reply (09-gmail-read-then-send Phase 4) appended immediately before Phase 5's gmail_send_draft, gated (requiresApproval: true) with a prepare hook", async () => {
+  it("passes gmail_draft_reply (09-gmail-read-then-send Phase 4) appended immediately before Phase 5's gmail_send_draft, ungated (requiresApproval: false) with no prepare hook", async () => {
     const pool = createMockPool([
       { id: "thread-9", channel: "telegram", chat_id: "222", messages: [] },
     ]);
@@ -535,8 +535,8 @@ describe("buildAgent — wiring", () => {
     const gmailDraftReplyTool = definitionArg?.tools.find(
       (tool) => tool.name === "gmail_draft_reply",
     );
-    expect(gmailDraftReplyTool?.requiresApproval).toBe(true);
-    expect(typeof gmailDraftReplyTool?.prepare).toBe("function");
+    expect(gmailDraftReplyTool?.requiresApproval).toBe(false);
+    expect(gmailDraftReplyTool?.prepare).toBeUndefined();
   });
 
   it("passes gmail_send_draft (09-gmail-read-then-send Phase 5) appended last in the raw tools array, gated (requiresApproval: true) with a prepare hook", async () => {

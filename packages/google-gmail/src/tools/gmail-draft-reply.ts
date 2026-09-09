@@ -25,9 +25,6 @@ type Args = z.infer<typeof schema>;
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 const GMAIL_WRITE_FIX = "run /connect google gmail-send";
 
-/** How much of the body the approval prompt shows — whitespace-collapsed so a body full of blank lines doesn't blow the preview budget on newlines. */
-const BODY_PREVIEW_MAX_CHARS = 500;
-
 export type CreateGmailDraftReplyToolDeps = GmailToolDeps;
 
 /**
@@ -41,33 +38,6 @@ export type CreateGmailDraftReplyToolDeps = GmailToolDeps;
  * needs.
  */
 type DraftReplyContext = GmailToolContext & { googleAccount: { googleEmail: string } };
-
-/**
- * What `prepare` resolves and threads onto `ctx.plan` for `handler` —
- * critically including `raw`, the fully-composed MIME message. `handler`
- * posts `plan.raw` verbatim and never calls `buildMimeMessage` itself: the
- * bytes a human approved are structurally the bytes Gmail saves, not a
- * convention (`.ai/decisions/tool-prepare-hook.md`).
- */
-export interface GmailDraftReplyPlan {
-  threadId: string;
-  /** Present for an update (the caller supplied one); absent for a create. */
-  draftId?: string;
-  to: string;
-  subject: string;
-  body: string;
-  inReplyTo?: string;
-  references?: string;
-  raw: string;
-}
-
-type DraftReplyPrepareResult =
-  | {
-      ok: true;
-      plan: GmailDraftReplyPlan;
-      summary: { action: string; target?: string; items?: string[]; effects: string[] };
-    }
-  | { ok: false; result: ThreadNotFoundResult | ReturnType<typeof toInsufficientScopeResult> };
 
 /**
  * Reuses `gmail-archive.ts`'s `newestRef` (CLAUDE.md: reuse before reinvent)
@@ -108,45 +78,42 @@ function buildReplySubject(original: string | undefined): string {
   return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
 }
 
-/** Whitespace-collapsed, length-capped preview of the reply body for the approval prompt's `items`. */
-function buildBodyPreview(body: string): string {
-  const collapsed = body.replace(/\s+/g, " ").trim();
-  return collapsed.length <= BODY_PREVIEW_MAX_CHARS
-    ? collapsed
-    : `${collapsed.slice(0, BODY_PREVIEW_MAX_CHARS)}…`;
-}
-
 /**
- * `prepare(args, ctx)`: resolves the thread's newest message headers, then
- * derives the reply's recipient. The newest message's `From` is the reply
- * target only when someone else sent it — when the connected account itself
- * sent the last message (a normal back-and-forth, "send another one" after
- * we spoke last), `From` is our own address, so the recipient is that
- * message's `To` instead (the other party). Our own address (`from`) is
- * always `ctx.googleAccount.googleEmail`, never derived from thread headers.
- * Then builds the `Re:` subject and the `In-Reply-To`/`References` threading
- * headers, and composes the full `raw` message **here** via
- * `buildMimeMessage` — the one and only place this tool ever builds it. A
- * thread id Gmail 404s on refuses before any prompt with
+ * Resolves the thread's newest message headers, then derives the reply's
+ * recipient. The newest message's `From` is the reply target only when
+ * someone else sent it — when the connected account itself sent the last
+ * message (a normal back-and-forth, "send another one" after we spoke last),
+ * `From` is our own address, so the recipient is that message's `To` instead
+ * (the other party). Our own address (`from`) is always
+ * `ctx.googleAccount.googleEmail`, never derived from thread headers. Then
+ * builds the `Re:` subject and the `In-Reply-To`/`References` threading
+ * headers, and composes the full `raw` message via `buildMimeMessage`. A
+ * thread id Gmail 404s on refuses before any draft is saved, with
  * `thread_not_found`, same posture as `gmail-archive.ts`.
  */
-async function prepareDraftReply(
+interface ComposedDraft {
+  ok: true;
+  to: string;
+  subject: string;
+  body: string;
+  raw: string;
+}
+
+async function composeDraft(
   deps: CreateGmailDraftReplyToolDeps,
-  args: unknown,
+  accessToken: string,
+  args: Args,
   ctx: DraftReplyContext,
-): Promise<DraftReplyPrepareResult> {
-  const { threadId, body, draftId } = args as Args;
-  const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
+): Promise<ComposedDraft | ThreadNotFoundResult> {
+  const { threadId, body } = args;
 
   let headers: Record<string, string>;
   try {
     headers = await findNewestMessageHeaders(deps, accessToken, threadId, ctx.signal);
   } catch (error) {
     if (error instanceof GmailApiError && error.status === 404) {
-      return { ok: false, result: { ok: false, reason: "thread_not_found" } };
+      return { ok: false, reason: "thread_not_found" };
     }
-    const refusal = toInsufficientScopeResult(error, GMAIL_MODIFY_SCOPE, GMAIL_WRITE_FIX);
-    if (refusal) return { ok: false, result: refusal };
     throw error;
   }
 
@@ -160,76 +127,70 @@ async function prepareDraftReply(
 
   const raw = buildMimeMessage({ from, to, subject, body, inReplyTo, references });
 
-  return {
-    ok: true,
-    plan: { threadId, draftId, to, subject, body, inReplyTo, references, raw },
-    summary: {
-      action:
-        draftId !== undefined ? "¿Actualizar el borrador?" : "¿Guardar este borrador de respuesta?",
-      target: `Para: ${to} — ${subject}`,
-      items: [buildBodyPreview(body)],
-      effects: ["Se guarda como borrador en Gmail. No se envía nada todavía."],
-    },
-  };
+  return { ok: true, to, subject, body, raw };
 }
 
 /**
- * Creates or updates the Gmail draft per `plan.draftId`'s presence, posting
- * `plan.raw` exactly as `prepare` composed it — no recomposition. Returns
- * the resulting draft id so a following turn (e.g. "cambiá el viernes por el
+ * Creates or updates the Gmail draft per `draftId`'s presence. Returns the
+ * resulting draft id so a following turn (e.g. "cambiá el viernes por el
  * lunes") can pass it back in as `draftId` and update the same draft rather
  * than create a second one, with no new inbound-correlation machinery.
  */
 async function saveDraft(
   deps: CreateGmailDraftReplyToolDeps,
   accessToken: string,
-  plan: GmailDraftReplyPlan,
+  threadId: string,
+  draftId: string | undefined,
+  raw: string,
   signal: AbortSignal | undefined,
 ): Promise<string> {
-  if (plan.draftId !== undefined) {
-    await deps.gmailClient.updateDraft(
-      accessToken,
-      plan.draftId,
-      { threadId: plan.threadId, raw: plan.raw },
-      signal,
-    );
-    return plan.draftId;
+  if (draftId !== undefined) {
+    await deps.gmailClient.updateDraft(accessToken, draftId, { threadId, raw }, signal);
+    return draftId;
   }
-  const created = await deps.gmailClient.createDraft(
-    accessToken,
-    { threadId: plan.threadId, raw: plan.raw },
-    signal,
-  );
+  const created = await deps.gmailClient.createDraft(accessToken, { threadId, raw }, signal);
   return created.id;
 }
 
 /**
- * `gmail_draft_reply`: `requiresApproval: true` — every call routes through
- * the approval gate before `handler` ever runs. `handler` reads `ctx.plan`
- * (built by `prepare`) and calls `saveDraft`, which dispatches to
- * `updateDraft` (a `draftId` was given) or `createDraft` (none was) — never
- * both, never neither. This tool never invokes any send endpoint: the whole
- * point of it is that it cannot send.
+ * `gmail_draft_reply`: `requiresApproval: false` — saving or updating a
+ * draft is reversible and inconsequential (visible and undoable in Gmail's
+ * own Drafts folder), so this tool composes and saves it immediately,
+ * without an approval prompt. `handler` does all the work that used to live
+ * in a `prepare` hook (find the thread's newest message, derive the
+ * recipient, compose the `raw` MIME message) immediately followed by the
+ * `saveDraft` call, which dispatches to `updateDraft` (a `draftId` was
+ * given) or `createDraft` (none was) — never both, never neither. This tool
+ * never invokes any send endpoint: the whole point of it is that it cannot
+ * send. Actually sending remains a separate, fully approval-gated call to
+ * `gmail_send_draft`.
  */
 export function createGmailDraftReplyTool(deps: CreateGmailDraftReplyToolDeps) {
   return {
     name: "gmail_draft_reply",
     description:
-      "Saves a Gmail draft replying to a thread. Never sends anything. Args: { threadId, body, draftId? } — threadId must come from a prior gmail_list_unread, gmail_search or gmail_read_thread call; body is the reply's plain-text content; draftId (returned by a prior gmail_draft_reply call) updates that same draft instead of creating a new one. Requires human approval.",
+      "Saves a Gmail draft replying to a thread. Never sends anything, and saves/updates the draft immediately without asking for approval — it's reversible and visible/undoable in Gmail's own Drafts folder. Args: { threadId, body, draftId? } — threadId must come from a prior gmail_list_unread, gmail_search or gmail_read_thread call; body is the reply's plain-text content; draftId (returned by a prior gmail_draft_reply call) updates that same draft instead of creating a new one. Actually sending the draft still requires a separate, approved call to gmail_send_draft.",
     schema,
     timeoutMs: 30_000,
-    requiresApproval: true,
-    prepare: (args: unknown, ctx: DraftReplyContext) => prepareDraftReply(deps, args, ctx),
-    handler: async (
-      args: unknown,
-      ctx: DraftReplyContext & { plan: GmailDraftReplyPlan },
-    ): Promise<unknown> => {
-      const { plan } = ctx;
+    requiresApproval: false,
+    handler: async (args: unknown, ctx: DraftReplyContext): Promise<unknown> => {
+      const { threadId, draftId } = args as Args;
       const accessToken = await deps.accessTokenPort.getAccessToken(ctx.channel, ctx.channelUserId);
 
       try {
-        const draftId = await saveDraft(deps, accessToken, plan, ctx.signal);
-        return { ok: true, draftId, to: plan.to, subject: plan.subject, body: plan.body };
+        const composed = await composeDraft(deps, accessToken, args as Args, ctx);
+        if (!composed.ok) return composed;
+        const { to, subject, body, raw } = composed;
+
+        const resultDraftId = await saveDraft(
+          deps,
+          accessToken,
+          threadId,
+          draftId,
+          raw,
+          ctx.signal,
+        );
+        return { ok: true, draftId: resultDraftId, to, subject, body };
       } catch (error) {
         const refusal = toInsufficientScopeResult(error, GMAIL_MODIFY_SCOPE, GMAIL_WRITE_FIX);
         if (refusal) return refusal;

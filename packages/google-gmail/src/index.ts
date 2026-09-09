@@ -73,7 +73,6 @@ export {
 export {
   createGmailDraftReplyTool,
   type CreateGmailDraftReplyToolDeps,
-  type GmailDraftReplyPlan,
 } from "./tools/gmail-draft-reply";
 export {
   createGmailSendDraftTool,

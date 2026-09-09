@@ -3,7 +3,7 @@ import type { AccessTokenPort } from "../../access-token-port";
 import { GmailApiError } from "../../gmail-client";
 import type { GmailClient, GmailThread } from "../../gmail-client";
 import { decodeBase64Url } from "../../mime";
-import { type GmailDraftReplyPlan, createGmailDraftReplyTool } from "../gmail-draft-reply";
+import { createGmailDraftReplyTool } from "../gmail-draft-reply";
 import type { GmailToolContext } from "../tool-deps";
 
 const CTX: GmailToolContext & { googleAccount: { googleEmail: string } } = {
@@ -71,49 +71,39 @@ function decodeRawHeader(raw: string, name: string): string {
 }
 
 describe("createGmailDraftReplyTool", () => {
-  it("requiresApproval is true, declares a prepare hook, and timeoutMs is 30_000", () => {
+  it("requiresApproval is false, declares no prepare hook, and timeoutMs is 30_000", () => {
     const tool = createGmailDraftReplyTool({
       accessTokenPort: fakeAccessTokenPort(),
       gmailClient: fakeGmailClient(),
     });
 
-    expect(tool.requiresApproval).toBe(true);
-    expect(typeof tool.prepare).toBe("function");
+    expect(tool.requiresApproval).toBe(false);
+    expect("prepare" in tool).toBe(false);
     expect(tool.timeoutMs).toBe(30_000);
   });
 
-  it("prepare derives recipient, Re: subject and threading headers from the thread's newest message, and builds the Spanish summary", async () => {
-    const tool = createGmailDraftReplyTool({
-      accessTokenPort: fakeAccessTokenPort(),
-      gmailClient: fakeGmailClient(),
-    });
+  it("handler derives recipient, Re: subject and threading headers from the thread's newest message, composes the raw MIME message, and saves a new draft", async () => {
+    const gmailClient = fakeGmailClient();
+    const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = (await tool.prepare?.(
+    const result = (await tool.handler(
       { threadId: "thread-1", body: "El viernes me sirve." },
       CTX,
-    )) as {
-      ok: true;
-      plan: GmailDraftReplyPlan;
-      summary: { action: string; target?: string; items?: string[]; effects: string[] };
-    };
+    )) as { ok: true; draftId: string; to: string; subject: string; body: string };
 
     expect(result.ok).toBe(true);
-    expect(result.plan.threadId).toBe("thread-1");
-    expect(result.plan.draftId).toBeUndefined();
-    expect(result.plan.to).toBe("sarah@example.com");
-    expect(result.plan.subject).toBe("Re: Confirmación");
-    expect(result.plan.inReplyTo).toBe("<msg-new@mail.gmail.com>");
-    expect(result.plan.references).toBe("<msg-new@mail.gmail.com>");
-    expect(typeof result.plan.raw).toBe("string");
-    expect(decodeRawSubject(result.plan.raw)).toMatch(/^=\?UTF-8\?B\?.+\?=$/);
-    expect(decodeRawHeader(result.plan.raw, "From")).toBe(CTX.googleAccount.googleEmail);
+    expect(result.to).toBe("sarah@example.com");
+    expect(result.subject).toBe("Re: Confirmación");
+    expect(result.body).toBe("El viernes me sirve.");
 
-    expect(result.summary).toEqual({
-      action: "¿Guardar este borrador de respuesta?",
-      target: "Para: sarah@example.com — Re: Confirmación",
-      items: ["El viernes me sirve."],
-      effects: ["Se guarda como borrador en Gmail. No se envía nada todavía."],
-    });
+    const [, createRequest] = (gmailClient.createDraft as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, { threadId: string; raw: string }, AbortSignal];
+    expect(createRequest.threadId).toBe("thread-1");
+    expect(decodeRawSubject(createRequest.raw)).toMatch(/^=\?UTF-8\?B\?.+\?=$/);
+    expect(decodeRawHeader(createRequest.raw, "From")).toBe(CTX.googleAccount.googleEmail);
+    expect(decodeRawHeader(createRequest.raw, "In-Reply-To")).toBe("<msg-new@mail.gmail.com>");
+    expect(decodeRawHeader(createRequest.raw, "References")).toBe("<msg-new@mail.gmail.com>");
+    expect(gmailClient.updateDraft).not.toHaveBeenCalled();
   });
 
   it("when the connected account sent the thread's last message, the reply goes to that message's To (the other party), not back to ourselves", async () => {
@@ -130,14 +120,17 @@ describe("createGmailDraftReplyTool", () => {
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = (await tool.prepare?.(
+    const result = (await tool.handler(
       { threadId: "thread-1", body: "Cualquier novedad?" },
       CTX,
-    )) as { ok: true; plan: GmailDraftReplyPlan };
+    )) as {
+      ok: true;
+      to: string;
+    };
 
     expect(result.ok).toBe(true);
-    expect(result.plan.to).toBe("sarah@example.com");
-    expect(result.plan.to).not.toBe(CTX.googleAccount.googleEmail);
+    expect(result.to).toBe("sarah@example.com");
+    expect(result.to).not.toBe(CTX.googleAccount.googleEmail);
   });
 
   it("matches the connected account's address against From case-insensitively", async () => {
@@ -154,12 +147,11 @@ describe("createGmailDraftReplyTool", () => {
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = (await tool.prepare?.({ threadId: "thread-1", body: "hola" }, CTX)) as {
-      ok: true;
-      plan: GmailDraftReplyPlan;
+    const result = (await tool.handler({ threadId: "thread-1", body: "hola" }, CTX)) as {
+      to: string;
     };
 
-    expect(result.plan.to).toBe("sarah@example.com");
+    expect(result.to).toBe("sarah@example.com");
   });
 
   it('matches a display-name-form From header ("Name <addr>") against the connected account\'s bare address', async () => {
@@ -176,84 +168,49 @@ describe("createGmailDraftReplyTool", () => {
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = (await tool.prepare?.({ threadId: "thread-1", body: "hola" }, CTX)) as {
-      ok: true;
-      plan: GmailDraftReplyPlan;
+    const result = (await tool.handler({ threadId: "thread-1", body: "hola" }, CTX)) as {
+      to: string;
     };
 
-    expect(result.plan.to).toBe("sarah@example.com");
+    expect(result.to).toBe("sarah@example.com");
   });
 
-  it("prepare's action reads '¿Actualizar el borrador?' when a draftId is supplied", async () => {
-    const tool = createGmailDraftReplyTool({
-      accessTokenPort: fakeAccessTokenPort(),
-      gmailClient: fakeGmailClient(),
-    });
-
-    const result = (await tool.prepare?.(
-      { threadId: "thread-1", body: "El lunes me sirve.", draftId: "draft-1" },
-      CTX,
-    )) as { ok: true; plan: GmailDraftReplyPlan; summary: { action: string } };
-
-    expect(result.plan.draftId).toBe("draft-1");
-    expect(result.summary.action).toBe("¿Actualizar el borrador?");
-  });
-
-  it("a missing thread refuses pre-prompt with thread_not_found, and neither createDraft nor updateDraft is called", async () => {
+  it("a missing thread refuses with thread_not_found, and neither createDraft nor updateDraft is called", async () => {
     const gmailClient = fakeGmailClient({
       getThread: vi.fn().mockRejectedValue(new GmailApiError("not found", 404)),
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = await tool.prepare?.({ threadId: "missing-thread", body: "hola" }, CTX);
+    const result = await tool.handler({ threadId: "missing-thread", body: "hola" }, CTX);
 
-    expect(result).toEqual({ ok: false, result: { ok: false, reason: "thread_not_found" } });
+    expect(result).toEqual({ ok: false, reason: "thread_not_found" });
     expect(gmailClient.createDraft).not.toHaveBeenCalled();
     expect(gmailClient.updateDraft).not.toHaveBeenCalled();
   });
 
-  it("prepare surfaces a 403 as the structured insufficient_scope refusal, not a throw", async () => {
+  it("surfaces a 403 on getThread as the structured insufficient_scope refusal, not a throw", async () => {
     const gmailClient = fakeGmailClient({
       getThread: vi.fn().mockRejectedValue(new GmailApiError("forbidden", 403)),
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const result = await tool.prepare?.({ threadId: "thread-1", body: "hola" }, CTX);
+    const result = await tool.handler({ threadId: "thread-1", body: "hola" }, CTX);
 
     expect(result).toEqual({
       ok: false,
-      result: {
-        ok: false,
-        reason: "insufficient_scope",
-        scope: "https://www.googleapis.com/auth/gmail.modify",
-        fix: "run /connect google gmail-send",
-      },
+      reason: "insufficient_scope",
+      scope: "https://www.googleapis.com/auth/gmail.modify",
+      fix: "run /connect google gmail-send",
     });
   });
 
-  it("create path (no draftId): handler posts ctx.plan.raw verbatim to createDraft — byte-identical to what prepare produced — and never calls updateDraft", async () => {
+  it("create path (no draftId): handler calls createDraft and never calls updateDraft", async () => {
     const gmailClient = fakeGmailClient();
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const prepared = (await tool.prepare?.(
-      { threadId: "thread-1", body: "El viernes me sirve." },
-      CTX,
-    )) as { ok: true; plan: GmailDraftReplyPlan };
+    const result = await tool.handler({ threadId: "thread-1", body: "El viernes me sirve." }, CTX);
 
-    const result = await tool.handler(
-      { threadId: "thread-1", body: "El viernes me sirve." },
-      { ...CTX, plan: prepared.plan },
-    );
-
-    expect(gmailClient.createDraft).toHaveBeenCalledWith(
-      "secret-token",
-      { threadId: "thread-1", raw: prepared.plan.raw },
-      CTX.signal,
-    );
-    // Byte-identity: the exact same string instance prepare produced, not a recomposed one.
-    const [, createRequest] = (gmailClient.createDraft as ReturnType<typeof vi.fn>).mock
-      .calls[0] as [string, { raw: string }, AbortSignal];
-    expect(createRequest.raw).toBe(prepared.plan.raw);
+    expect(gmailClient.createDraft).toHaveBeenCalledTimes(1);
     expect(gmailClient.updateDraft).not.toHaveBeenCalled();
     expect(result).toEqual({
       ok: true,
@@ -264,29 +221,21 @@ describe("createGmailDraftReplyTool", () => {
     });
   });
 
-  it("update path (draftId given): handler posts ctx.plan.raw verbatim to updateDraft with the given draftId, and never calls createDraft", async () => {
+  it("update path (draftId given): handler calls updateDraft with the given draftId, and never calls createDraft", async () => {
     const gmailClient = fakeGmailClient();
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
 
-    const prepared = (await tool.prepare?.(
-      { threadId: "thread-1", body: "El lunes me sirve.", draftId: "existing-draft" },
-      CTX,
-    )) as { ok: true; plan: GmailDraftReplyPlan };
-
     const result = await tool.handler(
       { threadId: "thread-1", body: "El lunes me sirve.", draftId: "existing-draft" },
-      { ...CTX, plan: prepared.plan },
+      CTX,
     );
 
     expect(gmailClient.updateDraft).toHaveBeenCalledWith(
       "secret-token",
       "existing-draft",
-      { threadId: "thread-1", raw: prepared.plan.raw },
+      { threadId: "thread-1", raw: expect.any(String) },
       CTX.signal,
     );
-    const [, , updateRequest] = (gmailClient.updateDraft as ReturnType<typeof vi.fn>).mock
-      .calls[0] as [string, string, { raw: string }, AbortSignal];
-    expect(updateRequest.raw).toBe(prepared.plan.raw);
     expect(gmailClient.createDraft).not.toHaveBeenCalled();
     expect(result).toEqual({
       ok: true,
@@ -302,15 +251,8 @@ describe("createGmailDraftReplyTool", () => {
       createDraft: vi.fn().mockRejectedValue(new GmailApiError("forbidden", 403)),
     });
     const tool = createGmailDraftReplyTool({ accessTokenPort: fakeAccessTokenPort(), gmailClient });
-    const plan: GmailDraftReplyPlan = {
-      threadId: "thread-1",
-      to: "sarah@example.com",
-      subject: "Re: Confirmación",
-      body: "hola",
-      raw: "RAW",
-    };
 
-    const result = await tool.handler({ threadId: "thread-1", body: "hola" }, { ...CTX, plan });
+    const result = await tool.handler({ threadId: "thread-1", body: "hola" }, CTX);
 
     expect(result).toEqual({
       ok: false,

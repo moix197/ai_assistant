@@ -337,58 +337,6 @@ describe("formatBatchPrompt", () => {
     );
   });
 
-  it("renders gmail_draft_reply's create summary — including the body preview through the generic items mechanism — through the unchanged renderer (09-gmail-read-then-send Phase 4)", () => {
-    const batch: ApprovalRequest[] = [
-      {
-        tool: "gmail_draft_reply",
-        args: { threadId: "thread-1", body: "El viernes me sirve." },
-        summary: {
-          action: "¿Guardar este borrador de respuesta?",
-          target: "Para: sarah@example.com — Re: Confirmación",
-          items: ["El viernes me sirve."],
-          effects: ["Se guarda como borrador en Gmail. No se envía nada todavía."],
-        },
-      },
-    ];
-
-    expect(formatBatchPrompt(batch)).toBe(
-      [
-        "¿Guardar este borrador de respuesta?",
-        "Para: sarah@example.com — Re: Confirmación",
-        "",
-        "  El viernes me sirve.",
-        "",
-        "Se guarda como borrador en Gmail. No se envía nada todavía.",
-      ].join("\n"),
-    );
-  });
-
-  it("renders gmail_draft_reply's update summary with the distinct '¿Actualizar el borrador?' action (09-gmail-read-then-send Phase 4)", () => {
-    const batch: ApprovalRequest[] = [
-      {
-        tool: "gmail_draft_reply",
-        args: { threadId: "thread-1", body: "El lunes me sirve.", draftId: "draft-1" },
-        summary: {
-          action: "¿Actualizar el borrador?",
-          target: "Para: sarah@example.com — Re: Confirmación",
-          items: ["El lunes me sirve."],
-          effects: ["Se guarda como borrador en Gmail. No se envía nada todavía."],
-        },
-      },
-    ];
-
-    expect(formatBatchPrompt(batch)).toBe(
-      [
-        "¿Actualizar el borrador?",
-        "Para: sarah@example.com — Re: Confirmación",
-        "",
-        "  El lunes me sirve.",
-        "",
-        "Se guarda como borrador en Gmail. No se envía nada todavía.",
-      ].join("\n"),
-    );
-  });
-
   it("renders gmail_send_draft's summary — including the irreversible-send effect — through the unchanged renderer (09-gmail-read-then-send Phase 5)", () => {
     const batch: ApprovalRequest[] = [
       {

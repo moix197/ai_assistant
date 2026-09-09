@@ -18,7 +18,6 @@ import { createCalendarRescheduleEventTool } from "@hermes/google-calendar";
 import { createCalendarCancelEventTool } from "@hermes/google-calendar";
 import type {
   GmailArchivePlan,
-  GmailDraftReplyPlan,
   GmailLabelPlan,
   GmailSendDraftPlan,
   GmailSendLogPort,
@@ -286,7 +285,7 @@ export function buildAgent(
     requiredScopes: requiredScopesFor("gmail_label"),
   })(createGmailLabelTool(gmailDeps));
 
-  const gmailDraftReplyTool = withRequiredScopes<GmailDraftReplyPlan>("gmail_draft_reply", {
+  const gmailDraftReplyTool = withRequiredScopes("gmail_draft_reply", {
     googleAccountRepo,
     requiredScopes: requiredScopesFor("gmail_draft_reply"),
   })(createGmailDraftReplyTool(gmailDeps));
